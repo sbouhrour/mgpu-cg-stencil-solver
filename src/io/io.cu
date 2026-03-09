@@ -62,6 +62,214 @@ int read_matrix_type(const char* filename) {
 }
 
 /**
+ * @brief Generates a 3D 27-point stencil MatrixData directly in memory without reading the file.
+ * @details Reads only the file header to get grid_size N, then generates all COO entries
+ * in memory using the same stencil pattern as write_matrix_market_stencil27. Avoids reading
+ * large text files (e.g. 34 GB for N=384) which would take tens of minutes with fscanf.
+ * @param matrix_path Path to the Matrix Market file (only header is read)
+ * @param mat Pointer to MatrixData structure to fill
+ * @return 0 on success, non-zero on error
+ */
+int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat) {
+    // Read only the header to extract grid_size N
+    FILE* f = fopen(matrix_path, "r");
+    if (!f) {
+        fprintf(stderr, "Error opening file: %s\n", matrix_path);
+        return 1;
+    }
+
+    int N = -1;
+    char buffer[MAX_LINE_LENGTH];
+    while (fgets(buffer, MAX_LINE_LENGTH, f) != NULL) {
+        if (buffer[0] == '%') {
+            if (strstr(buffer, "STENCIL_GRID_SIZE") != NULL)
+                sscanf(buffer, "%% STENCIL_GRID_SIZE %d", &N);
+        } else {
+            break;  // reached dimension line, stop
+        }
+    }
+    fclose(f);
+
+    if (N <= 0) {
+        fprintf(stderr, "Could not find STENCIL_GRID_SIZE in header of %s\n", matrix_path);
+        return 1;
+    }
+
+    printf("Generating 27pt stencil in memory for N=%d (skip file read)...\n", N);
+    fflush(stdout);
+
+    long long matrix_size = (long long)N * N * N;
+
+    // Count exact nnz (same logic as write_matrix_market_stencil27)
+    long long nnz = 0;
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                nnz++;  // center
+                if (i > 0)
+                    nnz++;
+                if (i < N - 1)
+                    nnz++;
+                if (j > 0)
+                    nnz++;
+                if (j < N - 1)
+                    nnz++;
+                if (k > 0)
+                    nnz++;
+                if (k < N - 1)
+                    nnz++;
+                if (i > 0 && j > 0)
+                    nnz++;
+                if (i > 0 && j < N - 1)
+                    nnz++;
+                if (i < N - 1 && j > 0)
+                    nnz++;
+                if (i < N - 1 && j < N - 1)
+                    nnz++;
+                if (i > 0 && k > 0)
+                    nnz++;
+                if (i > 0 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && k > 0)
+                    nnz++;
+                if (i < N - 1 && k < N - 1)
+                    nnz++;
+                if (j > 0 && k > 0)
+                    nnz++;
+                if (j > 0 && k < N - 1)
+                    nnz++;
+                if (j < N - 1 && k > 0)
+                    nnz++;
+                if (j < N - 1 && k < N - 1)
+                    nnz++;
+                if (i > 0 && j > 0 && k > 0)
+                    nnz++;
+                if (i > 0 && j > 0 && k < N - 1)
+                    nnz++;
+                if (i > 0 && j < N - 1 && k > 0)
+                    nnz++;
+                if (i > 0 && j < N - 1 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && j > 0 && k > 0)
+                    nnz++;
+                if (i < N - 1 && j > 0 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && j < N - 1 && k > 0)
+                    nnz++;
+                if (i < N - 1 && j < N - 1 && k < N - 1)
+                    nnz++;
+            }
+        }
+    }
+
+    printf("  nnz = %lld, allocating %.1f GB for COO entries...\n", nnz,
+           (double)nnz * sizeof(Entry) / 1e9);
+    fflush(stdout);
+
+    Entry* entries = (Entry*)malloc(nnz * sizeof(Entry));
+    if (!entries) {
+        fprintf(stderr, "malloc failed for %lld entries (%.1f GB)\n", nnz,
+                (double)nnz * sizeof(Entry) / 1e9);
+        return 1;
+    }
+
+    // Fill entries (same stencil pattern, now writing to RAM instead of file)
+    long long idx = 0;
+    long long total_points = matrix_size;
+    long long progress_step = total_points / 20;  // print every 5%
+    if (progress_step == 0)
+        progress_step = 1;
+
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                long long global_idx = (long long)i * N * N + j * N + k;
+                int row = (int)global_idx;
+
+                if (global_idx % progress_step == 0) {
+                    printf("\r  Generating entries: %d%%", (int)(global_idx * 100 / total_points));
+                    fflush(stdout);
+                }
+
+                // Center
+                entries[idx++] = (Entry){row, row, 26.0};
+
+// 6 face neighbors
+#define ADD(ni)                    \
+    entries[idx++] = (Entry) {     \
+        row, (int)((ni) - 1), -1.0 \
+    }
+                if (i > 0)
+                    ADD((long long)(i - 1) * N * N + j * N + k + 1);
+                if (i < N - 1)
+                    ADD((long long)(i + 1) * N * N + j * N + k + 1);
+                if (j > 0)
+                    ADD((long long)i * N * N + (j - 1) * N + k + 1);
+                if (j < N - 1)
+                    ADD((long long)i * N * N + (j + 1) * N + k + 1);
+                if (k > 0)
+                    ADD((long long)i * N * N + j * N + (k - 1) + 1);
+                if (k < N - 1)
+                    ADD((long long)i * N * N + j * N + (k + 1) + 1);
+                // 12 edge neighbors
+                if (i > 0 && j > 0)
+                    ADD((long long)(i - 1) * N * N + (j - 1) * N + k + 1);
+                if (i > 0 && j < N - 1)
+                    ADD((long long)(i - 1) * N * N + (j + 1) * N + k + 1);
+                if (i < N - 1 && j > 0)
+                    ADD((long long)(i + 1) * N * N + (j - 1) * N + k + 1);
+                if (i < N - 1 && j < N - 1)
+                    ADD((long long)(i + 1) * N * N + (j + 1) * N + k + 1);
+                if (i > 0 && k > 0)
+                    ADD((long long)(i - 1) * N * N + j * N + (k - 1) + 1);
+                if (i > 0 && k < N - 1)
+                    ADD((long long)(i - 1) * N * N + j * N + (k + 1) + 1);
+                if (i < N - 1 && k > 0)
+                    ADD((long long)(i + 1) * N * N + j * N + (k - 1) + 1);
+                if (i < N - 1 && k < N - 1)
+                    ADD((long long)(i + 1) * N * N + j * N + (k + 1) + 1);
+                if (j > 0 && k > 0)
+                    ADD((long long)i * N * N + (j - 1) * N + (k - 1) + 1);
+                if (j > 0 && k < N - 1)
+                    ADD((long long)i * N * N + (j - 1) * N + (k + 1) + 1);
+                if (j < N - 1 && k > 0)
+                    ADD((long long)i * N * N + (j + 1) * N + (k - 1) + 1);
+                if (j < N - 1 && k < N - 1)
+                    ADD((long long)i * N * N + (j + 1) * N + (k + 1) + 1);
+                // 8 corner neighbors
+                if (i > 0 && j > 0 && k > 0)
+                    ADD((long long)(i - 1) * N * N + (j - 1) * N + (k - 1) + 1);
+                if (i > 0 && j > 0 && k < N - 1)
+                    ADD((long long)(i - 1) * N * N + (j - 1) * N + (k + 1) + 1);
+                if (i > 0 && j < N - 1 && k > 0)
+                    ADD((long long)(i - 1) * N * N + (j + 1) * N + (k - 1) + 1);
+                if (i > 0 && j < N - 1 && k < N - 1)
+                    ADD((long long)(i - 1) * N * N + (j + 1) * N + (k + 1) + 1);
+                if (i < N - 1 && j > 0 && k > 0)
+                    ADD((long long)(i + 1) * N * N + (j - 1) * N + (k - 1) + 1);
+                if (i < N - 1 && j > 0 && k < N - 1)
+                    ADD((long long)(i + 1) * N * N + (j - 1) * N + (k + 1) + 1);
+                if (i < N - 1 && j < N - 1 && k > 0)
+                    ADD((long long)(i + 1) * N * N + (j + 1) * N + (k - 1) + 1);
+                if (i < N - 1 && j < N - 1 && k < N - 1)
+                    ADD((long long)(i + 1) * N * N + (j + 1) * N + (k + 1) + 1);
+#undef ADD
+            }
+        }
+    }
+    printf("\r  Generating entries: 100%%\n");
+
+    mat->rows = (int)matrix_size;
+    mat->cols = (int)matrix_size;
+    mat->nnz = (int)nnz;
+    mat->grid_size = N;
+    mat->entries = entries;
+
+    printf("  Done: %d rows, %d nnz\n", mat->rows, mat->nnz);
+    return 0;
+}
+
+/**
  * @brief Loads a matrix from Matrix Market format into MatrixData structure.
  * @details Main entry point for matrix loading. Automatically detects matrix type
  * (general or symmetric) and calls the appropriate reading function. For symmetric
