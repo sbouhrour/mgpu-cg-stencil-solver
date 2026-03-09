@@ -108,7 +108,15 @@ int main(int argc, char** argv) {
         printf("Loading 3D matrix: %s\n", matrix_file);
     }
 
-    if (load_matrix_market(matrix_file, &mat) != 0) {
+    // For 27pt stencil, generate entries in memory instead of reading the large text file
+    // (e.g. N=384 produces a 34 GB file — fscanf on 1.5B entries takes 20-40 minutes)
+    int load_err;
+    if (stencil_points == 27) {
+        load_err = load_matrix_stencil27_3d_from_grid(matrix_file, &mat);
+    } else {
+        load_err = load_matrix_market(matrix_file, &mat);
+    }
+    if (load_err != 0) {
         fprintf(stderr, "[Rank %d] Error loading matrix: %s\n", rank, matrix_file);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
