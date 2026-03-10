@@ -261,11 +261,11 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat)
 
     mat->rows = (int)matrix_size;
     mat->cols = (int)matrix_size;
-    mat->nnz = (int)nnz;
+    mat->nnz = nnz;
     mat->grid_size = N;
     mat->entries = entries;
 
-    printf("  Done: %d rows, %d nnz\n", mat->rows, mat->nnz);
+    printf("  Done: %d rows, %lld nnz\n", mat->rows, mat->nnz);
     return 0;
 }
 

@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
     }
 
     if (rank == 0) {
-        printf("Matrix loaded: %d x %d, %d nonzeros (grid_size=%d, 3D)\n", mat.rows, mat.cols,
+        printf("Matrix loaded: %d x %d, %lld nonzeros (grid_size=%d, 3D)\n", mat.rows, mat.cols,
                mat.nnz, mat.grid_size);
     }
 
@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
 
     if (verify_mode) {
         // b = A * x_exact where x_exact = ones (use COO entries)
-        for (int k = 0; k < mat.nnz; k++) {
+        for (long long k = 0; k < mat.nnz; k++) {
             b[mat.entries[k].row] += mat.entries[k].value;
         }
         if (rank == 0) {

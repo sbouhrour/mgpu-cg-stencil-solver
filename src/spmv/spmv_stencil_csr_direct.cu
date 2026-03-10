@@ -215,7 +215,7 @@ int stencil_csr_direct_init(MatrixData* mat) {
     // Store grid_size for kernel
     grid_size_stored = mat->grid_size;
 
-    printf("CSR-direct initialized: %d rows, %d nnz, grid %dx%d\n", csr_mat.nb_rows,
+    printf("CSR-direct initialized: %d rows, %lld nnz, grid %dx%d\n", csr_mat.nb_rows,
            csr_mat.nb_nonzeros, mat->grid_size, mat->grid_size);
 
     return 0;

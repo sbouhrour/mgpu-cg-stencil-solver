@@ -38,7 +38,7 @@ void export_cg_json(const char* filename, const char* mode, const MatrixData* ma
     fprintf(fp, "  \"matrix\": {\n");
     fprintf(fp, "    \"rows\": %d,\n", mat->rows);
     fprintf(fp, "    \"cols\": %d,\n", mat->cols);
-    fprintf(fp, "    \"nnz\": %d,\n", mat->nnz);
+    fprintf(fp, "    \"nnz\": %lld,\n", mat->nnz);
     fprintf(fp, "    \"grid_size\": %d\n", mat->grid_size);
     fprintf(fp, "  },\n");
 
@@ -105,7 +105,7 @@ void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixDat
     fprintf(fp, "  \"matrix\": {\n");
     fprintf(fp, "    \"rows\": %d,\n", mat->rows);
     fprintf(fp, "    \"cols\": %d,\n", mat->cols);
-    fprintf(fp, "    \"nnz\": %d,\n", mat->nnz);
+    fprintf(fp, "    \"nnz\": %lld,\n", mat->nnz);
     fprintf(fp, "    \"grid_size\": %d\n", mat->grid_size);
     fprintf(fp, "  },\n");
 
@@ -169,8 +169,8 @@ void export_cg_csv(const char* filename, const char* mode, const MatrixData* mat
 
     double gflops = (2.0 * mat->nnz * cg_stats->iterations) / (cg_stats->time_spmv_ms * 1e6);
 
-    fprintf(fp, "%s,%d,%d,%d,%d,%d,%d,%.15e,", mode, mat->rows, mat->cols, mat->nnz, mat->grid_size,
-            cg_stats->converged, cg_stats->iterations, cg_stats->residual_norm);
+    fprintf(fp, "%s,%d,%d,%lld,%d,%d,%d,%.15e,", mode, mat->rows, mat->cols, mat->nnz,
+            mat->grid_size, cg_stats->converged, cg_stats->iterations, cg_stats->residual_norm);
     fprintf(fp, "%.3f,%.3f,%.3f,%.3f,%.3f,", bench_stats->median_ms, bench_stats->mean_ms,
             bench_stats->min_ms, bench_stats->max_ms, bench_stats->std_dev_ms);
     fprintf(fp, "%.3f,%.3f,%.3f,", cg_stats->time_spmv_ms, cg_stats->time_blas1_ms,

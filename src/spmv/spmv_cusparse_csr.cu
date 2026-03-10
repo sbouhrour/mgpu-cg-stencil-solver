@@ -63,12 +63,12 @@ int build_csr_struct(MatrixData* mat) {
     // Skip if CSR already built (multi-mode reuse)
     if (csr_mat.row_ptr != NULL && csr_mat.nb_rows == mat->rows &&
         csr_mat.nb_nonzeros == mat->nnz) {
-        printf("✅ CSR structure already built, reusing (%dx%d, %d nnz)\n", mat->rows, mat->cols,
+        printf("✅ CSR structure already built, reusing (%dx%d, %lld nnz)\n", mat->rows, mat->cols,
                mat->nnz);
         return EXIT_SUCCESS;
     }
 
-    printf("🔄 Building CSR structure (%dx%d, %d nnz)...\n", mat->rows, mat->cols, mat->nnz);
+    printf("🔄 Building CSR structure (%dx%d, %lld nnz)...\n", mat->rows, mat->cols, mat->nnz);
     fflush(stdout);
 
     // Allocate row pointer array
@@ -82,7 +82,7 @@ int build_csr_struct(MatrixData* mat) {
     fflush(stdout);
 
     // Count non-zeros per row
-    for (int i = 0; i < mat->nnz; ++i) {
+    for (long long i = 0; i < mat->nnz; ++i) {
         int r = mat->entries[i].row;
         row_ptr[r + 1]++;
     }
@@ -124,7 +124,7 @@ int build_csr_struct(MatrixData* mat) {
     fflush(stdout);
 
     // Populate CSR arrays
-    for (int i = 0; i < mat->nnz; ++i) {
+    for (long long i = 0; i < mat->nnz; ++i) {
         int r = mat->entries[i].row;
         int dst = row_ptr[r] + local_count[r]++;
         col_indices[dst] = mat->entries[i].col;
