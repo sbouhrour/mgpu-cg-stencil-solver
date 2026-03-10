@@ -62,15 +62,20 @@ int read_matrix_type(const char* filename) {
 }
 
 /**
- * @brief Generates a 3D 27-point stencil MatrixData directly in memory without reading the file.
- * @details Reads only the file header to get grid_size N, then generates all COO entries
- * in memory using the same stencil pattern as write_matrix_market_stencil27. Avoids reading
- * large text files (e.g. 34 GB for N=384) which would take tens of minutes with fscanf.
+ * @brief Generates a 3D 27-point stencil MatrixData for this MPI rank's partition only.
+ * @details Reads only the file header to get grid_size N, then generates COO entries
+ * for the z-slab partition owned by this rank (matching the solver's partitioning:
+ * n_local = N³/world_size, row_offset = rank * n_local). Each rank only allocates
+ * its share of memory (~total/world_size), preventing OOM for large grids.
+ * mat->rows is set to the global N³ so the solver's row_ptr indexing works correctly.
  * @param matrix_path Path to the Matrix Market file (only header is read)
  * @param mat Pointer to MatrixData structure to fill
+ * @param rank MPI rank of this process
+ * @param world_size Total number of MPI ranks
  * @return 0 on success, non-zero on error
  */
-int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat) {
+int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
+                                       int world_size) {
     // Read only the header to extract grid_size N
     FILE* f = fopen(matrix_path, "r");
     if (!f) {
@@ -95,14 +100,27 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat)
         return 1;
     }
 
-    printf("Generating 27pt stencil in memory for N=%d (skip file read)...\n", N);
-    fflush(stdout);
-
     long long matrix_size = (long long)N * N * N;
 
-    // Count exact nnz (same logic as write_matrix_market_stencil27)
+    // Compute this rank's row partition — mirrors cg_solver_mgpu_partitioned_3d logic:
+    //   n_local = N³ / world_size,  row_offset = rank * n_local
+    long long n_local_rows = matrix_size / world_size;
+    long long row_start = (long long)rank * n_local_rows;
+    long long row_end = (rank == world_size - 1) ? matrix_size : row_start + n_local_rows;
+
+    // Convert row boundaries to z-plane (i) boundaries (rows = i*N²+j*N+k)
+    int i_start = (int)(row_start / ((long long)N * N));
+    int i_end = (int)(row_end / ((long long)N * N));
+
+    if (rank == 0) {
+        printf("Generating 27pt stencil in memory for N=%d, partition [rank %d/%d, i=%d..%d]...\n",
+               N, rank, world_size, i_start, i_end - 1);
+        fflush(stdout);
+    }
+
+    // Count exact nnz for the local partition only
     long long nnz = 0;
-    for (int i = 0; i < N; i++) {
+    for (int i = i_start; i < i_end; i++) {
         for (int j = 0; j < N; j++) {
             for (int k = 0; k < N; k++) {
                 nnz++;  // center
@@ -162,32 +180,35 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat)
         }
     }
 
-    printf("  nnz = %lld, allocating %.1f GB for COO entries...\n", nnz,
-           (double)nnz * sizeof(Entry) / 1e9);
-    fflush(stdout);
+    if (rank == 0) {
+        printf("  local nnz = %lld, allocating %.1f GB for COO entries...\n", nnz,
+               (double)nnz * sizeof(Entry) / 1e9);
+        fflush(stdout);
+    }
 
     Entry* entries = (Entry*)malloc(nnz * sizeof(Entry));
     if (!entries) {
-        fprintf(stderr, "malloc failed for %lld entries (%.1f GB)\n", nnz,
+        fprintf(stderr, "[Rank %d] malloc failed for %lld entries (%.1f GB)\n", rank, nnz,
                 (double)nnz * sizeof(Entry) / 1e9);
         return 1;
     }
 
-    // Fill entries (same stencil pattern, now writing to RAM instead of file)
+    // Fill entries for local partition only
     long long idx = 0;
-    long long total_points = matrix_size;
-    long long progress_step = total_points / 20;  // print every 5%
+    long long local_points = (long long)(i_end - i_start) * N * N;
+    long long progress_step = local_points / 20;
     if (progress_step == 0)
         progress_step = 1;
 
-    for (int i = 0; i < N; i++) {
+    for (int i = i_start; i < i_end; i++) {
         for (int j = 0; j < N; j++) {
             for (int k = 0; k < N; k++) {
                 long long global_idx = (long long)i * N * N + j * N + k;
                 int row = (int)global_idx;
 
-                if (global_idx % progress_step == 0) {
-                    printf("\r  Generating entries: %d%%", (int)(global_idx * 100 / total_points));
+                long long local_idx = global_idx - row_start;
+                if (rank == 0 && local_idx % progress_step == 0) {
+                    printf("\r  Generating entries: %d%%", (int)(local_idx * 100 / local_points));
                     fflush(stdout);
                 }
 
@@ -257,15 +278,20 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat)
             }
         }
     }
-    printf("\r  Generating entries: 100%%\n");
+    if (rank == 0)
+        printf("\r  Generating entries: 100%%\n");
 
+    // mat->rows is GLOBAL (N³) so the solver's row_ptr indexing works correctly.
+    // mat->nnz is LOCAL (only this rank's entries).
     mat->rows = (int)matrix_size;
     mat->cols = (int)matrix_size;
     mat->nnz = nnz;
     mat->grid_size = N;
     mat->entries = entries;
 
-    printf("  Done: %d rows, %lld nnz\n", mat->rows, mat->nnz);
+    if (rank == 0)
+        printf("  Done: global %d rows, local %lld nnz (rank %d/%d)\n", mat->rows, mat->nnz, rank,
+               world_size);
     return 0;
 }
 

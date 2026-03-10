@@ -114,7 +114,8 @@ void read_matrix_symtogen(MatrixData* mat, const char* filename, int* rows, int*
  * @return int 0 if successful, non-zero otherwise
  */
 int load_matrix_market(const char* filename, MatrixData* mat);
-int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat);
+int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
+                                       int world_size);
 
 /**
  * @brief Convert a CSR matrix to ELLPACK format.

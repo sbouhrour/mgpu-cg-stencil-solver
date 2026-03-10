@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
     // (e.g. N=384 produces a 34 GB file — fscanf on 1.5B entries takes 20-40 minutes)
     int load_err;
     if (stencil_points == 27) {
-        load_err = load_matrix_stencil27_3d_from_grid(matrix_file, &mat);
+        load_err = load_matrix_stencil27_3d_from_grid(matrix_file, &mat, rank, world_size);
     } else {
         load_err = load_matrix_market(matrix_file, &mat);
     }
