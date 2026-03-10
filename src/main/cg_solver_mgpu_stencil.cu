@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
     }
 
     if (rank == 0) {
-        printf("Matrix loaded: %d × %d, %d nonzeros\n", mat.rows, mat.cols, mat.nnz);
+        printf("Matrix loaded: %d × %d, %lld nonzeros\n", mat.rows, mat.cols, mat.nnz);
         printf("\nCalling partitioned multi-GPU CG solver...\n");
     }
 

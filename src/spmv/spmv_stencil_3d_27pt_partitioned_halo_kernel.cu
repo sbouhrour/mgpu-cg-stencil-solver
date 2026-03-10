@@ -26,7 +26,7 @@
  * @param[in] grid_size N (used for stencil pattern)
  */
 __global__ void stencil27_csr_partitioned_halo_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size) {
@@ -54,7 +54,7 @@ __global__ void stencil27_csr_partitioned_halo_kernel_3d(
                         local_z > 0 && local_z < local_nz - 1);
 
     if (is_interior) {
-        int csr_offset = row_ptr[local_row];
+        long long csr_offset = row_ptr[local_row];
 
         // 27 coefficients from CSR values (sorted by ascending global column index)
         // Z-plane i-1
@@ -90,9 +90,9 @@ __global__ void stencil27_csr_partitioned_halo_kernel_3d(
     }
     // Boundary/corner: CSR traversal with halo mapping
     else {
-        int row_start = row_ptr[local_row];
-        int row_end = row_ptr[local_row + 1];
-        for (int jj = row_start; jj < row_end; jj++) {
+        long long row_start = row_ptr[local_row];
+        long long row_end = row_ptr[local_row + 1];
+        for (long long jj = row_start; jj < row_end; jj++) {
             int global_col = col_idx[jj];
             double val;
 

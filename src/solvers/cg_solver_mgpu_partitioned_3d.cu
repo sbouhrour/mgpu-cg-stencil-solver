@@ -31,7 +31,7 @@
 extern __global__ void axpy_kernel(double alpha, const double* x, double* y, int n);
 extern __global__ void axpby_kernel(double alpha, const double* x, double beta, double* y, int n);
 extern __global__ void stencil7_csr_partitioned_halo_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
@@ -166,33 +166,35 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
     build_csr_struct(mat);
 
-    int local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
+    long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
-    int *d_row_ptr, *d_col_idx;
+    long long* d_row_ptr;
+    int* d_col_idx;
     double* d_values;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, local_nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
 
-    int* local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
-    int offset = csr_mat.row_ptr[row_offset];
+    long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
+    long long offset = csr_mat.row_ptr[row_offset];
     for (int i = 0; i <= n_local; i++) {
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
 
-    CUDA_CHECK(
-        cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset], local_nnz * sizeof(int),
+    CUDA_CHECK(cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
                           cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], local_nnz * sizeof(double),
+    CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset], (size_t)local_nnz * sizeof(int),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], (size_t)local_nnz * sizeof(double),
                           cudaMemcpyHostToDevice));
 
     free(local_row_ptr);
 
     if (config.verbose >= 1) {
-        printf("[Rank %d] Local CSR: %d rows, %d nnz (%.2f MB)\n", rank, n_local, local_nnz,
-               (n_local * sizeof(int) + local_nnz * (sizeof(int) + sizeof(double))) / 1e6);
+        printf("[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
+               (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
+                   1e6);
     }
 
     // Allocate vectors
@@ -698,7 +700,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
 /* External 27-point kernel */
 extern __global__ void stencil27_csr_partitioned_halo_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
@@ -762,33 +764,35 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
     build_csr_struct(mat);
 
-    int local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
+    long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
-    int *d_row_ptr, *d_col_idx;
+    long long* d_row_ptr;
+    int* d_col_idx;
     double* d_values;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, local_nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
 
-    int* local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
-    int offset = csr_mat.row_ptr[row_offset];
+    long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
+    long long offset = csr_mat.row_ptr[row_offset];
     for (int i = 0; i <= n_local; i++) {
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
 
-    CUDA_CHECK(
-        cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset], local_nnz * sizeof(int),
+    CUDA_CHECK(cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
                           cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], local_nnz * sizeof(double),
+    CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset], (size_t)local_nnz * sizeof(int),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], (size_t)local_nnz * sizeof(double),
                           cudaMemcpyHostToDevice));
 
     free(local_row_ptr);
 
     if (config.verbose >= 1) {
-        printf("[Rank %d] Local CSR: %d rows, %d nnz (%.2f MB)\n", rank, n_local, local_nnz,
-               (n_local * sizeof(int) + local_nnz * (sizeof(int) + sizeof(double))) / 1e6);
+        printf("[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
+               (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
+                   1e6);
     }
 
     double *d_x_local, *d_r_local, *d_p_local, *d_Ap, *d_b;

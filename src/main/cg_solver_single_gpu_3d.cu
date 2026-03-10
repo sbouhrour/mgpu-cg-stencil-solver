@@ -20,7 +20,7 @@
 
 // Extern kernel declarations
 extern __global__ void stencil7_csr_partitioned_halo_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    printf("Matrix loaded: %d × %d, %d nonzeros (grid_size=%d)\n", mat.rows, mat.cols, mat.nnz,
+    printf("Matrix loaded: %d × %d, %lld nonzeros (grid_size=%d)\n", mat.rows, mat.cols, mat.nnz,
            mat.grid_size);
 
     // Setup GPU
@@ -104,17 +104,17 @@ int main(int argc, char** argv) {
 
     // Build CSR
     build_csr_struct(&mat);
-    int nnz = csr_mat.nb_nonzeros;
+    long long nnz = csr_mat.nb_nonzeros;
 
     // Allocate device memory
-    int* d_row_ptr;
+    long long* d_row_ptr;
     int* d_col_idx;
     double* d_values;
     double *d_x, *d_b, *d_r, *d_p, *d_Ap;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (mat.rows + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (mat.rows + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)nnz * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_x, mat.rows * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_b, mat.rows * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_r, mat.rows * sizeof(double)));
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_Ap, mat.rows * sizeof(double)));
 
     // Copy CSR to device
-    CUDA_CHECK(cudaMemcpy(d_row_ptr, csr_mat.row_ptr, (mat.rows + 1) * sizeof(int),
+    CUDA_CHECK(cudaMemcpy(d_row_ptr, csr_mat.row_ptr, (mat.rows + 1) * sizeof(long long),
                           cudaMemcpyHostToDevice));
     CUDA_CHECK(
         cudaMemcpy(d_col_idx, csr_mat.col_indices, nnz * sizeof(int), cudaMemcpyHostToDevice));

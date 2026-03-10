@@ -71,8 +71,8 @@ int build_csr_struct(MatrixData* mat) {
     printf("🔄 Building CSR structure (%dx%d, %lld nnz)...\n", mat->rows, mat->cols, mat->nnz);
     fflush(stdout);
 
-    // Allocate row pointer array
-    int* row_ptr = (int*)calloc(mat->rows + 1, sizeof(int));
+    // Allocate row pointer array (long long to handle nnz > INT_MAX for large 27pt stencils)
+    long long* row_ptr = (long long*)calloc(mat->rows + 1, sizeof(long long));
     if (!row_ptr) {
         fprintf(stderr, "[ERROR] calloc failed for row_ptr\n");
         return EXIT_FAILURE;
@@ -99,12 +99,12 @@ int build_csr_struct(MatrixData* mat) {
     fflush(stdout);
 
     // Allocate column indices and values arrays
-    int* col_indices = (int*)malloc(mat->nnz * sizeof(int));
+    int* col_indices = (int*)malloc((size_t)mat->nnz * sizeof(int));
     if (!col_indices) {
         free(row_ptr);
         return EXIT_FAILURE;
     }
-    double* values = (double*)malloc(mat->nnz * sizeof(double));
+    double* values = (double*)malloc((size_t)mat->nnz * sizeof(double));
     if (!values) {
         free(row_ptr);
         free(col_indices);
@@ -126,7 +126,7 @@ int build_csr_struct(MatrixData* mat) {
     // Populate CSR arrays
     for (long long i = 0; i < mat->nnz; ++i) {
         int r = mat->entries[i].row;
-        int dst = row_ptr[r] + local_count[r]++;
+        long long dst = row_ptr[r] + local_count[r]++;
         col_indices[dst] = mat->entries[i].col;
         values[dst] = mat->entries[i].value;
     }
@@ -136,15 +136,15 @@ int build_csr_struct(MatrixData* mat) {
     printf("   ➤ Sorting CSR entries by column index...\n");
     fflush(stdout);
 
-    // Sort each row by column index (insertion sort, rows are small ~5 entries)
+    // Sort each row by column index (insertion sort, rows are small ~5-27 entries)
     for (int r = 0; r < mat->rows; ++r) {
-        int row_start = row_ptr[r];
-        int row_end = row_ptr[r + 1];
+        long long row_start = row_ptr[r];
+        long long row_end = row_ptr[r + 1];
 
-        for (int i = row_start + 1; i < row_end; ++i) {
+        for (long long i = row_start + 1; i < row_end; ++i) {
             int key_col = col_indices[i];
             double key_val = values[i];
-            int j = i - 1;
+            long long j = i - 1;
 
             while (j >= row_start && col_indices[j] > key_col) {
                 col_indices[j + 1] = col_indices[j];
@@ -193,9 +193,15 @@ int csr_init(MatrixData* mat) {
     CUDA_CHECK(cudaMalloc((void**)&dX, csr_mat.nb_cols * sizeof(double)));
     CUDA_CHECK(cudaMalloc((void**)&dY, csr_mat.nb_rows * sizeof(double)));
 
+    // Convert long long row_ptr to int for cuSPARSE (requires nnz <= INT_MAX)
+    int* h_int_row_ptr = (int*)malloc((csr_mat.nb_rows + 1) * sizeof(int));
+    for (int i = 0; i <= csr_mat.nb_rows; i++)
+        h_int_row_ptr[i] = (int)csr_mat.row_ptr[i];
+
     // Copy CSR data to GPU
-    CUDA_CHECK(cudaMemcpy(dA_csrOffsets, csr_mat.row_ptr, (csr_mat.nb_rows + 1) * sizeof(int),
+    CUDA_CHECK(cudaMemcpy(dA_csrOffsets, h_int_row_ptr, (csr_mat.nb_rows + 1) * sizeof(int),
                           cudaMemcpyHostToDevice));
+    free(h_int_row_ptr);
     CUDA_CHECK(cudaMemcpy(dA_columns, csr_mat.col_indices, csr_mat.nb_nonzeros * sizeof(int),
                           cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dA_values, csr_mat.values, csr_mat.nb_nonzeros * sizeof(double),

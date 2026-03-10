@@ -199,14 +199,20 @@ int stencil_csr_direct_init(MatrixData* mat) {
 
     // Allocate device CSR arrays
     CUDA_CHECK(cudaMalloc(&d_row_ptr, (csr_mat.nb_rows + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, csr_mat.nb_nonzeros * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, csr_mat.nb_nonzeros * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)csr_mat.nb_nonzeros * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)csr_mat.nb_nonzeros * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&dX, csr_mat.nb_cols * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&dY, csr_mat.nb_rows * sizeof(double)));
 
+    // Convert long long row_ptr to int for device (2D stencil nnz fits in int32)
+    int* h_int_row_ptr = (int*)malloc((csr_mat.nb_rows + 1) * sizeof(int));
+    for (int i = 0; i <= csr_mat.nb_rows; i++)
+        h_int_row_ptr[i] = (int)csr_mat.row_ptr[i];
+
     // Transfer CSR to device
-    CUDA_CHECK(cudaMemcpy(d_row_ptr, csr_mat.row_ptr, (csr_mat.nb_rows + 1) * sizeof(int),
+    CUDA_CHECK(cudaMemcpy(d_row_ptr, h_int_row_ptr, (csr_mat.nb_rows + 1) * sizeof(int),
                           cudaMemcpyHostToDevice));
+    free(h_int_row_ptr);
     CUDA_CHECK(cudaMemcpy(d_col_idx, csr_mat.col_indices, csr_mat.nb_nonzeros * sizeof(int),
                           cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_values, csr_mat.values, csr_mat.nb_nonzeros * sizeof(double),

@@ -104,7 +104,7 @@ static void compute_overlap_partition(OverlapPartition* part, int n_local, int g
  * local partition. Uses n_local_full for x_local bounds checking.
  */
 __global__ void stencil5_overlap_subrange_kernel(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local_full, int row_offset, int N, int grid_size,
@@ -119,8 +119,8 @@ __global__ void stencil5_overlap_subrange_kernel(
     int i = row / grid_size;
     int j = row % grid_size;
 
-    int row_start = row_ptr[local_row];
-    int row_end = row_ptr[local_row + 1];
+    long long row_start = row_ptr[local_row];
+    long long row_end = row_ptr[local_row + 1];
 
     double sum = 0.0;
 
@@ -163,7 +163,7 @@ __global__ void stencil5_overlap_subrange_kernel(
     }
     // Boundary/corner: CSR traversal with halo mapping
     else {
-        for (int k = row_start; k < row_end; k++) {
+        for (long long k = row_start; k < row_end; k++) {
             int global_col = col_idx[k];
             double val;
 
@@ -194,7 +194,7 @@ __global__ void stencil5_overlap_subrange_kernel(
  * local partition. Halo is one full XY-plane (N² elements) per direction.
  */
 __global__ void stencil7_overlap_subrange_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local_full, int row_offset, int N_total, int grid_size,
@@ -224,7 +224,7 @@ __global__ void stencil7_overlap_subrange_kernel_3d(
                         local_z > 0 && local_z < local_nz - 1);
 
     if (is_interior) {
-        int csr_offset = row_ptr[local_row];
+        long long csr_offset = row_ptr[local_row];
 
         // 7 coefficients from CSR values (sorted by ascending global column index)
         sum = values[csr_offset + 0] * x_local[local_row - N * N];   // (i-1,j,k)
@@ -237,9 +237,9 @@ __global__ void stencil7_overlap_subrange_kernel_3d(
     }
     // Boundary: CSR traversal with Z-plane halo mapping
     else {
-        int row_start = row_ptr[local_row];
-        int row_end = row_ptr[local_row + 1];
-        for (int jj = row_start; jj < row_end; jj++) {
+        long long row_start = row_ptr[local_row];
+        long long row_end = row_ptr[local_row + 1];
+        for (long long jj = row_start; jj < row_end; jj++) {
             int global_col = col_idx[jj];
             double val;
 
@@ -270,7 +270,7 @@ __global__ void stencil7_overlap_subrange_kernel_3d(
  * local partition. Halo is one full XY-plane (N² elements) per direction.
  */
 __global__ void stencil27_overlap_subrange_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local_full, int row_offset, int N_total, int grid_size,
@@ -300,7 +300,7 @@ __global__ void stencil27_overlap_subrange_kernel_3d(
                         local_z > 0 && local_z < local_nz - 1);
 
     if (is_interior) {
-        int csr_offset = row_ptr[local_row];
+        long long csr_offset = row_ptr[local_row];
 
         // 27 coefficients from CSR values (sorted by ascending global column index)
         // Z-plane i-1
@@ -336,9 +336,9 @@ __global__ void stencil27_overlap_subrange_kernel_3d(
     }
     // Boundary: CSR traversal with Z-plane halo mapping
     else {
-        int row_start = row_ptr[local_row];
-        int row_end = row_ptr[local_row + 1];
-        for (int jj = row_start; jj < row_end; jj++) {
+        long long row_start = row_ptr[local_row];
+        long long row_end = row_ptr[local_row + 1];
+        for (long long jj = row_start; jj < row_end; jj++) {
             int global_col = col_idx[jj];
             double val;
 
@@ -369,17 +369,17 @@ __global__ void stencil27_overlap_subrange_kernel_3d(
 extern __global__ void axpy_kernel(double alpha, const double* x, double* y, int n);
 extern __global__ void axpby_kernel(double alpha, const double* x, double beta, double* y, int n);
 extern __global__ void stencil5_csr_partitioned_halo_kernel(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N, int grid_size);
 extern __global__ void stencil7_csr_partitioned_halo_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
 extern __global__ void stencil27_csr_partitioned_halo_kernel_3d(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
@@ -609,17 +609,18 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
 
     build_csr_struct(mat);
 
-    int local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
+    long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
-    int *d_row_ptr, *d_col_idx;
+    long long* d_row_ptr;
+    int* d_col_idx;
     double* d_values;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, local_nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
 
-    int* local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
-    int offset = csr_mat.row_ptr[row_offset];
+    long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
+    long long offset = csr_mat.row_ptr[row_offset];
     for (int i = 0; i <= n_local; i++) {
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
@@ -627,18 +628,21 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
     // Use stream_compute for ALL device operations to avoid race conditions
     // with non-blocking streams (cudaMemset/cudaMemcpy on the default stream
     // do not synchronize with non-blocking streams)
-    CUDA_CHECK(cudaMemcpyAsync(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(int),
+    CUDA_CHECK(cudaMemcpyAsync(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
                                cudaMemcpyHostToDevice, stream_compute));
-    CUDA_CHECK(cudaMemcpyAsync(d_col_idx, &csr_mat.col_indices[offset], local_nnz * sizeof(int),
-                               cudaMemcpyHostToDevice, stream_compute));
-    CUDA_CHECK(cudaMemcpyAsync(d_values, &csr_mat.values[offset], local_nnz * sizeof(double),
-                               cudaMemcpyHostToDevice, stream_compute));
+    CUDA_CHECK(cudaMemcpyAsync(d_col_idx, &csr_mat.col_indices[offset],
+                               (size_t)local_nnz * sizeof(int), cudaMemcpyHostToDevice,
+                               stream_compute));
+    CUDA_CHECK(cudaMemcpyAsync(d_values, &csr_mat.values[offset],
+                               (size_t)local_nnz * sizeof(double), cudaMemcpyHostToDevice,
+                               stream_compute));
 
     free(local_row_ptr);
 
     if (config.verbose >= 1) {
-        printf("[Rank %d] Local CSR: %d rows, %d nnz (%.2f MB)\n", rank, n_local, local_nnz,
-               (n_local * sizeof(int) + local_nnz * (sizeof(int) + sizeof(double))) / 1e6);
+        printf("[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
+               (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
+                   1e6);
     }
 
     // Allocate vectors (local partition + halo for p only)
@@ -1259,33 +1263,37 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
 
     build_csr_struct(mat);
 
-    int local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
+    long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
-    int *d_row_ptr, *d_col_idx;
+    long long* d_row_ptr;
+    int* d_col_idx;
     double* d_values;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, local_nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
 
-    int* local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
-    int offset = csr_mat.row_ptr[row_offset];
+    long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
+    long long offset = csr_mat.row_ptr[row_offset];
     for (int i = 0; i <= n_local; i++) {
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
 
-    CUDA_CHECK(cudaMemcpyAsync(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(int),
+    CUDA_CHECK(cudaMemcpyAsync(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
                                cudaMemcpyHostToDevice, stream_compute));
-    CUDA_CHECK(cudaMemcpyAsync(d_col_idx, &csr_mat.col_indices[offset], local_nnz * sizeof(int),
-                               cudaMemcpyHostToDevice, stream_compute));
-    CUDA_CHECK(cudaMemcpyAsync(d_values, &csr_mat.values[offset], local_nnz * sizeof(double),
-                               cudaMemcpyHostToDevice, stream_compute));
+    CUDA_CHECK(cudaMemcpyAsync(d_col_idx, &csr_mat.col_indices[offset],
+                               (size_t)local_nnz * sizeof(int), cudaMemcpyHostToDevice,
+                               stream_compute));
+    CUDA_CHECK(cudaMemcpyAsync(d_values, &csr_mat.values[offset],
+                               (size_t)local_nnz * sizeof(double), cudaMemcpyHostToDevice,
+                               stream_compute));
 
     free(local_row_ptr);
 
     if (config.verbose >= 1) {
-        printf("[Rank %d] Local CSR: %d rows, %d nnz (%.2f MB)\n", rank, n_local, local_nnz,
-               (n_local * sizeof(int) + local_nnz * (sizeof(int) + sizeof(double))) / 1e6);
+        printf("[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
+               (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
+                   1e6);
     }
 
     // Allocate vectors
@@ -1885,33 +1893,37 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
 
     build_csr_struct(mat);
 
-    int local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
+    long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
-    int *d_row_ptr, *d_col_idx;
+    long long* d_row_ptr;
+    int* d_col_idx;
     double* d_values;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, local_nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
 
-    int* local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
-    int offset = csr_mat.row_ptr[row_offset];
+    long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
+    long long offset = csr_mat.row_ptr[row_offset];
     for (int i = 0; i <= n_local; i++) {
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
 
-    CUDA_CHECK(cudaMemcpyAsync(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(int),
+    CUDA_CHECK(cudaMemcpyAsync(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
                                cudaMemcpyHostToDevice, stream_compute));
-    CUDA_CHECK(cudaMemcpyAsync(d_col_idx, &csr_mat.col_indices[offset], local_nnz * sizeof(int),
-                               cudaMemcpyHostToDevice, stream_compute));
-    CUDA_CHECK(cudaMemcpyAsync(d_values, &csr_mat.values[offset], local_nnz * sizeof(double),
-                               cudaMemcpyHostToDevice, stream_compute));
+    CUDA_CHECK(cudaMemcpyAsync(d_col_idx, &csr_mat.col_indices[offset],
+                               (size_t)local_nnz * sizeof(int), cudaMemcpyHostToDevice,
+                               stream_compute));
+    CUDA_CHECK(cudaMemcpyAsync(d_values, &csr_mat.values[offset],
+                               (size_t)local_nnz * sizeof(double), cudaMemcpyHostToDevice,
+                               stream_compute));
 
     free(local_row_ptr);
 
     if (config.verbose >= 1) {
-        printf("[Rank %d] Local CSR: %d rows, %d nnz (%.2f MB)\n", rank, n_local, local_nnz,
-               (n_local * sizeof(int) + local_nnz * (sizeof(int) + sizeof(double))) / 1e6);
+        printf("[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
+               (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
+                   1e6);
     }
 
     double *d_x_local, *d_r_local, *d_p_local, *d_Ap, *d_b;
