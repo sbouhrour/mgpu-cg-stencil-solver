@@ -251,18 +251,10 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Timing
-    cudaEvent_t start, stop, timer_start, timer_stop;
+    cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventCreate(&timer_start));
-    CUDA_CHECK(cudaEventCreate(&timer_stop));
     CUDA_CHECK(cudaEventRecord(start, stream));
-
-    stats->time_spmv_ms = 0.0;
-    stats->time_blas1_ms = 0.0;
-    stats->time_reductions_ms = 0.0;
-    stats->time_allreduce_ms = 0.0;
-    stats->time_allgather_ms = 0.0;
 
     if (rank == 0 && config.verbose >= 1) {
         printf("\nStarting CG iterations...\n");
@@ -272,10 +264,6 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial x halo exchange
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
-
     double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
     if (rank > 0) {
         CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
@@ -289,47 +277,19 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
                          d_x_halo_prev, d_x_halo_next, h_send_prev, h_send_next, h_recv_prev,
                          h_recv_next, halo_size, rank, world_size, stream);
 
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_allgather_ms += elapsed_ms;
-    }
-
     // Initial SpMV: Ap = A*x
     stencil7_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
         d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
         row_offset, n, grid_size);
 
     // r = b - Ap
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
     axpy_kernel<<<blocks_local, threads, 0, stream>>>(-1.0, d_Ap, d_b, n_local);
     CUDA_CHECK(cudaMemcpy(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice));
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_initial_r_ms = elapsed_ms;
-    }
 
     // Exchange r halo
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
     exchange_halo_mpi_3d(d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev, d_r_halo_next,
                          h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
                          world_size, stream);
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_allgather_ms += elapsed_ms;
-    }
 
     // p = r
     CUDA_CHECK(
@@ -346,17 +306,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     }
 
     // rs_old = dot(r, r) + AllReduce
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
     double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_dot_rs_initial_ms = elapsed_ms;
-    }
     double rs_old;
     MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
@@ -374,110 +324,36 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
         // Ap = A * p
         nvtxRangePush("SpMV_3D");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         stencil7_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
             d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap, n_local,
             row_offset, n, grid_size);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_spmv_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // alpha = rs_old / (p^T * Ap)
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double pAp_local = compute_local_dot_3d(cublas_handle, d_p_local, d_Ap, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_pAp_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double pAp;
         MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double alpha = rs_old / pAp;
 
         // x = x + alpha * p
         nvtxRangePush("BLAS_AXPY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream>>>(alpha, d_p_local, d_x_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_x_ms += elapsed_ms;
-        }
 
         // r = r - alpha * Ap
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream>>>(-alpha, d_Ap, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_r_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // rs_new = dot(r, r)
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double rs_local_new = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_rs_new_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double rs_new;
         MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -500,36 +376,15 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
         // p = r + beta * p
         nvtxRangePush("BLAS_AXPBY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         axpby_kernel<<<blocks_local, threads, 0, stream>>>(1.0, d_r_local, beta, d_p_local,
                                                            n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpby_update_p_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // Halo exchange for p (N² elements per direction)
         nvtxRangePush("Halo_Exchange_MPI_3D");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         exchange_halo_mpi_3d(d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
                              d_p_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
                              halo_size, rank, world_size, stream);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allgather_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         rs_old = rs_new;
@@ -550,73 +405,23 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     float time_ms;
     CUDA_CHECK(cudaEventElapsedTime(&time_ms, start, stop));
 
-    // Normalize granular timers
-    if (config.enable_detailed_timers && stats->iterations > 0) {
-        stats->time_dot_pAp_ms /= stats->iterations;
-        stats->time_dot_rs_new_ms /= stats->iterations;
-        stats->time_axpy_update_x_ms /= stats->iterations;
-        stats->time_axpy_update_r_ms /= stats->iterations;
-        stats->time_axpby_update_p_ms /= stats->iterations;
-    }
-
     stats->time_total_ms = time_ms;
 
     // MPI stats aggregation
     if (world_size > 1) {
-        double local_times[6], max_times[6], min_times[6];
-
-        local_times[0] = stats->time_total_ms;
-        local_times[1] = stats->time_spmv_ms;
-        local_times[2] = stats->time_blas1_ms;
-        local_times[3] = stats->time_reductions_ms;
-        local_times[4] = stats->time_allreduce_ms;
-        local_times[5] = stats->time_allgather_ms;
-
-        MPI_Reduce(local_times, max_times, 6, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(local_times, min_times, 6, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
-
+        double local_time = stats->time_total_ms;
+        double max_time, min_time;
+        MPI_Reduce(&local_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&local_time, &min_time, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
         if (rank == 0) {
-            stats->time_total_ms = max_times[0];
-            stats->time_spmv_ms = max_times[1];
-            stats->time_blas1_ms = max_times[2];
-            stats->time_reductions_ms = max_times[3];
-            stats->time_allreduce_ms = max_times[4];
-            stats->time_allgather_ms = max_times[5];
-
-            double imbalance_pct = 100.0 * (max_times[0] - min_times[0]) / max_times[0];
+            stats->time_total_ms = max_time;
+            double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
             printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_times[0], min_times[0], imbalance_pct);
-
-            if (config.verbose >= 1 && config.enable_detailed_timers) {
-                printf("\nDetailed Timing Breakdown:\n");
-                printf("  SpMV:       %.2f ms (%.1f%%)\n", stats->time_spmv_ms,
-                       100.0 * stats->time_spmv_ms / stats->time_total_ms);
-                printf("  BLAS1:      %.2f ms (%.1f%%)\n", stats->time_blas1_ms,
-                       100.0 * stats->time_blas1_ms / stats->time_total_ms);
-                printf("  Reductions: %.2f ms (%.1f%%)\n", stats->time_reductions_ms,
-                       100.0 * stats->time_reductions_ms / stats->time_total_ms);
-                printf("  AllReduce:  %.2f ms (%.1f%%)\n", stats->time_allreduce_ms,
-                       100.0 * stats->time_allreduce_ms / stats->time_total_ms);
-                printf("  Halo P2P:   %.2f ms (%.1f%%)\n", stats->time_allgather_ms,
-                       100.0 * stats->time_allgather_ms / stats->time_total_ms);
-            }
+                   max_time, min_time, imbalance_pct);
             printf("========================================\n");
         }
     } else if (rank == 0 && config.verbose >= 1) {
         printf("Total time: %.2f ms\n", stats->time_total_ms);
-        if (config.enable_detailed_timers) {
-            printf("\nDetailed Timing Breakdown:\n");
-            printf("  SpMV:       %.2f ms (%.1f%%)\n", stats->time_spmv_ms,
-                   100.0 * stats->time_spmv_ms / time_ms);
-            printf("  BLAS1:      %.2f ms (%.1f%%)\n", stats->time_blas1_ms,
-                   100.0 * stats->time_blas1_ms / time_ms);
-            printf("  Reductions: %.2f ms (%.1f%%)\n", stats->time_reductions_ms,
-                   100.0 * stats->time_reductions_ms / time_ms);
-            printf("  AllReduce:  %.2f ms (%.1f%%)\n", stats->time_allreduce_ms,
-                   100.0 * stats->time_allreduce_ms / time_ms);
-            printf("  Halo P2P:   %.2f ms (%.1f%%)\n", stats->time_allgather_ms,
-                   100.0 * stats->time_allgather_ms / time_ms);
-        }
         printf("========================================\n");
     }
 
@@ -690,10 +495,6 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     cudaStreamDestroy(stream);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    if (config.enable_detailed_timers) {
-        cudaEventDestroy(timer_start);
-        cudaEventDestroy(timer_stop);
-    }
 
     return 0;
 }
@@ -833,18 +634,10 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    cudaEvent_t start, stop, timer_start, timer_stop;
+    cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventCreate(&timer_start));
-    CUDA_CHECK(cudaEventCreate(&timer_stop));
     CUDA_CHECK(cudaEventRecord(start, stream));
-
-    stats->time_spmv_ms = 0.0;
-    stats->time_blas1_ms = 0.0;
-    stats->time_reductions_ms = 0.0;
-    stats->time_allreduce_ms = 0.0;
-    stats->time_allgather_ms = 0.0;
 
     if (rank == 0 && config.verbose >= 1) {
         printf("\nStarting CG iterations (27-point sync)...\n");
@@ -854,10 +647,6 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial x halo exchange
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
-
     double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
     if (rank > 0) {
         CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
@@ -870,47 +659,19 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
                          h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
                          world_size, stream);
 
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_allgather_ms += elapsed_ms;
-    }
-
     // Initial SpMV: Ap = A*x (27-point kernel)
     stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
         d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
         row_offset, n, grid_size);
 
     // r = b - Ap
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
     axpy_kernel<<<blocks_local, threads, 0, stream>>>(-1.0, d_Ap, d_b, n_local);
     CUDA_CHECK(cudaMemcpy(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice));
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_initial_r_ms = elapsed_ms;
-    }
 
     // Exchange r halo
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
     exchange_halo_mpi_3d(d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev, d_r_halo_next,
                          h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
                          world_size, stream);
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_allgather_ms += elapsed_ms;
-    }
 
     // p = r
     CUDA_CHECK(
@@ -926,17 +687,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     }
 
     // rs_old
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_start, stream));
-    }
     double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-        CUDA_CHECK(cudaEventSynchronize(timer_stop));
-        float elapsed_ms;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-        stats->time_dot_rs_initial_ms = elapsed_ms;
-    }
     double rs_old;
     MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
@@ -954,107 +705,33 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
         // Ap = A * p (27-point kernel)
         nvtxRangePush("SpMV_27PT_3D");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
             d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap, n_local,
             row_offset, n, grid_size);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_spmv_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // alpha = rs_old / (p^T * Ap)
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double pAp_local = compute_local_dot_3d(cublas_handle, d_p_local, d_Ap, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_pAp_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double pAp;
         MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double alpha = rs_old / pAp;
 
         nvtxRangePush("BLAS_AXPY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream>>>(alpha, d_p_local, d_x_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_x_ms += elapsed_ms;
-        }
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream>>>(-alpha, d_Ap, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_r_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double rs_local_new = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_rs_new_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         double rs_new;
         MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -1076,36 +753,15 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         double beta = rs_new / rs_old;
 
         nvtxRangePush("BLAS_AXPBY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         axpby_kernel<<<blocks_local, threads, 0, stream>>>(1.0, d_r_local, beta, d_p_local,
                                                            n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpby_update_p_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // Halo exchange for p
         nvtxRangePush("Halo_Exchange_MPI_27PT_3D");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream));
-        }
         exchange_halo_mpi_3d(d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
                              d_p_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
                              halo_size, rank, world_size, stream);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allgather_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         rs_old = rs_new;
@@ -1125,71 +781,22 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     float time_ms;
     CUDA_CHECK(cudaEventElapsedTime(&time_ms, start, stop));
 
-    if (config.enable_detailed_timers && stats->iterations > 0) {
-        stats->time_dot_pAp_ms /= stats->iterations;
-        stats->time_dot_rs_new_ms /= stats->iterations;
-        stats->time_axpy_update_x_ms /= stats->iterations;
-        stats->time_axpy_update_r_ms /= stats->iterations;
-        stats->time_axpby_update_p_ms /= stats->iterations;
-    }
-
     stats->time_total_ms = time_ms;
 
     if (world_size > 1) {
-        double local_times[6], max_times[6], min_times[6];
-
-        local_times[0] = stats->time_total_ms;
-        local_times[1] = stats->time_spmv_ms;
-        local_times[2] = stats->time_blas1_ms;
-        local_times[3] = stats->time_reductions_ms;
-        local_times[4] = stats->time_allreduce_ms;
-        local_times[5] = stats->time_allgather_ms;
-
-        MPI_Reduce(local_times, max_times, 6, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(local_times, min_times, 6, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
-
+        double local_time = stats->time_total_ms;
+        double max_time, min_time;
+        MPI_Reduce(&local_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&local_time, &min_time, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
         if (rank == 0) {
-            stats->time_total_ms = max_times[0];
-            stats->time_spmv_ms = max_times[1];
-            stats->time_blas1_ms = max_times[2];
-            stats->time_reductions_ms = max_times[3];
-            stats->time_allreduce_ms = max_times[4];
-            stats->time_allgather_ms = max_times[5];
-
-            double imbalance_pct = 100.0 * (max_times[0] - min_times[0]) / max_times[0];
+            stats->time_total_ms = max_time;
+            double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
             printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_times[0], min_times[0], imbalance_pct);
-
-            if (config.verbose >= 1 && config.enable_detailed_timers) {
-                printf("\nDetailed Timing Breakdown:\n");
-                printf("  SpMV:       %.2f ms (%.1f%%)\n", stats->time_spmv_ms,
-                       100.0 * stats->time_spmv_ms / stats->time_total_ms);
-                printf("  BLAS1:      %.2f ms (%.1f%%)\n", stats->time_blas1_ms,
-                       100.0 * stats->time_blas1_ms / stats->time_total_ms);
-                printf("  Reductions: %.2f ms (%.1f%%)\n", stats->time_reductions_ms,
-                       100.0 * stats->time_reductions_ms / stats->time_total_ms);
-                printf("  AllReduce:  %.2f ms (%.1f%%)\n", stats->time_allreduce_ms,
-                       100.0 * stats->time_allreduce_ms / stats->time_total_ms);
-                printf("  Halo P2P:   %.2f ms (%.1f%%)\n", stats->time_allgather_ms,
-                       100.0 * stats->time_allgather_ms / stats->time_total_ms);
-            }
+                   max_time, min_time, imbalance_pct);
             printf("========================================\n");
         }
     } else if (rank == 0 && config.verbose >= 1) {
         printf("Total time: %.2f ms\n", stats->time_total_ms);
-        if (config.enable_detailed_timers) {
-            printf("\nDetailed Timing Breakdown:\n");
-            printf("  SpMV:       %.2f ms (%.1f%%)\n", stats->time_spmv_ms,
-                   100.0 * stats->time_spmv_ms / time_ms);
-            printf("  BLAS1:      %.2f ms (%.1f%%)\n", stats->time_blas1_ms,
-                   100.0 * stats->time_blas1_ms / time_ms);
-            printf("  Reductions: %.2f ms (%.1f%%)\n", stats->time_reductions_ms,
-                   100.0 * stats->time_reductions_ms / time_ms);
-            printf("  AllReduce:  %.2f ms (%.1f%%)\n", stats->time_allreduce_ms,
-                   100.0 * stats->time_allreduce_ms / time_ms);
-            printf("  Halo P2P:   %.2f ms (%.1f%%)\n", stats->time_allgather_ms,
-                   100.0 * stats->time_allgather_ms / time_ms);
-        }
         printf("========================================\n");
     }
 
@@ -1259,10 +866,6 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     cudaStreamDestroy(stream);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    if (config.enable_detailed_timers) {
-        cudaEventDestroy(timer_start);
-        cudaEventDestroy(timer_stop);
-    }
 
     return 0;
 }

@@ -690,28 +690,13 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
 
-    cudaEvent_t timer_start, timer_stop;
-    cudaEvent_t timer_comm_start, timer_comm_stop;
     cudaEvent_t timer_phase_start, timer_phase_stop;
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventCreate(&timer_start));
-        CUDA_CHECK(cudaEventCreate(&timer_stop));
-        CUDA_CHECK(cudaEventCreate(&timer_comm_start));
-        CUDA_CHECK(cudaEventCreate(&timer_comm_stop));
-        CUDA_CHECK(cudaEventCreate(&timer_phase_start));
-        CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
-    }
+    CUDA_CHECK(cudaEventCreate(&timer_phase_start));
+    CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
 
     CUDA_CHECK(cudaEventRecord(start, stream_compute));
 
     // Initialize CG statistics
-    stats->time_spmv_ms = 0.0;
-    stats->time_blas1_ms = 0.0;
-    stats->time_reductions_ms = 0.0;
-    stats->time_allreduce_ms = 0.0;
-    stats->time_allgather_ms = 0.0;
-    stats->time_spmv_interior_ms = 0.0;
-    stats->time_spmv_boundary_ms = 0.0;
     stats->time_comm_total_ms = 0.0;
     stats->time_comm_hidden_ms = 0.0;
     stats->time_comm_exposed_ms = 0.0;
@@ -774,8 +759,6 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
         cudaFree(d_x_halo_next);
 
     // Overlap timing accumulators
-    double cum_interior_ms = 0.0;
-    double cum_boundary_ms = 0.0;
     double cum_comm_ms = 0.0;
     double cum_overlap_phase_ms = 0.0;
 
@@ -790,9 +773,7 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
         // ============================================================
         nvtxRangePush("SpMV_Overlap");
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_phase_start, stream_comm));
-        }
+        CUDA_CHECK(cudaEventRecord(timer_phase_start, stream_comm));
 
         // Ensure p update (axpby on stream_compute) is done before D2H reads
         CUDA_CHECK(cudaStreamWaitEvent(stream_comm, p_updated_event, 0));
@@ -802,9 +783,6 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
                                 rank, world_size, stream_comm);
 
         // Interior SpMV on stream_compute (overlaps with D2H + MPI)
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         if (partition.interior_count > 0) {
             int blocks_interior = (partition.interior_count + threads - 1) / threads;
             stencil5_overlap_subrange_kernel<<<blocks_interior, threads, 0, stream_compute>>>(
@@ -812,13 +790,11 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
                 n_local, row_offset, n, grid_size, partition.interior_start,
                 partition.interior_count);
         }
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-        }
 
         // Sync D2H + MPI non-blocking sends/receives
         MPI_Request requests[4];
         int req_count = 0;
+        double comm_t0 = MPI_Wtime();
         exchange_halo_mpi_start(h_send_prev, h_send_next, h_recv_prev, h_recv_next,
                                 partition.halo_elems, rank, world_size, stream_comm, requests,
                                 &req_count);
@@ -827,21 +803,13 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
         exchange_halo_async_finish(d_p_halo_prev, d_p_halo_next, h_recv_prev, h_recv_next,
                                    partition.halo_elems, rank, world_size, stream_comm, requests,
                                    req_count);
+        double comm_t1 = MPI_Wtime();
+        cum_comm_ms += (comm_t1 - comm_t0) * 1000.0;
 
         // Sync stream_compute (interior SpMV done)
         CUDA_CHECK(cudaStreamSynchronize(stream_compute));
 
-        // Measure interior SpMV time
-        if (config.enable_detailed_timers) {
-            float interior_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&interior_ms, timer_start, timer_stop));
-            cum_interior_ms += interior_ms;
-        }
-
         // Step i: Boundary SpMV on stream_compute
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         if (partition.boundary_prev_count > 0) {
             int blocks_prev = (partition.boundary_prev_count + threads - 1) / threads;
             stencil5_overlap_subrange_kernel<<<blocks_prev, threads, 0, stream_compute>>>(
@@ -856,19 +824,11 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
                 n_local, row_offset, n, grid_size, partition.boundary_next_start,
                 partition.boundary_next_count);
         }
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
-            CUDA_CHECK(cudaStreamSynchronize(stream_compute));
-
-            float boundary_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&boundary_ms, timer_start, timer_stop));
-            cum_boundary_ms += boundary_ms;
-
-            float phase_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&phase_ms, timer_phase_start, timer_phase_stop));
-            cum_overlap_phase_ms += phase_ms;
-        }
+        CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
+        CUDA_CHECK(cudaStreamSynchronize(stream_compute));
+        float phase_ms;
+        CUDA_CHECK(cudaEventElapsedTime(&phase_ms, timer_phase_start, timer_phase_stop));
+        cum_overlap_phase_ms += phase_ms;
 
         nvtxRangePop();  // SpMV_Overlap
 
@@ -878,95 +838,31 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
 
         // alpha = rs_old / (p^T * Ap)
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double pAp_local = overlap_compute_local_dot(cublas_handle, d_p_local, d_Ap, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_pAp_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double pAp;
         MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double alpha = rs_old / pAp;
 
         // x = x + alpha * p
         nvtxRangePush("BLAS_AXPY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(alpha, d_p_local, d_x_local,
                                                                   n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_x_ms += elapsed_ms;
-        }
 
         // r = r - alpha * Ap
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(-alpha, d_Ap, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_r_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // rs_new = r^T * r
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double rs_local_new =
             overlap_compute_local_dot(cublas_handle, d_r_local, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_rs_new_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double rs_new;
         MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -991,19 +887,8 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
 
         // p = r + beta * p
         nvtxRangePush("BLAS_AXPBY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpby_kernel<<<blocks_local, threads, 0, stream_compute>>>(1.0, d_r_local, beta, d_p_local,
                                                                    n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpby_update_p_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // Signal that p update is done (stream_comm must wait before D2H reads)
@@ -1029,83 +914,47 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
     CUDA_CHECK(cudaEventElapsedTime(&time_ms, start, stop));
 
     // Compute overlap metrics
-    if (config.enable_detailed_timers && stats->iterations > 0) {
-        stats->time_spmv_interior_ms = cum_interior_ms;
-        stats->time_spmv_boundary_ms = cum_boundary_ms;
-        stats->time_spmv_ms = cum_interior_ms + cum_boundary_ms;
-
-        double sequential_est = cum_interior_ms + cum_boundary_ms + cum_comm_ms;
-        stats->time_comm_total_ms = cum_overlap_phase_ms - cum_interior_ms - cum_boundary_ms;
-        if (stats->time_comm_total_ms < 0.0)
-            stats->time_comm_total_ms = 0.0;
-
+    if (stats->iterations > 0) {
+        double sequential_est = cum_overlap_phase_ms + cum_comm_ms;
+        stats->time_comm_total_ms = cum_comm_ms;
         stats->time_comm_hidden_ms = sequential_est - cum_overlap_phase_ms;
         if (stats->time_comm_hidden_ms < 0.0)
             stats->time_comm_hidden_ms = 0.0;
-
+        if (stats->time_comm_hidden_ms > cum_comm_ms)
+            stats->time_comm_hidden_ms = cum_comm_ms;
         stats->time_comm_exposed_ms = stats->time_comm_total_ms - stats->time_comm_hidden_ms;
         if (stats->time_comm_exposed_ms < 0.0)
             stats->time_comm_exposed_ms = 0.0;
-
         stats->overlap_efficiency = (stats->time_comm_total_ms > 0.0)
-                                        ? stats->time_comm_hidden_ms / stats->time_comm_total_ms
-                                        : 0.0;
-        if (stats->overlap_efficiency > 1.0)
-            stats->overlap_efficiency = 1.0;
-
-        // Normalize per-iteration granular timers
-        stats->time_dot_pAp_ms /= stats->iterations;
-        stats->time_dot_rs_new_ms /= stats->iterations;
-        stats->time_axpy_update_x_ms /= stats->iterations;
-        stats->time_axpy_update_r_ms /= stats->iterations;
-        stats->time_axpby_update_p_ms /= stats->iterations;
+            ? stats->time_comm_hidden_ms / stats->time_comm_total_ms : 0.0;
     }
 
     stats->time_total_ms = time_ms;
 
     // MPI stats aggregation
     if (world_size > 1) {
-        double local_times[6], max_times[6], min_times[6];
-
-        local_times[0] = stats->time_total_ms;
-        local_times[1] = stats->time_spmv_ms;
-        local_times[2] = stats->time_blas1_ms;
-        local_times[3] = stats->time_reductions_ms;
-        local_times[4] = stats->time_allreduce_ms;
-        local_times[5] = stats->time_allgather_ms;
-
-        MPI_Reduce(local_times, max_times, 6, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(local_times, min_times, 6, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+        double local_time = stats->time_total_ms;
+        double max_time, min_time;
+        MPI_Reduce(&local_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&local_time, &min_time, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
 
         if (rank == 0) {
-            stats->time_total_ms = max_times[0];
-            stats->time_spmv_ms = max_times[1];
-            stats->time_blas1_ms = max_times[2];
-            stats->time_reductions_ms = max_times[3];
-            stats->time_allreduce_ms = max_times[4];
-            stats->time_allgather_ms = max_times[5];
-
-            double imbalance_pct = 100.0 * (max_times[0] - min_times[0]) / max_times[0];
+            stats->time_total_ms = max_time;
+            double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
             printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_times[0], min_times[0], imbalance_pct);
+                   max_time, min_time, imbalance_pct);
         }
     }
 
     // Print results
     if (rank == 0 && config.verbose >= 1) {
-        printf("Total time: %.2f ms\n", stats->time_total_ms);
-        if (config.enable_detailed_timers) {
-            printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
-            printf("  Interior SpMV: %.2f ms (%.3f ms/iter)\n", stats->time_spmv_interior_ms,
-                   stats->time_spmv_interior_ms / stats->iterations);
-            printf("  Boundary SpMV: %.2f ms (%.3f ms/iter)\n", stats->time_spmv_boundary_ms,
-                   stats->time_spmv_boundary_ms / stats->iterations);
-            printf("  Comm total:    %.2f ms (%.3f ms/iter)\n", stats->time_comm_total_ms,
-                   stats->time_comm_total_ms / stats->iterations);
-            printf("  Comm hidden:   %.2f ms\n", stats->time_comm_hidden_ms);
-            printf("  Comm exposed:  %.2f ms\n", stats->time_comm_exposed_ms);
-            printf("  Overlap eff:   %.1f%%\n", stats->overlap_efficiency * 100.0);
-        }
+        printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
+        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n",
+               stats->time_comm_total_ms,
+               stats->time_comm_total_ms / stats->iterations);
+        printf("  Comm hidden:  %.2f ms\n", stats->time_comm_hidden_ms);
+        printf("  Comm exposed: %.2f ms\n", stats->time_comm_exposed_ms);
+        printf("  Overlap eff:  %.1f%%\n", stats->overlap_efficiency * 100.0);
         printf("========================================\n");
     }
 
@@ -1174,14 +1023,8 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
     cudaStreamDestroy(stream_comm);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    if (config.enable_detailed_timers) {
-        cudaEventDestroy(timer_start);
-        cudaEventDestroy(timer_stop);
-        cudaEventDestroy(timer_comm_start);
-        cudaEventDestroy(timer_comm_stop);
-        cudaEventDestroy(timer_phase_start);
-        cudaEventDestroy(timer_phase_stop);
-    }
+    cudaEventDestroy(timer_phase_start);
+    cudaEventDestroy(timer_phase_stop);
 
     return 0;
 }
@@ -1342,28 +1185,13 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
 
-    cudaEvent_t timer_start, timer_stop;
-    cudaEvent_t timer_comm_start, timer_comm_stop;
     cudaEvent_t timer_phase_start, timer_phase_stop;
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventCreate(&timer_start));
-        CUDA_CHECK(cudaEventCreate(&timer_stop));
-        CUDA_CHECK(cudaEventCreate(&timer_comm_start));
-        CUDA_CHECK(cudaEventCreate(&timer_comm_stop));
-        CUDA_CHECK(cudaEventCreate(&timer_phase_start));
-        CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
-    }
+    CUDA_CHECK(cudaEventCreate(&timer_phase_start));
+    CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
 
     CUDA_CHECK(cudaEventRecord(start, stream_compute));
 
     // Initialize stats
-    stats->time_spmv_ms = 0.0;
-    stats->time_blas1_ms = 0.0;
-    stats->time_reductions_ms = 0.0;
-    stats->time_allreduce_ms = 0.0;
-    stats->time_allgather_ms = 0.0;
-    stats->time_spmv_interior_ms = 0.0;
-    stats->time_spmv_boundary_ms = 0.0;
     stats->time_comm_total_ms = 0.0;
     stats->time_comm_hidden_ms = 0.0;
     stats->time_comm_exposed_ms = 0.0;
@@ -1422,8 +1250,6 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         cudaFree(d_x_halo_next);
 
     // Overlap timing accumulators
-    double cum_interior_ms = 0.0;
-    double cum_boundary_ms = 0.0;
     double cum_comm_ms = 0.0;
     double cum_overlap_phase_ms = 0.0;
 
@@ -1436,9 +1262,7 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         // Overlapped SpMV: Ap = A * p
         nvtxRangePush("SpMV_3D_Overlap");
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_phase_start, stream_comm));
-        }
+        CUDA_CHECK(cudaEventRecord(timer_phase_start, stream_comm));
 
         CUDA_CHECK(cudaStreamWaitEvent(stream_comm, p_updated_event, 0));
 
@@ -1447,9 +1271,6 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
                                 rank, world_size, stream_comm);
 
         // Interior SpMV on stream_compute (overlaps with D2H + MPI)
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         if (partition.interior_count > 0) {
             int blocks_interior = (partition.interior_count + threads - 1) / threads;
             stencil7_overlap_subrange_kernel_3d<<<blocks_interior, threads, 0, stream_compute>>>(
@@ -1457,13 +1278,11 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
                 n_local, row_offset, n, grid_size, partition.interior_start,
                 partition.interior_count);
         }
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-        }
 
         // Sync D2H + MPI non-blocking sends/receives
         MPI_Request requests[4];
         int req_count = 0;
+        double comm_t0 = MPI_Wtime();
         exchange_halo_mpi_start(h_send_prev, h_send_next, h_recv_prev, h_recv_next,
                                 partition.halo_elems, rank, world_size, stream_comm, requests,
                                 &req_count);
@@ -1472,19 +1291,12 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         exchange_halo_async_finish(d_p_halo_prev, d_p_halo_next, h_recv_prev, h_recv_next,
                                    partition.halo_elems, rank, world_size, stream_comm, requests,
                                    req_count);
+        double comm_t1 = MPI_Wtime();
+        cum_comm_ms += (comm_t1 - comm_t0) * 1000.0;
 
         CUDA_CHECK(cudaStreamSynchronize(stream_compute));
 
-        if (config.enable_detailed_timers) {
-            float interior_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&interior_ms, timer_start, timer_stop));
-            cum_interior_ms += interior_ms;
-        }
-
         // Boundary SpMV
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         if (partition.boundary_prev_count > 0) {
             int blocks_prev = (partition.boundary_prev_count + threads - 1) / threads;
             stencil7_overlap_subrange_kernel_3d<<<blocks_prev, threads, 0, stream_compute>>>(
@@ -1499,113 +1311,41 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
                 n_local, row_offset, n, grid_size, partition.boundary_next_start,
                 partition.boundary_next_count);
         }
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
-            CUDA_CHECK(cudaStreamSynchronize(stream_compute));
-
-            float boundary_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&boundary_ms, timer_start, timer_stop));
-            cum_boundary_ms += boundary_ms;
-
-            float phase_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&phase_ms, timer_phase_start, timer_phase_stop));
-            cum_overlap_phase_ms += phase_ms;
-        }
+        CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
+        CUDA_CHECK(cudaStreamSynchronize(stream_compute));
+        float phase_ms;
+        CUDA_CHECK(cudaEventElapsedTime(&phase_ms, timer_phase_start, timer_phase_stop));
+        cum_overlap_phase_ms += phase_ms;
 
         nvtxRangePop();  // SpMV_3D_Overlap
 
         // Standard CG operations
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double pAp_local = overlap_compute_local_dot(cublas_handle, d_p_local, d_Ap, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_pAp_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double pAp;
         MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double alpha = rs_old / pAp;
 
         // x = x + alpha * p
         nvtxRangePush("BLAS_AXPY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(alpha, d_p_local, d_x_local,
                                                                   n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_x_ms += elapsed_ms;
-        }
 
         // r = r - alpha * Ap
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(-alpha, d_Ap, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_r_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         // rs_new
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double rs_local_new =
             overlap_compute_local_dot(cublas_handle, d_r_local, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_rs_new_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double rs_new;
         MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -1628,19 +1368,8 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
 
         // p = r + beta * p
         nvtxRangePush("BLAS_AXPBY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpby_kernel<<<blocks_local, threads, 0, stream_compute>>>(1.0, d_r_local, beta, d_p_local,
                                                                    n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpby_update_p_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         CUDA_CHECK(cudaEventRecord(p_updated_event, stream_compute));
@@ -1664,81 +1393,46 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
     CUDA_CHECK(cudaEventElapsedTime(&time_ms, start, stop));
 
     // Overlap metrics
-    if (config.enable_detailed_timers && stats->iterations > 0) {
-        stats->time_spmv_interior_ms = cum_interior_ms;
-        stats->time_spmv_boundary_ms = cum_boundary_ms;
-        stats->time_spmv_ms = cum_interior_ms + cum_boundary_ms;
-
-        double sequential_est = cum_interior_ms + cum_boundary_ms + cum_comm_ms;
-        stats->time_comm_total_ms = cum_overlap_phase_ms - cum_interior_ms - cum_boundary_ms;
-        if (stats->time_comm_total_ms < 0.0)
-            stats->time_comm_total_ms = 0.0;
-
+    if (stats->iterations > 0) {
+        double sequential_est = cum_overlap_phase_ms + cum_comm_ms;
+        stats->time_comm_total_ms = cum_comm_ms;
         stats->time_comm_hidden_ms = sequential_est - cum_overlap_phase_ms;
         if (stats->time_comm_hidden_ms < 0.0)
             stats->time_comm_hidden_ms = 0.0;
-
+        if (stats->time_comm_hidden_ms > cum_comm_ms)
+            stats->time_comm_hidden_ms = cum_comm_ms;
         stats->time_comm_exposed_ms = stats->time_comm_total_ms - stats->time_comm_hidden_ms;
         if (stats->time_comm_exposed_ms < 0.0)
             stats->time_comm_exposed_ms = 0.0;
-
         stats->overlap_efficiency = (stats->time_comm_total_ms > 0.0)
-                                        ? stats->time_comm_hidden_ms / stats->time_comm_total_ms
-                                        : 0.0;
-        if (stats->overlap_efficiency > 1.0)
-            stats->overlap_efficiency = 1.0;
-
-        stats->time_dot_pAp_ms /= stats->iterations;
-        stats->time_dot_rs_new_ms /= stats->iterations;
-        stats->time_axpy_update_x_ms /= stats->iterations;
-        stats->time_axpy_update_r_ms /= stats->iterations;
-        stats->time_axpby_update_p_ms /= stats->iterations;
+            ? stats->time_comm_hidden_ms / stats->time_comm_total_ms : 0.0;
     }
 
     stats->time_total_ms = time_ms;
 
     // MPI stats aggregation
     if (world_size > 1) {
-        double local_times[6], max_times[6], min_times[6];
-
-        local_times[0] = stats->time_total_ms;
-        local_times[1] = stats->time_spmv_ms;
-        local_times[2] = stats->time_blas1_ms;
-        local_times[3] = stats->time_reductions_ms;
-        local_times[4] = stats->time_allreduce_ms;
-        local_times[5] = stats->time_allgather_ms;
-
-        MPI_Reduce(local_times, max_times, 6, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(local_times, min_times, 6, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+        double local_time = stats->time_total_ms;
+        double max_time, min_time;
+        MPI_Reduce(&local_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&local_time, &min_time, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
 
         if (rank == 0) {
-            stats->time_total_ms = max_times[0];
-            stats->time_spmv_ms = max_times[1];
-            stats->time_blas1_ms = max_times[2];
-            stats->time_reductions_ms = max_times[3];
-            stats->time_allreduce_ms = max_times[4];
-            stats->time_allgather_ms = max_times[5];
-
-            double imbalance_pct = 100.0 * (max_times[0] - min_times[0]) / max_times[0];
+            stats->time_total_ms = max_time;
+            double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
             printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_times[0], min_times[0], imbalance_pct);
+                   max_time, min_time, imbalance_pct);
         }
     }
 
     if (rank == 0 && config.verbose >= 1) {
-        printf("Total time: %.2f ms\n", stats->time_total_ms);
-        if (config.enable_detailed_timers) {
-            printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
-            printf("  Interior SpMV: %.2f ms (%.3f ms/iter)\n", stats->time_spmv_interior_ms,
-                   stats->time_spmv_interior_ms / stats->iterations);
-            printf("  Boundary SpMV: %.2f ms (%.3f ms/iter)\n", stats->time_spmv_boundary_ms,
-                   stats->time_spmv_boundary_ms / stats->iterations);
-            printf("  Comm total:    %.2f ms (%.3f ms/iter)\n", stats->time_comm_total_ms,
-                   stats->time_comm_total_ms / stats->iterations);
-            printf("  Comm hidden:   %.2f ms\n", stats->time_comm_hidden_ms);
-            printf("  Comm exposed:  %.2f ms\n", stats->time_comm_exposed_ms);
-            printf("  Overlap eff:   %.1f%%\n", stats->overlap_efficiency * 100.0);
-        }
+        printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
+        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n",
+               stats->time_comm_total_ms,
+               stats->time_comm_total_ms / stats->iterations);
+        printf("  Comm hidden:  %.2f ms\n", stats->time_comm_hidden_ms);
+        printf("  Comm exposed: %.2f ms\n", stats->time_comm_exposed_ms);
+        printf("  Overlap eff:  %.1f%%\n", stats->overlap_efficiency * 100.0);
         printf("========================================\n");
     }
 
@@ -1807,14 +1501,8 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
     cudaStreamDestroy(stream_comm);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    if (config.enable_detailed_timers) {
-        cudaEventDestroy(timer_start);
-        cudaEventDestroy(timer_stop);
-        cudaEventDestroy(timer_comm_start);
-        cudaEventDestroy(timer_comm_stop);
-        cudaEventDestroy(timer_phase_start);
-        cudaEventDestroy(timer_phase_stop);
-    }
+    cudaEventDestroy(timer_phase_start);
+    cudaEventDestroy(timer_phase_stop);
 
     return 0;
 }
@@ -1967,27 +1655,12 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
 
-    cudaEvent_t timer_start, timer_stop;
-    cudaEvent_t timer_comm_start, timer_comm_stop;
     cudaEvent_t timer_phase_start, timer_phase_stop;
-    if (config.enable_detailed_timers) {
-        CUDA_CHECK(cudaEventCreate(&timer_start));
-        CUDA_CHECK(cudaEventCreate(&timer_stop));
-        CUDA_CHECK(cudaEventCreate(&timer_comm_start));
-        CUDA_CHECK(cudaEventCreate(&timer_comm_stop));
-        CUDA_CHECK(cudaEventCreate(&timer_phase_start));
-        CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
-    }
+    CUDA_CHECK(cudaEventCreate(&timer_phase_start));
+    CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
 
     CUDA_CHECK(cudaEventRecord(start, stream_compute));
 
-    stats->time_spmv_ms = 0.0;
-    stats->time_blas1_ms = 0.0;
-    stats->time_reductions_ms = 0.0;
-    stats->time_allreduce_ms = 0.0;
-    stats->time_allgather_ms = 0.0;
-    stats->time_spmv_interior_ms = 0.0;
-    stats->time_spmv_boundary_ms = 0.0;
     stats->time_comm_total_ms = 0.0;
     stats->time_comm_hidden_ms = 0.0;
     stats->time_comm_exposed_ms = 0.0;
@@ -2042,8 +1715,6 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
     if (d_x_halo_next)
         cudaFree(d_x_halo_next);
 
-    double cum_interior_ms = 0.0;
-    double cum_boundary_ms = 0.0;
     double cum_comm_ms = 0.0;
     double cum_overlap_phase_ms = 0.0;
 
@@ -2055,18 +1726,13 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
 
         nvtxRangePush("SpMV_27PT_3D_Overlap");
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_phase_start, stream_comm));
-        }
+        CUDA_CHECK(cudaEventRecord(timer_phase_start, stream_comm));
 
         CUDA_CHECK(cudaStreamWaitEvent(stream_comm, p_updated_event, 0));
 
         exchange_halo_d2h_start(d_p_local, n_local, h_send_prev, h_send_next, partition.halo_elems,
                                 rank, world_size, stream_comm);
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         if (partition.interior_count > 0) {
             int blocks_interior = (partition.interior_count + threads - 1) / threads;
             stencil27_overlap_subrange_kernel_3d<<<blocks_interior, threads, 0, stream_compute>>>(
@@ -2074,12 +1740,10 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
                 n_local, row_offset, n, grid_size, partition.interior_start,
                 partition.interior_count);
         }
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-        }
 
         MPI_Request requests[4];
         int req_count = 0;
+        double comm_t0 = MPI_Wtime();
         exchange_halo_mpi_start(h_send_prev, h_send_next, h_recv_prev, h_recv_next,
                                 partition.halo_elems, rank, world_size, stream_comm, requests,
                                 &req_count);
@@ -2087,18 +1751,11 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         exchange_halo_async_finish(d_p_halo_prev, d_p_halo_next, h_recv_prev, h_recv_next,
                                    partition.halo_elems, rank, world_size, stream_comm, requests,
                                    req_count);
+        double comm_t1 = MPI_Wtime();
+        cum_comm_ms += (comm_t1 - comm_t0) * 1000.0;
 
         CUDA_CHECK(cudaStreamSynchronize(stream_compute));
 
-        if (config.enable_detailed_timers) {
-            float interior_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&interior_ms, timer_start, timer_stop));
-            cum_interior_ms += interior_ms;
-        }
-
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         if (partition.boundary_prev_count > 0) {
             int blocks_prev = (partition.boundary_prev_count + threads - 1) / threads;
             stencil27_overlap_subrange_kernel_3d<<<blocks_prev, threads, 0, stream_compute>>>(
@@ -2113,110 +1770,38 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
                 n_local, row_offset, n, grid_size, partition.boundary_next_start,
                 partition.boundary_next_count);
         }
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
-            CUDA_CHECK(cudaStreamSynchronize(stream_compute));
-
-            float boundary_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&boundary_ms, timer_start, timer_stop));
-            cum_boundary_ms += boundary_ms;
-
-            float phase_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&phase_ms, timer_phase_start, timer_phase_stop));
-            cum_overlap_phase_ms += phase_ms;
-        }
+        CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
+        CUDA_CHECK(cudaStreamSynchronize(stream_compute));
+        float phase_ms;
+        CUDA_CHECK(cudaEventElapsedTime(&phase_ms, timer_phase_start, timer_phase_stop));
+        cum_overlap_phase_ms += phase_ms;
 
         nvtxRangePop();  // SpMV_27PT_3D_Overlap
 
         // Standard CG operations (identical to 7-point)
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double pAp_local = overlap_compute_local_dot(cublas_handle, d_p_local, d_Ap, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_pAp_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double pAp;
         MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double alpha = rs_old / pAp;
 
         nvtxRangePush("BLAS_AXPY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(alpha, d_p_local, d_x_local,
                                                                   n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_x_ms += elapsed_ms;
-        }
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(-alpha, d_Ap, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpy_update_r_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         nvtxRangePush("Dot_Product");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double rs_local_new =
             overlap_compute_local_dot(cublas_handle, d_r_local, d_r_local, n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_reductions_ms += elapsed_ms;
-            stats->time_dot_rs_new_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         double rs_new;
         MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_allreduce_ms += elapsed_ms;
-        }
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -2238,19 +1823,8 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         double beta = rs_new / rs_old;
 
         nvtxRangePush("BLAS_AXPBY");
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_start, stream_compute));
-        }
         axpby_kernel<<<blocks_local, threads, 0, stream_compute>>>(1.0, d_r_local, beta, d_p_local,
                                                                    n_local);
-        if (config.enable_detailed_timers) {
-            CUDA_CHECK(cudaEventRecord(timer_stop, stream_compute));
-            CUDA_CHECK(cudaEventSynchronize(timer_stop));
-            float elapsed_ms;
-            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, timer_start, timer_stop));
-            stats->time_blas1_ms += elapsed_ms;
-            stats->time_axpby_update_p_ms += elapsed_ms;
-        }
         nvtxRangePop();
 
         CUDA_CHECK(cudaEventRecord(p_updated_event, stream_compute));
@@ -2272,80 +1846,45 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
     float time_ms;
     CUDA_CHECK(cudaEventElapsedTime(&time_ms, start, stop));
 
-    if (config.enable_detailed_timers && stats->iterations > 0) {
-        stats->time_spmv_interior_ms = cum_interior_ms;
-        stats->time_spmv_boundary_ms = cum_boundary_ms;
-        stats->time_spmv_ms = cum_interior_ms + cum_boundary_ms;
-
-        double sequential_est = cum_interior_ms + cum_boundary_ms + cum_comm_ms;
-        stats->time_comm_total_ms = cum_overlap_phase_ms - cum_interior_ms - cum_boundary_ms;
-        if (stats->time_comm_total_ms < 0.0)
-            stats->time_comm_total_ms = 0.0;
-
+    if (stats->iterations > 0) {
+        double sequential_est = cum_overlap_phase_ms + cum_comm_ms;
+        stats->time_comm_total_ms = cum_comm_ms;
         stats->time_comm_hidden_ms = sequential_est - cum_overlap_phase_ms;
         if (stats->time_comm_hidden_ms < 0.0)
             stats->time_comm_hidden_ms = 0.0;
-
+        if (stats->time_comm_hidden_ms > cum_comm_ms)
+            stats->time_comm_hidden_ms = cum_comm_ms;
         stats->time_comm_exposed_ms = stats->time_comm_total_ms - stats->time_comm_hidden_ms;
         if (stats->time_comm_exposed_ms < 0.0)
             stats->time_comm_exposed_ms = 0.0;
-
         stats->overlap_efficiency = (stats->time_comm_total_ms > 0.0)
-                                        ? stats->time_comm_hidden_ms / stats->time_comm_total_ms
-                                        : 0.0;
-        if (stats->overlap_efficiency > 1.0)
-            stats->overlap_efficiency = 1.0;
-
-        stats->time_dot_pAp_ms /= stats->iterations;
-        stats->time_dot_rs_new_ms /= stats->iterations;
-        stats->time_axpy_update_x_ms /= stats->iterations;
-        stats->time_axpy_update_r_ms /= stats->iterations;
-        stats->time_axpby_update_p_ms /= stats->iterations;
+            ? stats->time_comm_hidden_ms / stats->time_comm_total_ms : 0.0;
     }
 
     stats->time_total_ms = time_ms;
 
     if (world_size > 1) {
-        double local_times[6], max_times[6], min_times[6];
-
-        local_times[0] = stats->time_total_ms;
-        local_times[1] = stats->time_spmv_ms;
-        local_times[2] = stats->time_blas1_ms;
-        local_times[3] = stats->time_reductions_ms;
-        local_times[4] = stats->time_allreduce_ms;
-        local_times[5] = stats->time_allgather_ms;
-
-        MPI_Reduce(local_times, max_times, 6, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(local_times, min_times, 6, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+        double local_time = stats->time_total_ms;
+        double max_time, min_time;
+        MPI_Reduce(&local_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&local_time, &min_time, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
 
         if (rank == 0) {
-            stats->time_total_ms = max_times[0];
-            stats->time_spmv_ms = max_times[1];
-            stats->time_blas1_ms = max_times[2];
-            stats->time_reductions_ms = max_times[3];
-            stats->time_allreduce_ms = max_times[4];
-            stats->time_allgather_ms = max_times[5];
-
-            double imbalance_pct = 100.0 * (max_times[0] - min_times[0]) / max_times[0];
+            stats->time_total_ms = max_time;
+            double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
             printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_times[0], min_times[0], imbalance_pct);
+                   max_time, min_time, imbalance_pct);
         }
     }
 
     if (rank == 0 && config.verbose >= 1) {
-        printf("Total time: %.2f ms\n", stats->time_total_ms);
-        if (config.enable_detailed_timers) {
-            printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
-            printf("  Interior SpMV: %.2f ms (%.3f ms/iter)\n", stats->time_spmv_interior_ms,
-                   stats->time_spmv_interior_ms / stats->iterations);
-            printf("  Boundary SpMV: %.2f ms (%.3f ms/iter)\n", stats->time_spmv_boundary_ms,
-                   stats->time_spmv_boundary_ms / stats->iterations);
-            printf("  Comm total:    %.2f ms (%.3f ms/iter)\n", stats->time_comm_total_ms,
-                   stats->time_comm_total_ms / stats->iterations);
-            printf("  Comm hidden:   %.2f ms\n", stats->time_comm_hidden_ms);
-            printf("  Comm exposed:  %.2f ms\n", stats->time_comm_exposed_ms);
-            printf("  Overlap eff:   %.1f%%\n", stats->overlap_efficiency * 100.0);
-        }
+        printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
+        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n",
+               stats->time_comm_total_ms,
+               stats->time_comm_total_ms / stats->iterations);
+        printf("  Comm hidden:  %.2f ms\n", stats->time_comm_hidden_ms);
+        printf("  Comm exposed: %.2f ms\n", stats->time_comm_exposed_ms);
+        printf("  Overlap eff:  %.1f%%\n", stats->overlap_efficiency * 100.0);
         printf("========================================\n");
     }
 
@@ -2410,14 +1949,8 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
     cudaStreamDestroy(stream_comm);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    if (config.enable_detailed_timers) {
-        cudaEventDestroy(timer_start);
-        cudaEventDestroy(timer_stop);
-        cudaEventDestroy(timer_comm_start);
-        cudaEventDestroy(timer_comm_stop);
-        cudaEventDestroy(timer_phase_start);
-        cudaEventDestroy(timer_phase_stop);
-    }
+    cudaEventDestroy(timer_phase_start);
+    cudaEventDestroy(timer_phase_stop);
 
     return 0;
 }
