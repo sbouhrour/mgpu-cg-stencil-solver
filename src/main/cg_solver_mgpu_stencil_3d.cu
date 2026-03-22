@@ -2,8 +2,7 @@
  * @file cg_solver_mgpu_stencil_3d.cu
  * @brief Multi-GPU CG solver entry point for 3D 7-point stencils
  *
- * Usage: mpirun -np N ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_64.mtx [--timers]
- * [--overlap]
+ * Usage: mpirun -np N ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_64.mtx [--overlap]
  *
  * Author: Bouhrour Stephane
  */
@@ -38,7 +37,6 @@ int main(int argc, char** argv) {
             printf("Usage: mpirun -np <N> %s <matrix.mtx> [options]\n", argv[0]);
             printf("Example: mpirun -np 2 %s matrix/stencil3d_64.mtx --overlap\n", argv[0]);
             printf("Options:\n");
-            printf("  --timers        Enable detailed timing breakdown\n");
             printf("  --overlap       Use compute-communication overlap solver\n");
             printf("  --verify        Use known solution (x=1) to verify correctness\n");
             printf("  --max-iters=N   Set maximum CG iterations (default: 1000)\n");
@@ -61,16 +59,11 @@ int main(int argc, char** argv) {
     config.max_iters = 1000;
     config.tolerance = 1e-6;
     config.verbose = 1;
-    config.enable_detailed_timers = 0;
     config.enable_overlap = 0;
 
     // Parse arguments before using them
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--timers") == 0) {
-            config.enable_detailed_timers = 1;
-            if (rank == 0)
-                printf("Detailed timers enabled\n");
-        } else if (strcmp(argv[i], "--overlap") == 0) {
+        if (strcmp(argv[i], "--overlap") == 0) {
             config.enable_overlap = 1;
             if (rank == 0)
                 printf("Overlap solver enabled\n");
@@ -315,7 +308,9 @@ int main(int argc, char** argv) {
         printf("========================================\n");
 
         if (json_file) {
-            const char* mode_str = (stencil_points == 27) ? "3d-stencil-27pt" : "3d-stencil";
+            const char* mode_str = (stencil_points == 27)
+                ? (config.enable_overlap ? "3d-stencil-27pt-overlap" : "3d-stencil-27pt")
+                : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
             export_cg_mgpu_json(json_file, mode_str, &mat, &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);
         }

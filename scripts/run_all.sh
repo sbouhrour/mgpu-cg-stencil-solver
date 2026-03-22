@@ -319,3 +319,25 @@ echo "Results saved to:"
 echo "  Raw outputs: ${RESULTS_RAW}/"
 echo "  JSON data:   ${RESULTS_JSON}/"
 echo ""
+
+# =============================================================================
+# Benchmark 6: 3D Stencil Overlap
+# =============================================================================
+BENCH_3D="scripts/benchmarking/benchmark_3d_overlap.sh"
+
+if [ ! -f "$BENCH_3D" ]; then
+    echo "=== Benchmark 6: Skipped ($BENCH_3D not found) ==="
+elif [ "$HAS_MPI" = "0" ]; then
+    echo "=== Benchmark 6: Skipped (MPI not available) ==="
+elif [ "$NUM_GPUS" -lt 2 ]; then
+    echo "=== Benchmark 6: Skipped (need ≥2 GPUs, found $NUM_GPUS) ==="
+else
+    echo "=== Benchmark 6: 3D Stencil Overlap (quick mode) ==="
+    bash "$BENCH_3D" --quick --gpus=1,${NUM_GPUS} --output-dir=results/3d/
+
+    SUMMARY_3D=$(ls -t results/3d/summary_*.txt 2>/dev/null | head -1)
+    if [ -n "$SUMMARY_3D" ]; then
+        echo ""
+        cat "$SUMMARY_3D"
+    fi
+fi
