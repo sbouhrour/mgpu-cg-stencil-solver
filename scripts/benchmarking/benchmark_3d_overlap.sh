@@ -10,9 +10,8 @@
 #   --grids=128,256,512 Grid sizes (default: 128,256)
 #   --stencil=7,27      Stencil types (default: 7,27)
 #   --runs=N            Benchmark runs per config (default: 10)
-#   --warmup=N          Warmup runs, always sync (default: 3)
 #   --output-dir=DIR    Output root (default: results/3d/)
-#   --quick             Alias: --grids=128 --runs=3 --warmup=1
+#   --quick             Alias: --grids=128 --runs=3
 #   --profile           Also run nsys for the largest overlap config
 #   --help
 #
@@ -30,7 +29,6 @@ GPU_LIST=""
 GRID_LIST="128,256"
 STENCIL_LIST="7,27"
 NUM_RUNS=10
-NUM_WARMUP=3
 OUTPUT_DIR="results/3d"
 PROFILE=0
 
@@ -43,12 +41,10 @@ for arg in "$@"; do
         --grids=*)      GRID_LIST="${arg#*=}" ;;
         --stencil=*)    STENCIL_LIST="${arg#*=}" ;;
         --runs=*)       NUM_RUNS="${arg#*=}" ;;
-        --warmup=*)     NUM_WARMUP="${arg#*=}" ;;
         --output-dir=*) OUTPUT_DIR="${arg#*=}" ;;
         --quick)
             GRID_LIST="128"
             NUM_RUNS=3
-            NUM_WARMUP=1
             ;;
         --profile)      PROFILE=1 ;;
         --help|-h)
@@ -77,15 +73,27 @@ fi
 NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)
 echo "Detected GPUs: $NUM_GPUS"
 
-# Build binary if missing
-BIN="bin/release/cg_solver_mgpu_stencil_3d"
-GEN7="bin/release/generate_matrix_3d"
-if [ ! -f "$BIN" ] || [ ! -f "$GEN7" ]; then
+# Locate binaries — support both bin/release/ (default) and bin/ (legacy builds)
+find_bin() {
+    local name="$1"
+    for candidate in "bin/release/${name}" "bin/${name}"; do
+        [ -f "$candidate" ] && { echo "$candidate"; return; }
+    done
+    echo ""
+}
+
+BIN=$(find_bin cg_solver_mgpu_stencil_3d)
+GEN7=$(find_bin generate_matrix_3d)
+
+if [ -z "$BIN" ] || [ -z "$GEN7" ]; then
     echo "Building 3D binaries..."
     make cg_solver_mgpu_stencil_3d generate_matrix_3d generate_matrix_3d_27pt 2>&1 | tail -5
+    BIN=$(find_bin cg_solver_mgpu_stencil_3d)
+    GEN7=$(find_bin generate_matrix_3d)
 fi
-if [ ! -f "$BIN" ]; then
-    echo "ERROR: $BIN not found after build" >&2
+
+if [ -z "$BIN" ] || [ ! -f "$BIN" ]; then
+    echo "ERROR: cg_solver_mgpu_stencil_3d not found after build" >&2
     exit 1
 fi
 
@@ -117,7 +125,7 @@ echo "Host:      $(hostname)"
 echo "GPUs:      ${GPU_LIST}"
 echo "Grids:     ${GRID_LIST}"
 echo "Stencils:  ${STENCIL_LIST}"
-echo "Runs:      ${NUM_RUNS} (+${NUM_WARMUP} warmup)"
+echo "Runs:      ${NUM_RUNS}"
 echo "Output:    ${OUTPUT_DIR}"
 echo "================================================================"
 echo ""
@@ -206,12 +214,6 @@ for S in "${STENCIL_TYPES[@]}"; do
 
             echo ""
             echo "--- ${LABEL} ---"
-
-            # Warmup: always synchronous
-            echo "  Warmup (${NUM_WARMUP} sync runs)..."
-            for w in $(seq 1 "$NUM_WARMUP"); do
-                timeout 300 $MPIRUN_CMD $BASE_CMD >/dev/null 2>&1 || true
-            done
 
             # Sync run
             SYNC_JSON="${OUTDIR}/json/3d_${S}pt_${GRID}_${N}gpu_sync.json"
