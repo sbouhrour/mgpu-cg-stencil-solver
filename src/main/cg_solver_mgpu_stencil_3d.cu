@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
             printf("Options:\n");
             printf("  --overlap       Use compute-communication overlap solver\n");
             printf("  --verify        Use known solution (x=1) to verify correctness\n");
-            printf("  --max-iters=N   Set maximum CG iterations (default: 1000)\n");
+            printf("  --max-iters=N   Set maximum CG iterations (default: 5000)\n");
             printf("  --json=<file>   Export results to JSON file\n");
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
         }
@@ -308,9 +308,10 @@ int main(int argc, char** argv) {
         printf("========================================\n");
 
         if (json_file) {
-            const char* mode_str = (stencil_points == 27)
-                ? (config.enable_overlap ? "3d-stencil-27pt-overlap" : "3d-stencil-27pt")
-                : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
+            const char* mode_str =
+                (stencil_points == 27)
+                    ? (config.enable_overlap ? "3d-stencil-27pt-overlap" : "3d-stencil-27pt")
+                    : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
             export_cg_mgpu_json(json_file, mode_str, &mat, &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);
         }
