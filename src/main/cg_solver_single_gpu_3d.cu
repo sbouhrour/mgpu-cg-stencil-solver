@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
 
     const char* matrix_file = argv[1];
     int verify_mode = 0;
-    int max_iters = 1000;
+    int max_iters = 5000;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--verify") == 0) {

@@ -51,12 +51,12 @@ int main(int argc, char** argv) {
     const char* json_file = NULL;
     int verify_mode = 0;
     int custom_max_iters = 0;
-    int max_iters_value = 1000;
+    int max_iters_value = 5000;
     int stencil_points = 7;  // default: 7-point stencil
 
     // Configuration
     CGConfigMultiGPU config;
-    config.max_iters = 1000;
+    config.max_iters = 5000;
     config.tolerance = 1e-6;
     config.verbose = 1;
     config.enable_overlap = 0;

@@ -281,7 +281,7 @@ int main(int argc, char* argv[]) {
 
     const char* matrix_file = argv[1];
     double tolerance = 1e-6;
-    int max_iters = 1000;
+    int max_iters = 5000;
     int num_runs = 10;
     bool enable_timers = false;
     const char* json_file = nullptr;
