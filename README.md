@@ -250,7 +250,15 @@ See [Profiling Analysis](docs/PROFILING_ANALYSIS.md) for complete methodology an
 
 This section extends the solver to realistic 3D stencils (7-point and 27-point) with compute-communication overlap via interior/boundary decomposition and dual-stream execution. Each SpMV is split into interior rows (independent of halo data) computed on `stream_compute`, while halo exchange (D2H + MPI + H2D) runs concurrently on `stream_comm`. Boundary rows are computed after halo arrival.
 
-<!-- TODO: Add Nsight Systems overlap timeline screenshot -->
+#### Nsight Systems Timeline — Sync vs Overlap
+
+![Sync timeline](docs/figures/profiling_nsys_timeline_synch_512_3d_7pt_4n_a100_nv12.png)
+
+*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms) during which the GPU sits idle. The red `cudaStreamSynchronize` block on the CUDA API row shows the CPU blocking while waiting for the GPU to finish before halo exchange begins.*
+
+![Overlap timeline](docs/figures/profiling_nsys_timeline_overlap_512_3d_7pt_4n_a100_nv12.png)
+
+*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). On the [All Streams] row, the interior kernel `stencil7_overlap_subrange_kernel_3d` (blue) runs concurrently with Memcpy D2H (pink "Memc..." blocks) — the overlap in action. MPI_Waitall (674 µs) completes while the interior kernel is still running; the small boundary kernels then execute after the sync point. The 4.82 → 3.76 ms reduction matches the benchmark table.*
 
 ```
 stream_compute: |--- interior SpMV ---|                  |-- boundary SpMV --|
@@ -320,12 +328,11 @@ stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
 
 ### Key Observations
 
-- **Overlap gain scales with GPU count and problem size**: larger grids have a larger interior region relative to the halo boundary, giving `stream_compute` more work to hide behind halo exchange
-- **27-point benefits more than 7-point** at the same grid size: the kernel is more compute-intensive (27 vs 7 loads per row), extending interior computation time and increasing the fraction of communication that can be masked
-- **Best overlap gains**: 1.45× (27pt, 256³, 8 GPUs) and 1.36× (7pt, 512³, 8 GPUs)
-- **Best scaling**: 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap) — combining kernel specialization with communication hiding
-- **Small workloads show diminishing returns**: 128³ on 8 GPUs approaches the regime where per-GPU computation is too brief to mask halo exchange latency; the 7pt/128³/8GPU case incurs slight overhead (0.96×) from dual-stream management
-- **1-GPU runs confirm zero overhead**: sync and overlap times are equivalent with no communication to hide
+Overlap gain scales with both GPU count and problem size. Larger grids have a larger interior region relative to the halo boundary, giving `stream_compute` more work to hide behind halo exchange. The 27-point stencil benefits more than the 7-point stencil at the same grid size because it is more compute-intensive (27 vs 7 loads per row), which extends interior computation time and increases the fraction of communication that can be masked. Best overlap gains are 1.45× (27pt, 256³, 8 GPUs) and 1.36× (7pt, 512³, 8 GPUs).
+
+Small workloads show diminishing returns. At 128³ on 8 GPUs the per-GPU workload is too brief to mask halo exchange latency, and the 7pt/128³/8GPU case incurs slight overhead (0.96×) from dual-stream management. 1-GPU runs confirm zero overhead: sync and overlap times are equivalent with no communication to hide.
+
+The best scaling result — 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap) — comes from combining kernel specialization with communication hiding. The Nsight timelines above show how a 4.82 ms synchronous iteration (GPU idle during halo exchange) becomes a 3.76 ms overlapped iteration, matching the 1.28× gain in the benchmark table.
 
 ### How to Reproduce
 
