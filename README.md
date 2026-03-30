@@ -254,11 +254,11 @@ This section extends the solver to realistic 3D stencils (7-point and 27-point) 
 
 ![Sync timeline](docs/figures/profiling_nsys_timeline_synch_512_3d_7pt_4n_a100_nv12.png)
 
-*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms) during which the GPU sits idle. The red `cudaStreamSynchronize` block on the CUDA API row shows the CPU blocking while waiting for the GPU to finish before halo exchange begins.*
+*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms) during which the GPU sits idle. The green `cudaStreamSynchronize` block on the CUDA API row shows the CPU blocking while waiting for the GPU to finish before halo exchange begins.*
 
 ![Overlap timeline](docs/figures/profiling_nsys_timeline_overlap_512_3d_7pt_4n_a100_nv12.png)
 
-*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). On the [All Streams] row, the interior kernel `stencil7_overlap_subrange_kernel_3d` (blue) runs concurrently with Memcpy D2H (pink "Memc..." blocks) — the overlap in action. MPI_Waitall (674 µs) completes while the interior kernel is still running; the small boundary kernels then execute after the sync point. The 4.82 → 3.76 ms reduction matches the benchmark table.*
+*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). On the [All Streams] row, the interior kernel `stencil7_overlap_subrange_kernel_3d` (blue) runs concurrently with Memcpy D2H (pink "Memc..." blocks) — the overlap in action. Simultaneously, MPI interprocess communication is visible as beige/yellow `process_vm_readv` blocks on the OS runtime libraries row and `MPI_Waitall` on the MPI row, all executing in parallel with the interior kernel. The small boundary kernels then execute after the sync point. The 4.82 → 3.76 ms reduction matches the benchmark table.*
 
 ```
 stream_compute: |--- interior SpMV ---|                  |-- boundary SpMV --|
