@@ -307,6 +307,10 @@ stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
 
 ### Strong Scaling Efficiency (overlap solver)
 
+<p align="center">
+  <img src="docs/figures/3d_scaling_overlap_a100.png" alt="3D Strong Scaling: Sync vs Overlap" width="100%">
+</p>
+
 **7-point stencil** — speedup relative to 1-GPU sync baseline:
 
 | Grid | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
@@ -326,6 +330,15 @@ stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
 | 512³ | 1.00× | 1.98× | 3.79× | 7.08× |
 
 <sub>512³ at 8 GPUs: 22016/3110 = 7.08× → **88% parallel efficiency**</sub>
+
+<details>
+<summary><b>📊 Overlap Gain by Configuration</b></summary>
+
+<p align="center">
+  <img src="docs/figures/3d_overlap_gain_by_gpu.png" alt="Overlap Gain vs GPU Count" width="100%">
+</p>
+
+</details>
 
 ### Key Observations
 
