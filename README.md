@@ -14,8 +14,9 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 |--------|--------|
 | **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU), 1.44× faster (8 GPUs) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.07× speedup on A100 80GB |
-| **Strong scaling efficiency** | 87–94% from 1→8 GPUs |
-| **Problem size tested** | Up to 400M unknowns (20k×20k stencil) |
+| **3D overlap (7pt/27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
+| **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
+| **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
 
 **Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57
 
@@ -392,12 +393,14 @@ Results are saved to `results/raw/` (TXT) and `results/json/` (structured data).
 ### Multi-GPU Architecture
 - **MPI explicit staging**: D2H → MPI_Isend/Irecv → H2D for low-latency halo exchange
 - **Row-band partitioning**: 1D decomposition with CSR format and halo zone exchange
+- **Compute-communication overlap**: interior/boundary decomposition with dual-stream execution hides halo exchange behind SpMV computation (3D stencils)
 - **Efficient reductions**: cuBLAS dot products instead of atomics (238× faster)
 - **Optimized for A100**: Takes advantage of NVLink/PCIe Gen4 bandwidth
 
 ### Algorithm Features
 - **Conjugate Gradient (CG)**: Iterative Krylov method for symmetric positive definite systems
-- **5-point stencil**: Custom CUDA kernels for finite difference discretizations
+- **2D/3D stencils**: Custom CUDA kernels for 5-point (2D), 7-point and 27-point (3D) finite difference discretizations
+- **Interior/boundary split**: 3D solver decomposes SpMV into halo-independent interior rows and halo-dependent boundary rows for concurrent execution
 - **Halo exchange**: Minimal communication (160 KB per exchange for 10k grid)
 - **Convergence criterion**: Relative residual < 1e-6
 
@@ -480,6 +483,19 @@ GPU 6: rows [75k, 87.5k)     │
 GPU 7: rows [87.5k, 100k)    ┘
 ```
 
+```
+Z-slab partitioning (8 GPUs, 256³ grid):
+
+GPU 0: Z-planes [0, 32)       ┐
+GPU 1: Z-planes [32, 64)      │
+GPU 2: Z-planes [64, 96)      │  Halo exchange:
+GPU 3: Z-planes [96, 128)     │  - 1 XY-plane per neighbor (N² doubles)
+GPU 4: Z-planes [128, 160)    │  - 256² × 8 bytes = 512 KB per direction
+GPU 5: Z-planes [160, 192)    │  - MPI explicit staging (D2H → MPI → H2D)
+GPU 6: Z-planes [192, 224)    │
+GPU 7: Z-planes [224, 256)    ┘
+```
+
 ### CG Algorithm Structure
 
 ```c
@@ -497,6 +513,12 @@ GPU 7: rows [87.5k, 100k)    ┘
 
 3. Gather final solution to all ranks
 ```
+
+**3D overlap variant:** In overlap mode, step (a) is split into three
+concurrent phases: the interior SpMV runs on stream_compute while the
+halo exchange (D2H + MPI + H2D) runs on stream_comm. Boundary rows
+are computed after halo arrival. This hides communication latency
+behind useful computation.
 
 **Performance characteristics:**
 - **SpMV dominates** (~40-50% of total time)
