@@ -8,6 +8,8 @@ High-performance multi-GPU Conjugate Gradient solver for large-scale sparse line
 
 This project evaluates GPU sparse matrix–vector multiplication strategies and their impact on iterative solvers, with a focus on stencil-structured workloads common in scientific computing (PDE discretizations, CFD, FEM).
 
+*Built by [Stéphane Bouhrour](https://github.com/1fni) — GPU & parallel performance engineer, available for freelance missions ([contact](#contact)).*
+
 ## TL;DR — Key Numbers
 
 | Metric | Result |
@@ -255,11 +257,11 @@ This section extends the solver to realistic 3D stencils (7-point and 27-point) 
 
 ![Sync timeline](docs/figures/profiling_nsys_timeline_synch_512_3d_7pt_4n_a100_nv12.png)
 
-*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms) during which the GPU sits idle. The green `cudaStreamSynchronize` block on the CUDA API row shows the CPU blocking while waiting for the GPU to finish before halo exchange begins.*
+*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms). The red rectangle marks the halo exchange phase: the [All Streams] row is empty during this 1.57 ms window — the GPU sits idle while waiting for MPI communication to complete.*
 
 ![Overlap timeline](docs/figures/profiling_nsys_timeline_overlap_512_3d_7pt_4n_a100_nv12.png)
 
-*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). On the [All Streams] row, the interior kernel `stencil7_overlap_subrange_kernel_3d` (blue) runs concurrently with Memcpy D2H (pink "Memc..." blocks) — the overlap in action. Simultaneously, MPI interprocess communication is visible as beige/yellow `process_vm_readv` blocks on the OS runtime libraries row and `MPI_Waitall` on the MPI row, all executing in parallel with the interior kernel. The small boundary kernels then execute after the sync point. The 4.82 → 3.76 ms reduction matches the benchmark table.*
+*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). The red rectangle marks the overlap phase: the interior SpMV kernel (`stencil7_overlap_subrange_kernel_3d`) runs concurrently with halo D2H memcpy, MPI interprocess communication (`process_vm_readv` on the OS runtime libraries row), and `MPI_Waitall` — all visible inside the rectangle. After the rectangle, H2D memcpy completes and small boundary SpMV kernels execute. The 4.82 → 3.76 ms reduction matches the benchmark table.*
 
 ```
 stream_compute: |--- interior SpMV ---|                  |-- boundary SpMV --|
@@ -296,7 +298,7 @@ stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
 | 128³ | 2 | 57.3 | 51.1 | 1.12× | 151 |
 | 128³ | 4 | 47.3 | 36.6 | 1.29× | 151 |
 | 128³ | 8 | 40.5 | 33.6 | 1.21× | 151 |
-| 256³ | 1 | 1315 | 1315 | — | 303 |
+| 256³ | 1 | 1315.4 | 1315.4 | — | 303 |
 | 256³ | 2 | 718.9 | 680.3 | 1.06× | 303 |
 | 256³ | 4 | 447.5 | 367.5 | 1.22× | 303 |
 | 256³ | 8 | 294.0 | 203.5 | 1.45× | 303 |
@@ -516,7 +518,7 @@ GPU 7: Z-planes [224, 256)    ┘
    - Partition matrix rows across GPUs
    - Exchange halo zones for initial vectors (x, r)
 
-2. CG iteration loop (14 iterations):
+2. CG iteration loop (until convergence):
    a. SpMV: y = A×p (with halo exchange)
    b. Dot products: α = (r,r)/(p,y)  [MPI_Allreduce]
    c. AXPY updates: x += α×p, r -= α×y
@@ -548,7 +550,8 @@ behind useful computation.
 ├── scripts/
 │   ├── run_all.sh                  # ONE COMMAND to reproduce all results
 │   ├── benchmarking/               # Individual benchmark scripts
-│   └── plotting/                   # Python visualization (matplotlib)
+│   ├── plotting/                   # Python plotting utilities
+│   └── visualizations/             # README figure generation scripts
 ├── results/
 │   ├── raw/                        # Raw benchmark outputs (TXT)
 │   ├── json/                       # Structured results (JSON)
