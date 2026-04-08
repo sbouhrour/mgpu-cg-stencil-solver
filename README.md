@@ -1,6 +1,6 @@
 # Multi-GPU Conjugate Gradient Solver
 
-[![CI](https://github.com/1fni/cuda-spmv-benchmark/actions/workflows/ci.yml/badge.svg)](https://github.com/1fni/cuda-spmv-benchmark/actions/workflows/ci.yml)
+[![CI](https://github.com/1fni/mgpu-cg-stencil-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/1fni/mgpu-cg-stencil-solver/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CUDA](https://img.shields.io/badge/CUDA-11.8%20%7C%2012.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 
@@ -8,14 +8,17 @@ High-performance multi-GPU Conjugate Gradient solver for large-scale sparse line
 
 This project evaluates GPU sparse matrix–vector multiplication strategies and their impact on iterative solvers, with a focus on stencil-structured workloads common in scientific computing (PDE discretizations, CFD, FEM).
 
+*Built by [Stéphane Bouhrour](https://github.com/1fni) — GPU & parallel performance engineer, available for freelance missions ([contact](#contact)).*
+
 ## TL;DR — Key Numbers
 
 | Metric | Result |
 |--------|--------|
 | **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU), 1.44× faster (8 GPUs) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.07× speedup on A100 80GB |
-| **Strong scaling efficiency** | 87–94% from 1→8 GPUs |
-| **Problem size tested** | Up to 400M unknowns (20k×20k stencil) |
+| **3D overlap (7pt/27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
+| **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
+| **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
 
 **Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57
 
@@ -244,6 +247,128 @@ See [Profiling Analysis](docs/PROFILING_ANALYSIS.md) for complete methodology an
 
 ---
 
+## 3D Stencil Extension: Compute-Communication Overlap
+
+**88% strong scaling efficiency on 8 A100 GPUs** (27-point stencil, 512³ grid, overlap solver).
+
+This section extends the solver to realistic 3D stencils (7-point and 27-point) with compute-communication overlap via interior/boundary decomposition and dual-stream execution. Each SpMV is split into interior rows (independent of halo data) computed on `stream_compute`, while halo exchange (D2H + MPI + H2D) runs concurrently on `stream_comm`. Boundary rows are computed after halo arrival.
+
+#### Nsight Systems Timeline — Sync vs Overlap
+
+![Sync timeline](docs/figures/profiling_nsys_timeline_synch_512_3d_7pt_4n_a100_nv12.png)
+
+*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms). The red rectangle marks the halo exchange phase: the [All Streams] row is empty during this 1.57 ms window — the GPU sits idle while waiting for MPI communication to complete.*
+
+![Overlap timeline](docs/figures/profiling_nsys_timeline_overlap_512_3d_7pt_4n_a100_nv12.png)
+
+*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). The red rectangle marks the overlap phase: the interior SpMV kernel (`stencil7_overlap_subrange_kernel_3d`) runs concurrently with halo D2H memcpy, MPI interprocess communication (`process_vm_readv` on the OS runtime libraries row), and `MPI_Waitall` — all visible inside the rectangle. After the rectangle, H2D memcpy completes and small boundary SpMV kernels execute. The 4.82 → 3.76 ms reduction matches the benchmark table.*
+
+```
+stream_compute: |--- interior SpMV ---|                  |-- boundary SpMV --|
+stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
+                                              ↑ sync point
+```
+
+### 7-Point Stencil — Sync vs Overlap
+
+**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink)
+
+| Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain | Iterations |
+|------|------|-----------|--------------|--------------|------------|
+| 128³ | 1 | 73.2 | 74.0 | — | 261 |
+| 128³ | 2 | 52.8 | 43.9 | 1.20× | 261 |
+| 128³ | 4 | 51.4 | 46.7 | 1.10× | 261 |
+| 128³ | 8 | 47.8 | 49.7 | 0.96× | 261 |
+| 256³ | 1 | 970.3 | 972.4 | — | 527 |
+| 256³ | 2 | 583.3 | 515.7 | 1.13× | 527 |
+| 256³ | 4 | 409.0 | 318.0 | 1.29× | 527 |
+| 256³ | 8 | 304.7 | 265.8 | 1.15× | 527 |
+| 512³ | 1 | 15127 | 15129 | — | 1065 |
+| 512³ | 2 | 8211 | 7682 | 1.07× | 1065 |
+| 512³ | 4 | 5088 | 3944 | 1.29× | 1065 |
+| 512³ | 8 | 3323 | 2453 | 1.36× | 1065 |
+
+<sub>1-GPU rows show no overlap gain (no communication to hide). 128³/8GPU shows slight overhead (0.96×): per-GPU workload is too small for dual-stream overhead to pay off.</sub>
+
+### 27-Point Stencil — Sync vs Overlap
+
+| Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain | Iterations |
+|------|------|-----------|--------------|--------------|------------|
+| 128³ | 1 | 89.2 | 89.6 | — | 151 |
+| 128³ | 2 | 57.3 | 51.1 | 1.12× | 151 |
+| 128³ | 4 | 47.3 | 36.6 | 1.29× | 151 |
+| 128³ | 8 | 40.5 | 33.6 | 1.21× | 151 |
+| 256³ | 1 | 1315.4 | 1315.4 | — | 303 |
+| 256³ | 2 | 718.9 | 680.3 | 1.06× | 303 |
+| 256³ | 4 | 447.5 | 367.5 | 1.22× | 303 |
+| 256³ | 8 | 294.0 | 203.5 | 1.45× | 303 |
+| 512³ | 1 | 22016 | 21997 | — | 611 |
+| 512³ | 2 | 11438 | 11142 | 1.03× | 611 |
+| 512³ | 4 | 6461 | 5815 | 1.11× | 611 |
+| 512³ | 8 | 3809 | 3110 | 1.23× | 611 |
+
+### Strong Scaling Efficiency (overlap solver)
+
+<p align="center">
+  <img src="docs/figures/3d_scaling_overlap_a100.png" alt="3D Strong Scaling: Sync vs Overlap" width="100%">
+</p>
+
+**7-point stencil** — speedup relative to 1-GPU sync baseline:
+
+| Grid | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
+|------|-------|--------|--------|--------|
+| 128³ | 1.00× | 1.69× | 1.59× | 1.49× |
+| 256³ | 1.00× | 1.88× | 3.06× | 3.66× |
+| 512³ | 1.00× | 1.97× | 3.84× | 6.17× |
+
+<sub>512³ at 8 GPUs: 15127/2453 = 6.17× → 77% parallel efficiency</sub>
+
+**27-point stencil** — speedup relative to 1-GPU sync baseline:
+
+| Grid | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
+|------|-------|--------|--------|--------|
+| 128³ | 1.00× | 1.75× | 2.44× | 2.66× |
+| 256³ | 1.00× | 1.93× | 3.58× | 6.47× |
+| 512³ | 1.00× | 1.98× | 3.79× | 7.08× |
+
+<sub>512³ at 8 GPUs: 22016/3110 = 7.08× → **88% parallel efficiency**</sub>
+
+<details>
+<summary><b>📊 Overlap Gain by Configuration</b></summary>
+
+<p align="center">
+  <img src="docs/figures/3d_overlap_gain_by_gpu.png" alt="Overlap Gain vs GPU Count" width="100%">
+</p>
+
+</details>
+
+### Key Observations
+
+Overlap gain scales with both GPU count and problem size. Larger grids have a larger interior region relative to the halo boundary, giving `stream_compute` more work to hide behind halo exchange. The 27-point stencil benefits more than the 7-point stencil at the same grid size because it is more compute-intensive (27 vs 7 loads per row), which extends interior computation time and increases the fraction of communication that can be masked. Best overlap gains are 1.45× (27pt, 256³, 8 GPUs) and 1.36× (7pt, 512³, 8 GPUs).
+
+Small workloads show diminishing returns. At 128³ on 8 GPUs the per-GPU workload is too brief to mask halo exchange latency, and the 7pt/128³/8GPU case incurs slight overhead (0.96×) from dual-stream management. 1-GPU runs confirm zero overhead: sync and overlap times are equivalent with no communication to hide.
+
+The best scaling result — 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap) — comes from combining kernel specialization with communication hiding. The Nsight timelines above show how a 4.82 ms synchronous iteration (GPU idle during halo exchange) becomes a 3.76 ms overlapped iteration, matching the 1.28× gain in the benchmark table.
+
+### How to Reproduce
+
+```bash
+# Generate matrices
+./bin/generate_matrix_3d 256 matrix/stencil3d_256.mtx
+./bin/generate_matrix_3d_27pt 256 matrix/stencil3d_27pt_256.mtx
+
+# Run sync solver
+mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27
+
+# Run overlap solver
+mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap
+
+# Verify correctness
+mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap --verify
+```
+
+---
+
 ## Methodology
 
 **How results were measured:**
@@ -283,12 +408,14 @@ Results are saved to `results/raw/` (TXT) and `results/json/` (structured data).
 ### Multi-GPU Architecture
 - **MPI explicit staging**: D2H → MPI_Isend/Irecv → H2D for low-latency halo exchange
 - **Row-band partitioning**: 1D decomposition with CSR format and halo zone exchange
+- **Compute-communication overlap**: interior/boundary decomposition with dual-stream execution hides halo exchange behind SpMV computation (3D stencils)
 - **Efficient reductions**: cuBLAS dot products instead of atomics (238× faster)
 - **Optimized for A100**: Takes advantage of NVLink/PCIe Gen4 bandwidth
 
 ### Algorithm Features
 - **Conjugate Gradient (CG)**: Iterative Krylov method for symmetric positive definite systems
-- **5-point stencil**: Custom CUDA kernels for finite difference discretizations
+- **2D/3D stencils**: Custom CUDA kernels for 5-point (2D), 7-point and 27-point (3D) finite difference discretizations
+- **Interior/boundary split**: 3D solver decomposes SpMV into halo-independent interior rows and halo-dependent boundary rows for concurrent execution
 - **Halo exchange**: Minimal communication (160 KB per exchange for 10k grid)
 - **Convergence criterion**: Relative residual < 1e-6
 
@@ -309,8 +436,8 @@ Results are saved to `results/raw/` (TXT) and `results/json/` (structured data).
 ### Reproduce All Results (One Command)
 
 ```bash
-git clone https://github.com/1fni/cuda-spmv-benchmark.git
-cd cuda-spmv-benchmark
+git clone https://github.com/1fni/mgpu-cg-stencil-solver.git
+cd mgpu-cg-stencil-solver
 
 # Setup (auto-detects GPU, installs dependencies)
 ./scripts/setup/full_setup.sh            # Basic setup
@@ -371,6 +498,19 @@ GPU 6: rows [75k, 87.5k)     │
 GPU 7: rows [87.5k, 100k)    ┘
 ```
 
+```
+Z-slab partitioning (8 GPUs, 256³ grid):
+
+GPU 0: Z-planes [0, 32)       ┐
+GPU 1: Z-planes [32, 64)      │
+GPU 2: Z-planes [64, 96)      │  Halo exchange:
+GPU 3: Z-planes [96, 128)     │  - 1 XY-plane per neighbor (N² doubles)
+GPU 4: Z-planes [128, 160)    │  - 256² × 8 bytes = 512 KB per direction
+GPU 5: Z-planes [160, 192)    │  - MPI explicit staging (D2H → MPI → H2D)
+GPU 6: Z-planes [192, 224)    │
+GPU 7: Z-planes [224, 256)    ┘
+```
+
 ### CG Algorithm Structure
 
 ```c
@@ -378,7 +518,7 @@ GPU 7: rows [87.5k, 100k)    ┘
    - Partition matrix rows across GPUs
    - Exchange halo zones for initial vectors (x, r)
 
-2. CG iteration loop (14 iterations):
+2. CG iteration loop (until convergence):
    a. SpMV: y = A×p (with halo exchange)
    b. Dot products: α = (r,r)/(p,y)  [MPI_Allreduce]
    c. AXPY updates: x += α×p, r -= α×y
@@ -388,6 +528,12 @@ GPU 7: rows [87.5k, 100k)    ┘
 
 3. Gather final solution to all ranks
 ```
+
+**3D overlap variant:** In overlap mode, step (a) is split into three
+concurrent phases: the interior SpMV runs on stream_compute while the
+halo exchange (D2H + MPI + H2D) runs on stream_comm. Boundary rows
+are computed after halo arrival. This hides communication latency
+behind useful computation.
 
 **Performance characteristics:**
 - **SpMV dominates** (~40-50% of total time)
@@ -404,7 +550,8 @@ GPU 7: rows [87.5k, 100k)    ┘
 ├── scripts/
 │   ├── run_all.sh                  # ONE COMMAND to reproduce all results
 │   ├── benchmarking/               # Individual benchmark scripts
-│   └── plotting/                   # Python visualization (matplotlib)
+│   ├── plotting/                   # Python plotting utilities
+│   └── visualizations/             # README figure generation scripts
 ├── results/
 │   ├── raw/                        # Raw benchmark outputs (TXT)
 │   ├── json/                       # Structured results (JSON)
@@ -542,10 +689,10 @@ If you use this code in your research, please cite:
 ```bibtex
 @software{mgpu_cg_solver,
   author = {Bouhrour, Stephane},
-  title = {Multi-GPU Conjugate Gradient Solver with MPI},
+  title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
   year = {2026},
-  url = {https://github.com/1fni/cuda-spmv-benchmark},
-  note = {7.48× speedup on 400M unknowns with 8 A100 GPUs}
+  url = {https://github.com/1fni/mgpu-cg-stencil-solver},
+  note = {2.07× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
 }
 ```
 

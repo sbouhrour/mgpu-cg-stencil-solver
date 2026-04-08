@@ -29,13 +29,14 @@ int main(int argc, char** argv) {
 
     if (argc < 2) {
         if (rank == 0) {
-            printf(
-                "Usage: mpirun -np <N> %s <matrix.mtx> [--timers] [--json=<file>] [--csv=<file>]\n",
-                argv[0]);
+            printf("Usage: mpirun -np <N> %s <matrix.mtx> [--timers] [--overlap] [--json=<file>] "
+                   "[--csv=<file>]\n",
+                   argv[0]);
             printf("Example: mpirun -np 2 %s matrix/stencil_512x512.mtx --json=results.json\n",
                    argv[0]);
             printf("Options:\n");
             printf("  --timers      Enable detailed timing breakdown (adds GPU sync overhead)\n");
+            printf("  --overlap     Use compute-communication overlap solver\n");
             printf("  --json=<file> Export results to JSON file\n");
             printf("  --csv=<file>  Export results to CSV file\n");
         }
@@ -60,7 +61,7 @@ int main(int argc, char** argv) {
     }
 
     if (rank == 0) {
-        printf("Matrix loaded: %d × %d, %d nonzeros\n", mat.rows, mat.cols, mat.nnz);
+        printf("Matrix loaded: %d × %d, %lld nonzeros\n", mat.rows, mat.cols, mat.nnz);
         printf("\nCalling partitioned multi-GPU CG solver...\n");
     }
 
@@ -75,17 +76,23 @@ int main(int argc, char** argv) {
 
     // CG configuration
     CGConfigMultiGPU config;
-    config.max_iters = 1000;
+    config.max_iters = 5000;
     config.tolerance = 1e-6;
-    config.verbose = 1;  // Basic info only (no per-iteration residuals to avoid sync overhead)
+    config.verbose = 1;
 
     // Detailed timers: disabled by default (no sync overhead), enable with --timers flag
     config.enable_detailed_timers = 0;
+    config.enable_overlap = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--timers") == 0) {
             config.enable_detailed_timers = 1;
             if (rank == 0) {
                 printf("Detailed timers enabled (adds sync overhead)\n");
+            }
+        } else if (strcmp(argv[i], "--overlap") == 0) {
+            config.enable_overlap = 1;
+            if (rank == 0) {
+                printf("Overlap solver enabled (compute-communication overlap)\n");
             }
         } else if (strncmp(argv[i], "--json=", 7) == 0) {
             json_file = argv[i] + 7;
@@ -93,6 +100,11 @@ int main(int argc, char** argv) {
             csv_file = argv[i] + 6;
         }
     }
+
+    // Select solver function
+    int (*solver_fn)(SpmvOperator*, MatrixData*, const double*, double*, CGConfigMultiGPU,
+                     CGStatsMultiGPU*) =
+        config.enable_overlap ? cg_solve_mgpu_partitioned_overlap : cg_solve_mgpu_partitioned;
 
     // Warmup: 3 full CG runs
     if (rank == 0)
@@ -102,7 +114,7 @@ int main(int argc, char** argv) {
     CGStatsMultiGPU warmup_stats;
     for (int w = 0; w < 3; w++) {
         memset(x, 0, mat.rows * sizeof(double));
-        cg_solve_mgpu_partitioned(NULL, &mat, b, x, warmup_config, &warmup_stats);
+        solver_fn(NULL, &mat, b, x, warmup_config, &warmup_stats);
     }
 
     // Reset x to zero before profiled run (warmup leaves x = solution)
@@ -113,7 +125,7 @@ int main(int argc, char** argv) {
         printf("Running profiled iteration (for nsys)...\n");
     CGStatsMultiGPU profiled_stats;
     cudaProfilerStart();
-    cg_solve_mgpu_partitioned(NULL, &mat, b, x, config, &profiled_stats);
+    solver_fn(NULL, &mat, b, x, config, &profiled_stats);
     cudaProfilerStop();
     if (rank == 0) {
         printf("Profiled run: %s in %d iterations\n",
@@ -123,16 +135,29 @@ int main(int argc, char** argv) {
     // Reset x again before benchmark
     memset(x, 0, mat.rows * sizeof(double));
 
-    // Benchmark: 10 runs with statistical analysis (match AmgX default)
-    if (rank == 0)
-        printf("Running benchmark (10 runs)...\n");
     BenchmarkStats bench_stats;
     CGStatsMultiGPU stats;
-    cg_benchmark_with_stats_mgpu_partitioned(NULL, &mat, b, x, config, 10, &bench_stats, &stats);
 
-    if (rank == 0) {
-        printf("Completed: %d valid runs, %d outliers removed\n", bench_stats.valid_runs,
-               bench_stats.outliers_removed);
+    if (!config.enable_overlap) {
+        // Benchmark: 10 runs with statistical analysis (match AmgX default)
+        if (rank == 0)
+            printf("Running benchmark (10 runs)...\n");
+        cg_benchmark_with_stats_mgpu_partitioned(NULL, &mat, b, x, config, 10, &bench_stats,
+                                                 &stats);
+        if (rank == 0) {
+            printf("Completed: %d valid runs, %d outliers removed\n", bench_stats.valid_runs,
+                   bench_stats.outliers_removed);
+        }
+    } else {
+        // Overlap: single timed run (use profiled run stats)
+        solver_fn(NULL, &mat, b, x, config, &stats);
+        bench_stats.median_ms = stats.time_total_ms;
+        bench_stats.mean_ms = stats.time_total_ms;
+        bench_stats.min_ms = stats.time_total_ms;
+        bench_stats.max_ms = stats.time_total_ms;
+        bench_stats.std_dev_ms = 0.0;
+        bench_stats.valid_runs = 1;
+        bench_stats.outliers_removed = 0;
     }
 
     // Display results for verification (rank 0 only)

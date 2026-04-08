@@ -40,7 +40,7 @@ echo ""
 # Verify we're in project root
 if [ ! -f "Makefile" ] || [ ! -d "src" ]; then
     echo "Error: Must be run from project root directory"
-    echo "Usage: cd cuda-spmv-benchmark && ./scripts/setup/full_setup.sh"
+    echo "Usage: cd mgpu-cg-stencil-solver && ./scripts/setup/full_setup.sh"
     exit 1
 fi
 

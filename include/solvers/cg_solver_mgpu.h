@@ -40,6 +40,7 @@ typedef struct {
     double tolerance;            ///< Convergence tolerance
     int verbose;                 ///< Verbosity level (0=silent, 1=summary, 2=per-iter)
     int enable_detailed_timers;  ///< Enable timing breakdown
+    int enable_overlap;          ///< Enable compute-communication overlap
 } CGConfigMultiGPU;
 
 /**
@@ -68,6 +69,14 @@ typedef struct {
     // Solution validation
     double solution_sum;   ///< Sum of solution vector elements
     double solution_norm;  ///< L2 norm of solution vector
+
+    // Overlap metrics (populated when enable_overlap=1 and enable_detailed_timers=1)
+    double time_spmv_interior_ms;  ///< Interior SpMV time (halo-independent rows)
+    double time_spmv_boundary_ms;  ///< Boundary SpMV time (halo-dependent rows)
+    double time_comm_total_ms;     ///< Total communication time (D2H + MPI + H2D)
+    double time_comm_hidden_ms;    ///< Communication hidden behind interior compute
+    double time_comm_exposed_ms;   ///< Exposed communication (not hidden)
+    double overlap_efficiency;     ///< Fraction of comm hidden (0.0 to 1.0)
 } CGStatsMultiGPU;
 
 /**

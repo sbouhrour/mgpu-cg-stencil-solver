@@ -28,8 +28,8 @@
 struct CSRMatrix {
     int nb_rows;
     int nb_cols;
-    int nb_nonzeros;
-    int* row_ptr;
+    long long nb_nonzeros;
+    long long* row_ptr;
     int* col_indices;
     double* values;
 };
