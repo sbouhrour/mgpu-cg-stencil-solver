@@ -689,10 +689,10 @@ If you use this code in your research, please cite:
 ```bibtex
 @software{mgpu_cg_solver,
   author = {Bouhrour, Stephane},
-  title = {Multi-GPU Conjugate Gradient Solver with MPI},
+  title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
   year = {2026},
   url = {https://github.com/1fni/cuda-spmv-benchmark},
-  note = {7.48× speedup on 400M unknowns with 8 A100 GPUs}
+  note = {2.07× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
 }
 ```
 
