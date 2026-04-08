@@ -52,7 +52,7 @@ jobs:
           echo -e "$FORMATTING_ISSUES"
           echo ""
           echo "To fix, run: clang-format -i <file>"
-          echo "Or apply to all files: find src include -name '*.cu' -o -name '*.h' | xargs clang-format -i"
+          echo "Or apply to all files: find src include -type f \( -name '*.cu' -o -name '*.h' -o -name '*.cpp' -o -name '*.hpp' \) -exec clang-format-14 -i {} +"
           exit 1
         fi
 
