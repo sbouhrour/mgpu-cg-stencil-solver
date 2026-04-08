@@ -52,7 +52,7 @@ jobs:
           echo -e "$FORMATTING_ISSUES"
           echo ""
           echo "To fix, run: clang-format -i <file>"
-          echo "Or apply to all files: find src include -name '*.cu' -o -name '*.h' | xargs clang-format -i"
+          echo "Or apply to all files: find src include -type f \( -name '*.cu' -o -name '*.h' -o -name '*.cpp' -o -name '*.hpp' \) -exec clang-format-14 -i {} +"
           exit 1
         fi
 
@@ -110,6 +110,29 @@ jobs:
         find /usr/local -name "cusparse.h" 2>/dev/null | head -5 || echo "cusparse.h not found in /usr/local"
         ls -la /usr/local/cuda*/include/ 2>/dev/null | head -10 || echo "No CUDA include directories found"
         ls -la /usr/include/cuda* 2>/dev/null | head -5 || echo "No CUDA headers in /usr/include"
+
+    - name: Install NVTX3 headers
+      run: |
+        echo "Installing NVTX3 headers from NVIDIA/NVTX GitHub release..."
+        CUDA_VER=$(echo "${{ matrix.cuda_version }}" | cut -d. -f1,2)
+        CUDA_INCLUDE="/usr/local/cuda-${CUDA_VER}/include"
+
+        # Check if already present
+        if [ -f "${CUDA_INCLUDE}/nvtx3/nvToolsExt.h" ]; then
+          echo "NVTX3 headers already present at ${CUDA_INCLUDE}/nvtx3"
+          ls "${CUDA_INCLUDE}/nvtx3" | head -5
+          exit 0
+        fi
+
+        # Download and install from NVIDIA/NVTX release
+        wget -q https://github.com/NVIDIA/NVTX/archive/refs/tags/v3.1.0.tar.gz -O /tmp/nvtx3.tar.gz
+        tar xzf /tmp/nvtx3.tar.gz -C /tmp/
+        sudo mkdir -p "${CUDA_INCLUDE}/nvtx3"
+        sudo cp -r /tmp/NVTX-3.1.0/c/include/nvtx3/* "${CUDA_INCLUDE}/nvtx3/"
+
+        echo "NVTX3 headers installed:"
+        ls "${CUDA_INCLUDE}/nvtx3" | head -10
+        test -f "${CUDA_INCLUDE}/nvtx3/nvToolsExt.h" && echo "OK: nvToolsExt.h present"
 
     - name: Build CUDA SpMV suite (${{ matrix.build_type }})
       run: |
