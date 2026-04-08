@@ -926,7 +926,8 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
         if (stats->time_comm_exposed_ms < 0.0)
             stats->time_comm_exposed_ms = 0.0;
         stats->overlap_efficiency = (stats->time_comm_total_ms > 0.0)
-            ? stats->time_comm_hidden_ms / stats->time_comm_total_ms : 0.0;
+                                        ? stats->time_comm_hidden_ms / stats->time_comm_total_ms
+                                        : 0.0;
     }
 
     stats->time_total_ms = time_ms;
@@ -941,16 +942,15 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
         if (rank == 0) {
             stats->time_total_ms = max_time;
             double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
-            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_time, min_time, imbalance_pct);
+            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n", max_time,
+                   min_time, imbalance_pct);
         }
     }
 
     // Print results
     if (rank == 0 && config.verbose >= 1) {
         printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
-        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n",
-               stats->time_comm_total_ms,
+        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n", stats->time_comm_total_ms,
                stats->time_comm_total_ms / stats->iterations);
         printf("  Comm hidden:  %.2f ms\n", stats->time_comm_hidden_ms);
         printf("  Comm exposed: %.2f ms\n", stats->time_comm_exposed_ms);
@@ -1405,7 +1405,8 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         if (stats->time_comm_exposed_ms < 0.0)
             stats->time_comm_exposed_ms = 0.0;
         stats->overlap_efficiency = (stats->time_comm_total_ms > 0.0)
-            ? stats->time_comm_hidden_ms / stats->time_comm_total_ms : 0.0;
+                                        ? stats->time_comm_hidden_ms / stats->time_comm_total_ms
+                                        : 0.0;
     }
 
     stats->time_total_ms = time_ms;
@@ -1420,15 +1421,14 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         if (rank == 0) {
             stats->time_total_ms = max_time;
             double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
-            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_time, min_time, imbalance_pct);
+            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n", max_time,
+                   min_time, imbalance_pct);
         }
     }
 
     if (rank == 0 && config.verbose >= 1) {
         printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
-        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n",
-               stats->time_comm_total_ms,
+        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n", stats->time_comm_total_ms,
                stats->time_comm_total_ms / stats->iterations);
         printf("  Comm hidden:  %.2f ms\n", stats->time_comm_hidden_ms);
         printf("  Comm exposed: %.2f ms\n", stats->time_comm_exposed_ms);
@@ -1858,7 +1858,8 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         if (stats->time_comm_exposed_ms < 0.0)
             stats->time_comm_exposed_ms = 0.0;
         stats->overlap_efficiency = (stats->time_comm_total_ms > 0.0)
-            ? stats->time_comm_hidden_ms / stats->time_comm_total_ms : 0.0;
+                                        ? stats->time_comm_hidden_ms / stats->time_comm_total_ms
+                                        : 0.0;
     }
 
     stats->time_total_ms = time_ms;
@@ -1872,15 +1873,14 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         if (rank == 0) {
             stats->time_total_ms = max_time;
             double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
-            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_time, min_time, imbalance_pct);
+            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n", max_time,
+                   min_time, imbalance_pct);
         }
     }
 
     if (rank == 0 && config.verbose >= 1) {
         printf("\nOverlap Metrics (%d iterations):\n", stats->iterations);
-        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n",
-               stats->time_comm_total_ms,
+        printf("  Comm total:   %.2f ms (%.3f ms/iter)\n", stats->time_comm_total_ms,
                stats->time_comm_total_ms / stats->iterations);
         printf("  Comm hidden:  %.2f ms\n", stats->time_comm_hidden_ms);
         printf("  Comm exposed: %.2f ms\n", stats->time_comm_exposed_ms);
