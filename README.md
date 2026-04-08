@@ -1,6 +1,6 @@
 # Multi-GPU Conjugate Gradient Solver
 
-[![CI](https://github.com/1fni/cuda-spmv-benchmark/actions/workflows/ci.yml/badge.svg)](https://github.com/1fni/cuda-spmv-benchmark/actions/workflows/ci.yml)
+[![CI](https://github.com/1fni/mgpu-cg-stencil-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/1fni/mgpu-cg-stencil-solver/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CUDA](https://img.shields.io/badge/CUDA-11.8%20%7C%2012.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 
@@ -436,8 +436,8 @@ Results are saved to `results/raw/` (TXT) and `results/json/` (structured data).
 ### Reproduce All Results (One Command)
 
 ```bash
-git clone https://github.com/1fni/cuda-spmv-benchmark.git
-cd cuda-spmv-benchmark
+git clone https://github.com/1fni/mgpu-cg-stencil-solver.git
+cd mgpu-cg-stencil-solver
 
 # Setup (auto-detects GPU, installs dependencies)
 ./scripts/setup/full_setup.sh            # Basic setup
@@ -691,7 +691,7 @@ If you use this code in your research, please cite:
   author = {Bouhrour, Stephane},
   title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
   year = {2026},
-  url = {https://github.com/1fni/cuda-spmv-benchmark},
+  url = {https://github.com/1fni/mgpu-cg-stencil-solver},
   note = {2.07× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
 }
 ```
