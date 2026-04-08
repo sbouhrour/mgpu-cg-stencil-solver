@@ -15,7 +15,7 @@
  * @details Uses direct column indices (no indirection) for interior stencil points
  */
 __global__ void stencil5_csr_partitioned_halo_kernel(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N, int grid_size) {
@@ -27,8 +27,8 @@ __global__ void stencil5_csr_partitioned_halo_kernel(
     int i = row / grid_size;
     int j = row % grid_size;
 
-    int row_start = row_ptr[local_row];
-    int row_end = row_ptr[local_row + 1];
+    long long row_start = row_ptr[local_row];
+    long long row_end = row_ptr[local_row + 1];
 
     double sum = 0.0;
 
@@ -74,7 +74,7 @@ __global__ void stencil5_csr_partitioned_halo_kernel(
     }
     // Boundary: CSR traversal with halo mapping
     else {
-        for (int k = row_start; k < row_end; k++) {
+        for (long long k = row_start; k < row_end; k++) {
             int global_col = col_idx[k];
             double val;
 

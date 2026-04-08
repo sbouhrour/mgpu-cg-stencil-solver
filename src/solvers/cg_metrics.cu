@@ -7,6 +7,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "solvers/cg_solver.h"
 #include "solvers/cg_solver_mgpu.h"
@@ -38,7 +39,7 @@ void export_cg_json(const char* filename, const char* mode, const MatrixData* ma
     fprintf(fp, "  \"matrix\": {\n");
     fprintf(fp, "    \"rows\": %d,\n", mat->rows);
     fprintf(fp, "    \"cols\": %d,\n", mat->cols);
-    fprintf(fp, "    \"nnz\": %d,\n", mat->nnz);
+    fprintf(fp, "    \"nnz\": %lld,\n", mat->nnz);
     fprintf(fp, "    \"grid_size\": %d\n", mat->grid_size);
     fprintf(fp, "  },\n");
 
@@ -105,7 +106,7 @@ void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixDat
     fprintf(fp, "  \"matrix\": {\n");
     fprintf(fp, "    \"rows\": %d,\n", mat->rows);
     fprintf(fp, "    \"cols\": %d,\n", mat->cols);
-    fprintf(fp, "    \"nnz\": %d,\n", mat->nnz);
+    fprintf(fp, "    \"nnz\": %lld,\n", mat->nnz);
     fprintf(fp, "    \"grid_size\": %d\n", mat->grid_size);
     fprintf(fp, "  },\n");
 
@@ -120,12 +121,7 @@ void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixDat
     fprintf(fp, "    \"mean_ms\": %.3f,\n", bench_stats->mean_ms);
     fprintf(fp, "    \"min_ms\": %.3f,\n", bench_stats->min_ms);
     fprintf(fp, "    \"max_ms\": %.3f,\n", bench_stats->max_ms);
-    fprintf(fp, "    \"std_dev_ms\": %.3f,\n", bench_stats->std_dev_ms);
-    fprintf(fp, "    \"spmv_ms\": %.3f,\n", cg_stats->time_spmv_ms);
-    fprintf(fp, "    \"blas1_ms\": %.3f,\n", cg_stats->time_blas1_ms);
-    fprintf(fp, "    \"reductions_ms\": %.3f,\n", cg_stats->time_reductions_ms);
-    fprintf(fp, "    \"allreduce_ms\": %.3f,\n", cg_stats->time_allreduce_ms);
-    fprintf(fp, "    \"allgather_ms\": %.3f\n", cg_stats->time_allgather_ms);
+    fprintf(fp, "    \"std_dev_ms\": %.3f\n", bench_stats->std_dev_ms);
     fprintf(fp, "  },\n");
 
     fprintf(fp, "  \"statistics\": {\n");
@@ -134,8 +130,23 @@ void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixDat
     fprintf(fp, "  },\n");
 
     fprintf(fp, "  \"performance\": {\n");
-    double gflops = (2.0 * mat->nnz * cg_stats->iterations) / (cg_stats->time_spmv_ms * 1e6);
-    fprintf(fp, "    \"gflops_spmv\": %.3f\n", gflops);
+    double gflops = (2.0 * mat->nnz * (double)cg_stats->iterations)
+                    / (bench_stats->median_ms * 1e6);
+    fprintf(fp, "    \"gflops_spmv_est\": %.3f\n", gflops);
+    fprintf(fp, "  },\n");
+
+    int is_overlap = (strstr(mode, "overlap") != NULL);
+    fprintf(fp, "  \"overlap\": {\n");
+    if (is_overlap) {
+        fprintf(fp, "    \"enabled\": true,\n");
+        fprintf(fp, "    \"comm_total_ms\": %.3f,\n", cg_stats->time_comm_total_ms);
+        fprintf(fp, "    \"comm_hidden_ms\": %.3f,\n", cg_stats->time_comm_hidden_ms);
+        fprintf(fp, "    \"comm_exposed_ms\": %.3f,\n", cg_stats->time_comm_exposed_ms);
+        fprintf(fp, "    \"overlap_efficiency_pct\": %.1f\n",
+                cg_stats->overlap_efficiency * 100.0);
+    } else {
+        fprintf(fp, "    \"enabled\": false\n");
+    }
     fprintf(fp, "  },\n");
 
     fprintf(fp, "  \"validation\": {\n");
@@ -169,8 +180,8 @@ void export_cg_csv(const char* filename, const char* mode, const MatrixData* mat
 
     double gflops = (2.0 * mat->nnz * cg_stats->iterations) / (cg_stats->time_spmv_ms * 1e6);
 
-    fprintf(fp, "%s,%d,%d,%d,%d,%d,%d,%.15e,", mode, mat->rows, mat->cols, mat->nnz, mat->grid_size,
-            cg_stats->converged, cg_stats->iterations, cg_stats->residual_norm);
+    fprintf(fp, "%s,%d,%d,%lld,%d,%d,%d,%.15e,", mode, mat->rows, mat->cols, mat->nnz,
+            mat->grid_size, cg_stats->converged, cg_stats->iterations, cg_stats->residual_norm);
     fprintf(fp, "%.3f,%.3f,%.3f,%.3f,%.3f,", bench_stats->median_ms, bench_stats->mean_ms,
             bench_stats->min_ms, bench_stats->max_ms, bench_stats->std_dev_ms);
     fprintf(fp, "%.3f,%.3f,%.3f,", cg_stats->time_spmv_ms, cg_stats->time_blas1_ms,

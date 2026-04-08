@@ -112,7 +112,7 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    printf("Matrix loaded: %d rows, %d cols, %d nonzeros\n", mat.rows, mat.cols, mat.nnz);
+    printf("Matrix loaded: %d rows, %d cols, %lld nonzeros\n", mat.rows, mat.cols, mat.nnz);
     printf("Testing %d mode(s): ", num_modes);
     for (int i = 0; i < num_modes; i++) {
         printf("%s%s", mode_tokens[i], (i < num_modes - 1) ? ", " : "\n");

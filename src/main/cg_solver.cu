@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
     bool use_device = true;
     bool enable_detailed_timers = false;  // Opt-in with --timers (avoids sync overhead)
     double tolerance = 1e-6;
-    int max_iters = 1000;
+    int max_iters = 5000;
     const char* json_file = NULL;
     const char* csv_file = NULL;
 

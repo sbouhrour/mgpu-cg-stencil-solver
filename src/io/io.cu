@@ -62,6 +62,240 @@ int read_matrix_type(const char* filename) {
 }
 
 /**
+ * @brief Generates a 3D 27-point stencil MatrixData for this MPI rank's partition only.
+ * @details Reads only the file header to get grid_size N, then generates COO entries
+ * for the z-slab partition owned by this rank (matching the solver's partitioning:
+ * n_local = N³/world_size, row_offset = rank * n_local). Each rank only allocates
+ * its share of memory (~total/world_size), preventing OOM for large grids.
+ * mat->rows is set to the global N³ so the solver's row_ptr indexing works correctly.
+ * @param matrix_path Path to the Matrix Market file (only header is read)
+ * @param mat Pointer to MatrixData structure to fill
+ * @param rank MPI rank of this process
+ * @param world_size Total number of MPI ranks
+ * @return 0 on success, non-zero on error
+ */
+int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
+                                       int world_size) {
+    // Read only the header to extract grid_size N
+    FILE* f = fopen(matrix_path, "r");
+    if (!f) {
+        fprintf(stderr, "Error opening file: %s\n", matrix_path);
+        return 1;
+    }
+
+    int N = -1;
+    char buffer[MAX_LINE_LENGTH];
+    while (fgets(buffer, MAX_LINE_LENGTH, f) != NULL) {
+        if (buffer[0] == '%') {
+            if (strstr(buffer, "STENCIL_GRID_SIZE") != NULL)
+                sscanf(buffer, "%% STENCIL_GRID_SIZE %d", &N);
+        } else {
+            break;  // reached dimension line, stop
+        }
+    }
+    fclose(f);
+
+    if (N <= 0) {
+        fprintf(stderr, "Could not find STENCIL_GRID_SIZE in header of %s\n", matrix_path);
+        return 1;
+    }
+
+    long long matrix_size = (long long)N * N * N;
+
+    // Compute this rank's row partition — mirrors cg_solver_mgpu_partitioned_3d logic:
+    //   n_local = N³ / world_size,  row_offset = rank * n_local
+    long long n_local_rows = matrix_size / world_size;
+    long long row_start = (long long)rank * n_local_rows;
+    long long row_end = (rank == world_size - 1) ? matrix_size : row_start + n_local_rows;
+
+    // Convert row boundaries to z-plane (i) boundaries (rows = i*N²+j*N+k)
+    int i_start = (int)(row_start / ((long long)N * N));
+    int i_end = (int)(row_end / ((long long)N * N));
+
+    if (rank == 0) {
+        printf("Generating 27pt stencil in memory for N=%d, partition [rank %d/%d, i=%d..%d]...\n",
+               N, rank, world_size, i_start, i_end - 1);
+        fflush(stdout);
+    }
+
+    // Count exact nnz for the local partition only
+    long long nnz = 0;
+    for (int i = i_start; i < i_end; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                nnz++;  // center
+                if (i > 0)
+                    nnz++;
+                if (i < N - 1)
+                    nnz++;
+                if (j > 0)
+                    nnz++;
+                if (j < N - 1)
+                    nnz++;
+                if (k > 0)
+                    nnz++;
+                if (k < N - 1)
+                    nnz++;
+                if (i > 0 && j > 0)
+                    nnz++;
+                if (i > 0 && j < N - 1)
+                    nnz++;
+                if (i < N - 1 && j > 0)
+                    nnz++;
+                if (i < N - 1 && j < N - 1)
+                    nnz++;
+                if (i > 0 && k > 0)
+                    nnz++;
+                if (i > 0 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && k > 0)
+                    nnz++;
+                if (i < N - 1 && k < N - 1)
+                    nnz++;
+                if (j > 0 && k > 0)
+                    nnz++;
+                if (j > 0 && k < N - 1)
+                    nnz++;
+                if (j < N - 1 && k > 0)
+                    nnz++;
+                if (j < N - 1 && k < N - 1)
+                    nnz++;
+                if (i > 0 && j > 0 && k > 0)
+                    nnz++;
+                if (i > 0 && j > 0 && k < N - 1)
+                    nnz++;
+                if (i > 0 && j < N - 1 && k > 0)
+                    nnz++;
+                if (i > 0 && j < N - 1 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && j > 0 && k > 0)
+                    nnz++;
+                if (i < N - 1 && j > 0 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && j < N - 1 && k > 0)
+                    nnz++;
+                if (i < N - 1 && j < N - 1 && k < N - 1)
+                    nnz++;
+            }
+        }
+    }
+
+    if (rank == 0) {
+        printf("  local nnz = %lld, allocating %.1f GB for COO entries...\n", nnz,
+               (double)nnz * sizeof(Entry) / 1e9);
+        fflush(stdout);
+    }
+
+    Entry* entries = (Entry*)malloc(nnz * sizeof(Entry));
+    if (!entries) {
+        fprintf(stderr, "[Rank %d] malloc failed for %lld entries (%.1f GB)\n", rank, nnz,
+                (double)nnz * sizeof(Entry) / 1e9);
+        return 1;
+    }
+
+    // Fill entries for local partition only
+    long long idx = 0;
+    long long local_points = (long long)(i_end - i_start) * N * N;
+    long long progress_step = local_points / 20;
+    if (progress_step == 0)
+        progress_step = 1;
+
+    for (int i = i_start; i < i_end; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                long long global_idx = (long long)i * N * N + j * N + k;
+                int row = (int)global_idx;
+
+                long long local_idx = global_idx - row_start;
+                if (rank == 0 && local_idx % progress_step == 0) {
+                    printf("\r  Generating entries: %d%%", (int)(local_idx * 100 / local_points));
+                    fflush(stdout);
+                }
+
+                // Center
+                entries[idx++] = (Entry){row, row, 26.0};
+
+// 6 face neighbors
+#define ADD(ni)                    \
+    entries[idx++] = (Entry) {     \
+        row, (int)((ni) - 1), -1.0 \
+    }
+                if (i > 0)
+                    ADD((long long)(i - 1) * N * N + j * N + k + 1);
+                if (i < N - 1)
+                    ADD((long long)(i + 1) * N * N + j * N + k + 1);
+                if (j > 0)
+                    ADD((long long)i * N * N + (j - 1) * N + k + 1);
+                if (j < N - 1)
+                    ADD((long long)i * N * N + (j + 1) * N + k + 1);
+                if (k > 0)
+                    ADD((long long)i * N * N + j * N + (k - 1) + 1);
+                if (k < N - 1)
+                    ADD((long long)i * N * N + j * N + (k + 1) + 1);
+                // 12 edge neighbors
+                if (i > 0 && j > 0)
+                    ADD((long long)(i - 1) * N * N + (j - 1) * N + k + 1);
+                if (i > 0 && j < N - 1)
+                    ADD((long long)(i - 1) * N * N + (j + 1) * N + k + 1);
+                if (i < N - 1 && j > 0)
+                    ADD((long long)(i + 1) * N * N + (j - 1) * N + k + 1);
+                if (i < N - 1 && j < N - 1)
+                    ADD((long long)(i + 1) * N * N + (j + 1) * N + k + 1);
+                if (i > 0 && k > 0)
+                    ADD((long long)(i - 1) * N * N + j * N + (k - 1) + 1);
+                if (i > 0 && k < N - 1)
+                    ADD((long long)(i - 1) * N * N + j * N + (k + 1) + 1);
+                if (i < N - 1 && k > 0)
+                    ADD((long long)(i + 1) * N * N + j * N + (k - 1) + 1);
+                if (i < N - 1 && k < N - 1)
+                    ADD((long long)(i + 1) * N * N + j * N + (k + 1) + 1);
+                if (j > 0 && k > 0)
+                    ADD((long long)i * N * N + (j - 1) * N + (k - 1) + 1);
+                if (j > 0 && k < N - 1)
+                    ADD((long long)i * N * N + (j - 1) * N + (k + 1) + 1);
+                if (j < N - 1 && k > 0)
+                    ADD((long long)i * N * N + (j + 1) * N + (k - 1) + 1);
+                if (j < N - 1 && k < N - 1)
+                    ADD((long long)i * N * N + (j + 1) * N + (k + 1) + 1);
+                // 8 corner neighbors
+                if (i > 0 && j > 0 && k > 0)
+                    ADD((long long)(i - 1) * N * N + (j - 1) * N + (k - 1) + 1);
+                if (i > 0 && j > 0 && k < N - 1)
+                    ADD((long long)(i - 1) * N * N + (j - 1) * N + (k + 1) + 1);
+                if (i > 0 && j < N - 1 && k > 0)
+                    ADD((long long)(i - 1) * N * N + (j + 1) * N + (k - 1) + 1);
+                if (i > 0 && j < N - 1 && k < N - 1)
+                    ADD((long long)(i - 1) * N * N + (j + 1) * N + (k + 1) + 1);
+                if (i < N - 1 && j > 0 && k > 0)
+                    ADD((long long)(i + 1) * N * N + (j - 1) * N + (k - 1) + 1);
+                if (i < N - 1 && j > 0 && k < N - 1)
+                    ADD((long long)(i + 1) * N * N + (j - 1) * N + (k + 1) + 1);
+                if (i < N - 1 && j < N - 1 && k > 0)
+                    ADD((long long)(i + 1) * N * N + (j + 1) * N + (k - 1) + 1);
+                if (i < N - 1 && j < N - 1 && k < N - 1)
+                    ADD((long long)(i + 1) * N * N + (j + 1) * N + (k + 1) + 1);
+#undef ADD
+            }
+        }
+    }
+    if (rank == 0)
+        printf("\r  Generating entries: 100%%\n");
+
+    // mat->rows is GLOBAL (N³) so the solver's row_ptr indexing works correctly.
+    // mat->nnz is LOCAL (only this rank's entries).
+    mat->rows = (int)matrix_size;
+    mat->cols = (int)matrix_size;
+    mat->nnz = nnz;
+    mat->grid_size = N;
+    mat->entries = entries;
+
+    if (rank == 0)
+        printf("  Done: global %d rows, local %lld nnz (rank %d/%d)\n", mat->rows, mat->nnz, rank,
+               world_size);
+    return 0;
+}
+
+/**
  * @brief Loads a matrix from Matrix Market format into MatrixData structure.
  * @details Main entry point for matrix loading. Automatically detects matrix type
  * (general or symmetric) and calls the appropriate reading function. For symmetric
@@ -395,5 +629,343 @@ int write_matrix_market_stencil5(int n, const char* filename) {
     printf("\rWriting matrix entries: 100%%\n");
     fclose(f);
     printf("Matrix generated: %s (%dx%d, %d nnz)\n", filename, grid_size, grid_size, nnz);
+    return 0;
+}
+
+/**
+ * Generate 3D 7-point stencil matrix in Matrix Market format
+ * Grid: NxNxN, row-major ordering: global_idx = i*N*N + j*N + k
+ */
+int write_matrix_market_stencil7(int N, const char* filename) {
+    long long matrix_size = (long long)N * N * N;
+
+    // Calculate the exact number of non-zeros
+    long long nnz = 0;
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                nnz++;  // Center
+                if (i > 0)
+                    nnz++;  // -x neighbor
+                if (i < N - 1)
+                    nnz++;  // +x neighbor
+                if (j > 0)
+                    nnz++;  // -y neighbor
+                if (j < N - 1)
+                    nnz++;  // +y neighbor
+                if (k > 0)
+                    nnz++;  // -z neighbor
+                if (k < N - 1)
+                    nnz++;  // +z neighbor
+            }
+        }
+    }
+
+    FILE* f = fopen(filename, "w");
+    if (!f) {
+        perror("fopen");
+        exit(1);
+    }
+
+    // Write Matrix Market header
+    fprintf(f, "%%%%MatrixMarket matrix coordinate real general\n");
+    fprintf(f, "%% STENCIL_GRID_SIZE %d\n", N);
+    fprintf(f, "%lld %lld %lld\n", matrix_size, matrix_size, nnz);
+
+    // Write values with progress indication
+    long long total_points = matrix_size;
+    long long progress_step = total_points / 100;
+    if (progress_step == 0)
+        progress_step = 1;
+
+    printf("Writing 3D matrix entries: 0%%");
+    fflush(stdout);
+
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                long long global_idx = (long long)i * N * N + j * N + k;
+                long long row_1based = global_idx + 1;
+
+                // Progress indicator
+                if (global_idx % progress_step == 0 || global_idx % 10000 == 0) {
+                    int percent = (int)((global_idx * 100) / total_points);
+                    printf("\rWriting 3D matrix entries: %d%%", percent);
+                    fflush(stdout);
+                }
+
+                // Center (Laplacian with mass term: 6.0)
+                fprintf(f, "%lld %lld 6.0\n", row_1based, row_1based);
+
+                // -x neighbor (i-1, j, k)
+                if (i > 0) {
+                    long long neighbor_idx = (long long)(i - 1) * N * N + j * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, neighbor_idx);
+                }
+
+                // +x neighbor (i+1, j, k)
+                if (i < N - 1) {
+                    long long neighbor_idx = (long long)(i + 1) * N * N + j * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, neighbor_idx);
+                }
+
+                // -y neighbor (i, j-1, k)
+                if (j > 0) {
+                    long long neighbor_idx = (long long)i * N * N + (j - 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, neighbor_idx);
+                }
+
+                // +y neighbor (i, j+1, k)
+                if (j < N - 1) {
+                    long long neighbor_idx = (long long)i * N * N + (j + 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, neighbor_idx);
+                }
+
+                // -z neighbor (i, j, k-1)
+                if (k > 0) {
+                    long long neighbor_idx = (long long)i * N * N + j * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, neighbor_idx);
+                }
+
+                // +z neighbor (i, j, k+1)
+                if (k < N - 1) {
+                    long long neighbor_idx = (long long)i * N * N + j * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, neighbor_idx);
+                }
+            }
+        }
+    }
+
+    printf("\rWriting 3D matrix entries: 100%%\n");
+    fclose(f);
+    printf("3D Matrix generated: %s (%lld×%lld, %lld nnz)\n", filename, matrix_size, matrix_size,
+           nnz);
+    return 0;
+}
+
+/**
+ * Generate 3D 27-point stencil matrix in Matrix Market format
+ * Grid: NxNxN, row-major ordering: global_idx = i*N*N + j*N + k
+ * Stencil: center = 26.0, all 26 neighbors = -1.0
+ * 26 neighbors = 6 face + 12 edge + 8 corner adjacent
+ */
+int write_matrix_market_stencil27(int N, const char* filename) {
+    long long matrix_size = (long long)N * N * N;
+
+    // Calculate exact number of non-zeros
+    long long nnz = 0;
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                nnz++;  // Center
+                // 6 face neighbors
+                if (i > 0)
+                    nnz++;
+                if (i < N - 1)
+                    nnz++;
+                if (j > 0)
+                    nnz++;
+                if (j < N - 1)
+                    nnz++;
+                if (k > 0)
+                    nnz++;
+                if (k < N - 1)
+                    nnz++;
+                // 12 edge neighbors
+                if (i > 0 && j > 0)
+                    nnz++;
+                if (i > 0 && j < N - 1)
+                    nnz++;
+                if (i < N - 1 && j > 0)
+                    nnz++;
+                if (i < N - 1 && j < N - 1)
+                    nnz++;
+                if (i > 0 && k > 0)
+                    nnz++;
+                if (i > 0 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && k > 0)
+                    nnz++;
+                if (i < N - 1 && k < N - 1)
+                    nnz++;
+                if (j > 0 && k > 0)
+                    nnz++;
+                if (j > 0 && k < N - 1)
+                    nnz++;
+                if (j < N - 1 && k > 0)
+                    nnz++;
+                if (j < N - 1 && k < N - 1)
+                    nnz++;
+                // 8 corner neighbors
+                if (i > 0 && j > 0 && k > 0)
+                    nnz++;
+                if (i > 0 && j > 0 && k < N - 1)
+                    nnz++;
+                if (i > 0 && j < N - 1 && k > 0)
+                    nnz++;
+                if (i > 0 && j < N - 1 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && j > 0 && k > 0)
+                    nnz++;
+                if (i < N - 1 && j > 0 && k < N - 1)
+                    nnz++;
+                if (i < N - 1 && j < N - 1 && k > 0)
+                    nnz++;
+                if (i < N - 1 && j < N - 1 && k < N - 1)
+                    nnz++;
+            }
+        }
+    }
+
+    FILE* f = fopen(filename, "w");
+    if (!f) {
+        perror("fopen");
+        exit(1);
+    }
+
+    fprintf(f, "%%%%MatrixMarket matrix coordinate real general\n");
+    fprintf(f, "%% STENCIL_GRID_SIZE %d\n", N);
+    fprintf(f, "%lld %lld %lld\n", matrix_size, matrix_size, nnz);
+
+    long long total_points = matrix_size;
+    long long progress_step = total_points / 100;
+    if (progress_step == 0)
+        progress_step = 1;
+
+    printf("Writing 3D 27-point matrix entries: 0%%");
+    fflush(stdout);
+
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            for (int k = 0; k < N; k++) {
+                long long global_idx = (long long)i * N * N + j * N + k;
+                long long row_1based = global_idx + 1;
+
+                if (global_idx % progress_step == 0 || global_idx % 10000 == 0) {
+                    int percent = (int)((global_idx * 100) / total_points);
+                    printf("\rWriting 3D 27-point matrix entries: %d%%", percent);
+                    fflush(stdout);
+                }
+
+                // Center (26.0)
+                fprintf(f, "%lld %lld 26.0\n", row_1based, row_1based);
+
+                // 6 face neighbors (-1.0 each)
+                if (i > 0) {
+                    long long ni = (long long)(i - 1) * N * N + j * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1) {
+                    long long ni = (long long)(i + 1) * N * N + j * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (j > 0) {
+                    long long ni = (long long)i * N * N + (j - 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (j < N - 1) {
+                    long long ni = (long long)i * N * N + (j + 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (k > 0) {
+                    long long ni = (long long)i * N * N + j * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (k < N - 1) {
+                    long long ni = (long long)i * N * N + j * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+
+                // 12 edge neighbors (-1.0 each)
+                if (i > 0 && j > 0) {
+                    long long ni = (long long)(i - 1) * N * N + (j - 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i > 0 && j < N - 1) {
+                    long long ni = (long long)(i - 1) * N * N + (j + 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && j > 0) {
+                    long long ni = (long long)(i + 1) * N * N + (j - 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && j < N - 1) {
+                    long long ni = (long long)(i + 1) * N * N + (j + 1) * N + k + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i > 0 && k > 0) {
+                    long long ni = (long long)(i - 1) * N * N + j * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i > 0 && k < N - 1) {
+                    long long ni = (long long)(i - 1) * N * N + j * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && k > 0) {
+                    long long ni = (long long)(i + 1) * N * N + j * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && k < N - 1) {
+                    long long ni = (long long)(i + 1) * N * N + j * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (j > 0 && k > 0) {
+                    long long ni = (long long)i * N * N + (j - 1) * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (j > 0 && k < N - 1) {
+                    long long ni = (long long)i * N * N + (j - 1) * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (j < N - 1 && k > 0) {
+                    long long ni = (long long)i * N * N + (j + 1) * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (j < N - 1 && k < N - 1) {
+                    long long ni = (long long)i * N * N + (j + 1) * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+
+                // 8 corner neighbors (-1.0 each)
+                if (i > 0 && j > 0 && k > 0) {
+                    long long ni = (long long)(i - 1) * N * N + (j - 1) * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i > 0 && j > 0 && k < N - 1) {
+                    long long ni = (long long)(i - 1) * N * N + (j - 1) * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i > 0 && j < N - 1 && k > 0) {
+                    long long ni = (long long)(i - 1) * N * N + (j + 1) * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i > 0 && j < N - 1 && k < N - 1) {
+                    long long ni = (long long)(i - 1) * N * N + (j + 1) * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && j > 0 && k > 0) {
+                    long long ni = (long long)(i + 1) * N * N + (j - 1) * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && j > 0 && k < N - 1) {
+                    long long ni = (long long)(i + 1) * N * N + (j - 1) * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && j < N - 1 && k > 0) {
+                    long long ni = (long long)(i + 1) * N * N + (j + 1) * N + (k - 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+                if (i < N - 1 && j < N - 1 && k < N - 1) {
+                    long long ni = (long long)(i + 1) * N * N + (j + 1) * N + (k + 1) + 1;
+                    fprintf(f, "%lld %lld -1.0\n", row_1based, ni);
+                }
+            }
+        }
+    }
+
+    printf("\rWriting 3D 27-point matrix entries: 100%%\n");
+    fclose(f);
+    printf("3D 27-point Matrix generated: %s (%lld×%lld, %lld nnz)\n", filename, matrix_size,
+           matrix_size, nnz);
     return 0;
 }

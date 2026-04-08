@@ -51,9 +51,10 @@ typedef struct {
  * @brief Stores the raw matrix read from a Matrix Market file.
  */
 typedef struct MatrixData {
-    int rows;        ///< Number of rows in the matrix
-    int cols;        ///< Number of columns in the matrix
-    int nnz;         ///< Number of non-zero elements
+    int rows;  ///< Number of rows in the matrix
+    int cols;  ///< Number of columns in the matrix
+    long long
+        nnz;  ///< Number of non-zero elements (long long to handle >2B for large 27pt stencils)
     int grid_size;   ///< Original grid size n for n×n stencil (-1 if not stencil)
     Entry* entries;  ///< Dynamic array of non-zero entries
 } MatrixData;
@@ -113,6 +114,8 @@ void read_matrix_symtogen(MatrixData* mat, const char* filename, int* rows, int*
  * @return int 0 if successful, non-zero otherwise
  */
 int load_matrix_market(const char* filename, MatrixData* mat);
+int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
+                                       int world_size);
 
 /**
  * @brief Convert a CSR matrix to ELLPACK format.
@@ -132,6 +135,32 @@ void convert_csr_to_ellpack(const struct CSRMatrix* csr_matrix,
  * @return int 0 if successful, non-zero otherwise
  */
 int write_matrix_market_stencil5(int n, const char* filename);
+
+/**
+ * @brief Generate a 3D 7-point stencil matrix in Matrix Market format
+ *
+ * Creates an NxNxN 3D Laplacian on an N³×N³ matrix. Each point is connected to
+ * itself (6.0) and its 6 neighbors in ±x, ±y, ±z directions (-1.0 each).
+ * Boundary conditions: Dirichlet (skip neighbors outside domain).
+ *
+ * @param n Grid dimension (matrix size will be n*n*n)
+ * @param filename Output file name
+ * @return int 0 if successful, non-zero otherwise
+ */
+int write_matrix_market_stencil7(int n, const char* filename);
+
+/**
+ * @brief Generate a 3D 27-point stencil matrix in Matrix Market format
+ *
+ * Creates an NxNxN 3D Laplacian on an N³×N³ matrix. Each point is connected to
+ * itself (26.0) and its 26 neighbors (face, edge, corner adjacent) (-1.0 each).
+ * Boundary conditions: Dirichlet (skip neighbors outside domain).
+ *
+ * @param n Grid dimension (matrix size will be n*n*n)
+ * @param filename Output file name
+ * @return int 0 if successful, non-zero otherwise
+ */
+int write_matrix_market_stencil27(int n, const char* filename);
 
 #ifdef __cplusplus
 }

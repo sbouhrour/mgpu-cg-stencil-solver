@@ -37,18 +37,19 @@
  * @brief Simple CSR SpMV kernel (non-optimized, standard)
  * @details One thread per row, standard CSR traversal
  */
-__global__ void csr_spmv_kernel(const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
-                                const double* __restrict__ values, const double* __restrict__ x,
-                                double* __restrict__ y, int num_rows) {
+__global__ void csr_spmv_kernel(const long long* __restrict__ row_ptr,
+                                const int* __restrict__ col_idx, const double* __restrict__ values,
+                                const double* __restrict__ x, double* __restrict__ y,
+                                int num_rows) {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= num_rows)
         return;
 
     double sum = 0.0;
-    int row_start = row_ptr[row];
-    int row_end = row_ptr[row + 1];
+    long long row_start = row_ptr[row];
+    long long row_end = row_ptr[row + 1];
 
-    for (int j = row_start; j < row_end; j++) {
+    for (long long j = row_start; j < row_end; j++) {
         sum += values[j] * x[col_idx[j]];
     }
 
@@ -59,7 +60,7 @@ __global__ void csr_spmv_kernel(const int* __restrict__ row_ptr, const int* __re
  * @brief Shared kernel - implementation in src/spmv/spmv_stencil_partitioned_halo_kernel.cu
  */
 extern __global__ void stencil5_csr_partitioned_halo_kernel(
-    const int* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N, int grid_size);
@@ -68,7 +69,7 @@ extern __global__ void stencil5_csr_partitioned_halo_kernel(
  * @brief Original SpMV kernel using global vector (for compatibility)
  */
 __global__ void
-stencil5_csr_direct_partitioned_kernel(const int* __restrict__ row_ptr,
+stencil5_csr_direct_partitioned_kernel(const long long* __restrict__ row_ptr,
                                        const int* __restrict__ col_idx,
                                        const double* __restrict__ values,
                                        const double* __restrict__ x,  // Global vector (full N)
@@ -86,8 +87,8 @@ stencil5_csr_direct_partitioned_kernel(const int* __restrict__ row_ptr,
     int j = row % grid_size;
 
     // Get CSR row range from row_ptr
-    int row_start = row_ptr[local_row];
-    int row_end = row_ptr[local_row + 1];
+    long long row_start = row_ptr[local_row];
+    long long row_end = row_ptr[local_row + 1];
 
     double sum = 0.0;
 
@@ -111,7 +112,7 @@ stencil5_csr_direct_partitioned_kernel(const int* __restrict__ row_ptr,
     // Boundary/corner: standard CSR traversal
     else {
 #pragma unroll 8
-        for (int k = row_start; k < row_end; k++) {
+        for (long long k = row_start; k < row_end; k++) {
             sum += values[k] * x[col_idx[k]];
         }
     }
@@ -303,36 +304,38 @@ int cg_solve_mgpu_partitioned(SpmvOperator* spmv_op, MatrixData* mat, const doub
     build_csr_struct(mat);
 
     // Extract local CSR partition
-    int local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
+    long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
     // Allocate local CSR on device
-    int *d_row_ptr, *d_col_idx;
+    long long* d_row_ptr;
+    int* d_col_idx;
     double* d_values;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, local_nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
 
     // Copy local CSR partition to device
     // Adjust row_ptr offsets to start from 0
-    int* local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
-    int offset = csr_mat.row_ptr[row_offset];
+    long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
+    long long offset = csr_mat.row_ptr[row_offset];
     for (int i = 0; i <= n_local; i++) {
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
 
-    CUDA_CHECK(
-        cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset], local_nnz * sizeof(int),
+    CUDA_CHECK(cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
                           cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], local_nnz * sizeof(double),
+    CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset], (size_t)local_nnz * sizeof(int),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], (size_t)local_nnz * sizeof(double),
                           cudaMemcpyHostToDevice));
 
     free(local_row_ptr);
 
     if (config.verbose >= 1) {
-        printf("[Rank %d] Local CSR: %d rows, %d nnz (%.2f MB)\n", rank, n_local, local_nnz,
-               (n_local * sizeof(int) + local_nnz * (sizeof(int) + sizeof(double))) / 1e6);
+        printf("[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
+               (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
+                   1e6);
     }
 
     // Allocate vectors - LOCAL ONLY with halo buffers

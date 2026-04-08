@@ -12,7 +12,7 @@ set -e
 MATRIX="matrix/3000"  # ← CHANGE THIS TO YOUR MATRIX
 RUNS=10
 TOLERANCE="1e-6"
-MAX_ITERS=1000
+MAX_ITERS=5000
 
 # ============================================================
 # Auto-detect configuration
