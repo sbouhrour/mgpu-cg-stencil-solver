@@ -9,13 +9,14 @@ if [ -z "$STAGED_FILES" ]; then
     exit 0
 fi
 
-# Check if clang-format is available
-if command -v clang-format &> /dev/null; then
-    CLANG_FORMAT="clang-format"
-elif command -v clang-format-14 &> /dev/null; then
+# MUST use clang-format-14 to match the CI version.
+# Other versions may format differently and cause CI failures.
+if command -v clang-format-14 &> /dev/null; then
     CLANG_FORMAT="clang-format-14"
 else
-    echo "Warning: clang-format not found, skipping format check"
+    echo "Warning: clang-format-14 not found, skipping format check"
+    echo "  Install with: sudo apt-get install clang-format-14"
+    echo "  (matching the CI version avoids format drift)"
     exit 0
 fi
 

@@ -216,9 +216,9 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat,
                 entries[idx++] = (Entry){row, row, 26.0};
 
 // 6 face neighbors
-#define ADD(ni)                    \
-    entries[idx++] = (Entry) {     \
-        row, (int)((ni) - 1), -1.0 \
+#define ADD(ni)                  \
+    entries[idx++] = (Entry) {   \
+        row, (int)((ni)-1), -1.0 \
     }
                 if (i > 0)
                     ADD((long long)(i - 1) * N * N + j * N + k + 1);
