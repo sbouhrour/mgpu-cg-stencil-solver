@@ -1,4 +1,4 @@
-name: CUDA SpMV Build & Smoke Tests
+name: Build & Smoke Tests
 
 # TRIGGERS: Remote execution on GitHub servers (no GPU)
 on:
