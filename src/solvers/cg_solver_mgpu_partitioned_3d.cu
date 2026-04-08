@@ -416,8 +416,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         if (rank == 0) {
             stats->time_total_ms = max_time;
             double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
-            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_time, min_time, imbalance_pct);
+            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n", max_time,
+                   min_time, imbalance_pct);
             printf("========================================\n");
         }
     } else if (rank == 0 && config.verbose >= 1) {
@@ -791,8 +791,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         if (rank == 0) {
             stats->time_total_ms = max_time;
             double imbalance_pct = 100.0 * (max_time - min_time) / max_time;
-            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n",
-                   max_time, min_time, imbalance_pct);
+            printf("Total time: %.2f ms (max), %.2f ms (min) - Load imbalance: %.1f%%\n", max_time,
+                   min_time, imbalance_pct);
             printf("========================================\n");
         }
     } else if (rank == 0 && config.verbose >= 1) {

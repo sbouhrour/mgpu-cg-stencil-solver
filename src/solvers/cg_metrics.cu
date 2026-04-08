@@ -130,8 +130,8 @@ void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixDat
     fprintf(fp, "  },\n");
 
     fprintf(fp, "  \"performance\": {\n");
-    double gflops = (2.0 * mat->nnz * (double)cg_stats->iterations)
-                    / (bench_stats->median_ms * 1e6);
+    double gflops =
+        (2.0 * mat->nnz * (double)cg_stats->iterations) / (bench_stats->median_ms * 1e6);
     fprintf(fp, "    \"gflops_spmv_est\": %.3f\n", gflops);
     fprintf(fp, "  },\n");
 
@@ -142,8 +142,7 @@ void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixDat
         fprintf(fp, "    \"comm_total_ms\": %.3f,\n", cg_stats->time_comm_total_ms);
         fprintf(fp, "    \"comm_hidden_ms\": %.3f,\n", cg_stats->time_comm_hidden_ms);
         fprintf(fp, "    \"comm_exposed_ms\": %.3f,\n", cg_stats->time_comm_exposed_ms);
-        fprintf(fp, "    \"overlap_efficiency_pct\": %.1f\n",
-                cg_stats->overlap_efficiency * 100.0);
+        fprintf(fp, "    \"overlap_efficiency_pct\": %.1f\n", cg_stats->overlap_efficiency * 100.0);
     } else {
         fprintf(fp, "    \"enabled\": false\n");
     }
