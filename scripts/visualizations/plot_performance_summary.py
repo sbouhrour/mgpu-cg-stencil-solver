@@ -168,7 +168,7 @@ categories_detailed = [
 y = np.arange(len(categories_detailed))
 
 # Create horizontal bars
-bars = ax.barh(y, speedups_avg, color=colors, alpha=0.9,
+bars = ax.barh(y, speedups_20k, color=colors, alpha=0.9,
                edgecolor='black', linewidth=1.5, height=0.6)
 
 # Reference line
@@ -178,7 +178,7 @@ ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, alpha=0.8,
 # Styling
 ax.set_xlabel('Speedup vs Industry Reference', fontweight='bold', fontsize=12)
 ax.set_title('Custom Implementations: Performance Summary\n' +
-             'All Implementations Outperform Industry Standards',
+             'Showcase Configuration: 20k×20k (400M unknowns)',
              fontweight='bold', fontsize=14, pad=15)
 ax.set_yticks(y)
 ax.set_yticklabels(categories_detailed, fontsize=10)
@@ -188,7 +188,7 @@ ax.set_axisbelow(True)
 ax.set_xlim(0, 2.5)
 
 # Add value labels
-for i, (bar, speedup) in enumerate(zip(bars, speedups_avg)):
+for i, (bar, speedup) in enumerate(zip(bars, speedups_20k)):
     width = bar.get_width()
     percentage = int((width - 1) * 100)
     ax.text(width + 0.05, bar.get_y() + bar.get_height()/2.,
