@@ -222,7 +222,7 @@ Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. 
   <img src="docs/figures/roofline_spmv_comparison.png" alt="Roofline Analysis" width="80%">
 </p>
 
-<sub>**Figure 2** — Roofline analysis of SpMV kernels on NVIDIA A100. Both kernels are memory-bound (positioned on the bandwidth roof). The custom stencil kernel achieves **95% memory throughput** vs 67% for cuSPARSE CSR. Performance gains come from improved memory access patterns and reduced indirections, not increased arithmetic intensity.</sub>
+<sub>**Figure 2** — Roofline analysis of SpMV kernels on RTX 4060 Laptop GPU (profiling environment with full NCU permissions). Both kernels are memory-bound (positioned on the bandwidth roof). The custom stencil kernel achieves **95% memory throughput** vs 67% for cuSPARSE CSR. Performance gains come from improved memory access patterns and reduced indirections, not increased arithmetic intensity.</sub>
 
 <details>
 <summary><b>📊 Detailed Kernel Breakdown</b></summary>
