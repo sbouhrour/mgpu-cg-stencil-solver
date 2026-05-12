@@ -575,7 +575,6 @@ behind useful computation.
 ## Documentation
 
 - **[Profiling Analysis](docs/profiling-2d.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
-- **[Strong Scaling Results](docs/SHOWCASE_SCALING_RESULTS.md)**: Detailed analysis of 15k×15k scaling
 - **[Performance Summary](docs/scaling_summary.md)**: Technical metrics and talking points
 
 ---
