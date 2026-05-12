@@ -181,13 +181,11 @@ Both implementations scale well, but the custom solver **maintains its single-GP
 
 ## Speedup Attribution
 
-Based on profiling data and theoretical analysis:
+The 1.40× single-GPU and 1.44× multi-GPU advantage of the custom CG over AmgX stems from three compounding factors:
 
-| Source | Contribution | Evidence |
-|--------|-------------:|----------|
-| SpMV kernel (stencil vs CSR) | ~70% | 2× throughput, 48% of AmgX time |
-| Stencil-aware halo exchange | ~20% | 160 KB vs generic patterns |
-| Memory layout optimization | ~10% | Better coalescing in BLAS1 ops |
+- **SpMV kernel specialization (primary driver)** — Eliminating index indirection in the generic CSR representation, by exploiting the known 5-point stencil pattern, provides a 2.08× isolated throughput gain on the dominant kernel (48% of AmgX execution time on the single-GPU breakdown).
+- **Halo exchange volume** — Sending only the stencil-specific boundary rows (160 KB per neighbor for a 10k×10k grid on 8 GPUs) replaces generic communication patterns and AllGather-based approaches that would require orders of magnitude more data.
+- **BLAS1 memory access patterns** — Coalesced accesses in AXPY/AXPBY/dot kernels operating on partitioned local vectors improve memory throughput compared to AmgX's library-level operations.
 
 ### Theoretical vs Observed
 
