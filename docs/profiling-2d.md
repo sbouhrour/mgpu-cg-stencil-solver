@@ -2,6 +2,8 @@
 
 This document explains **why** the custom CG solver outperforms NVIDIA AmgX, using profiling data from Nsight Systems and Nsight Compute.
 
+> **Hardware note.** Performance numbers in this document (solver timings, kernel breakdowns, SpMV throughput) were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The roofline analysis in §2 was profiled on an RTX 4060 Laptop GPU due to NCU permission constraints on shared A100 hosts. Both kernels remain memory-bound on either architecture, so the relative comparison (95% vs 67% memory throughput) transfers; absolute GFLOP/s values reflect the RTX 4060 only.
+
 ## Executive Summary
 
 | Finding | Impact |
@@ -40,9 +42,6 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 ### Observation
 
 SpMV dominates in both implementations (~40-50% of total time), making it the primary optimization target. The custom kernel's 2× speedup on this operation drives the overall solver improvement.
-
-<!-- TODO: Add figure when available -->
-<!-- ![Kernel Breakdown Comparison](figures/profiling_kernel_breakdown.png) -->
 
 ---
 
@@ -172,10 +171,7 @@ The timeline shows the CG iteration pattern:
 
 **NVIDIA AmgX** (4k×4k, 2 GPUs):
 
-<!-- TODO: Add AmgX screenshot for comparison -->
-<p align="center">
-  <em>[AmgX timeline to be added: amgx_cg_nsys_profile_4k_2n.png]</em>
-</p>
+*Direct AmgX timeline visualization is omitted; the kernel-level breakdown above provides a quantitative comparison.*
 
 **Key observation**: Performance gains come from more efficient SpMV kernel and reduced communication volume, not from compute-communication overlap. MPI halo exchange is synchronous in both implementations.
 
@@ -198,9 +194,7 @@ Using Amdahl's Law with SpMV = 48% of time and 2× speedup:
 Theoretical speedup = 1 / (0.48/2 + 0.52) = 1 / 0.76 = 1.32×
 ```
 
-Observed speedup (1.40×) exceeds theoretical, suggesting:
-- SpMV improvement closer to 2.5× in solver context
-- Secondary gains from improved memory access patterns in BLAS operations
+Observed speedup (1.40×) slightly exceeds the simple Amdahl estimate. The 6% residual is within the margin where the isolated-kernel speedup (2.08×) and the in-solver effective speedup may diverge: microbenchmark and full-solver execution differ in cache state, kernel launch patterns, and co-running operations. A precise attribution would require per-kernel timing inside the full solver run; this is beyond the scope of the current comparison.
 
 ---
 

@@ -81,4 +81,4 @@ ncu --set roofline -o profiling/ncu/roofline_stencil \
 - **Scaling**: Both implementations show similar parallel efficiency
 - **Communication**: MPI staging (D2H → MPI → H2D) visible in custom implementation
 
-See [docs/PROFILING_ANALYSIS.md](../docs/PROFILING_ANALYSIS.md) for detailed analysis.
+See [docs/profiling-2d.md](../docs/profiling-2d.md) for detailed analysis.

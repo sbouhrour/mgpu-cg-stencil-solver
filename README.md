@@ -243,7 +243,7 @@ Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. 
 
 Performance gains come from a more efficient SpMV kernel and reduced communication volume—not from compute-communication overlap. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
 
-See [Profiling Analysis](docs/PROFILING_ANALYSIS.md) for complete methodology and [`external/benchmarks/amgx/BENCHMARK_RESULTS.md`](external/benchmarks/amgx/BENCHMARK_RESULTS.md) for AmgX details.
+See [Profiling Analysis](docs/profiling-2d.md) for complete methodology and [`external/benchmarks/amgx/BENCHMARK_RESULTS.md`](external/benchmarks/amgx/BENCHMARK_RESULTS.md) for AmgX details.
 
 ---
 
@@ -576,7 +576,7 @@ behind useful computation.
 
 ## Documentation
 
-- **[Profiling Analysis](docs/PROFILING_ANALYSIS.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
+- **[Profiling Analysis](docs/profiling-2d.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
 - **[Strong Scaling Results](docs/SHOWCASE_SCALING_RESULTS.md)**: Detailed analysis of 15k×15k scaling
 - **[Problem Size Scaling](docs/PROBLEM_SIZE_SCALING_RESULTS.md)**: Multi-size benchmark results
 - **[Performance Summary](docs/scaling_summary.md)**: Technical metrics and talking points
