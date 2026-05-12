@@ -21,7 +21,7 @@
 - **Peak Speedup**: 7.43× on 8 GPUs
 - **Scaling Efficiency**: 92.9% at 8 GPUs
 - **Per-GPU Performance**: Nearly constant (< 4% degradation)
-- **Communication Overhead**: ~7% at 8-way scaling
+- **Parallelization Overhead**: ~7% at 8-way scaling (residual from ideal scaling, includes halo exchange, MPI reductions, and synchronization)
 
 ## Implementation Highlights
 
