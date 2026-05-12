@@ -29,7 +29,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | AXPBY | 9% | Scaled vector operations |
 | Other | 14% | Setup, synchronization, etc. |
 
-### Custom CG Kernel Breakdown (10k×10k, 4 GPUs)
+### Custom CG Kernel Breakdown (10k×10k, 1 GPU)
 
 | Kernel Type | Time % | Notes |
 |-------------|-------:|-------|
@@ -37,7 +37,8 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | AXPY | 29% | Vector addition |
 | Dot product (cuBLAS) | 16% | cuBLAS ddot |
 | AXPBY | 13% | Scaled vector operations |
-| Reduce | <1% | MPI reductions |
+
+*Both breakdowns measured on a single A100 to isolate kernel-level distribution from communication overhead. Multi-GPU scaling is analyzed separately in §3.*
 
 ### Observation
 
@@ -134,7 +135,7 @@ The stencil kernel moves **45% less data** per row by eliminating index storage 
 |--------|-----------|------|
 | Halo exchange | 160 KB per neighbor | Generic CSR pattern |
 | Method | MPI explicit staging | Internal NCCL/MPI |
-| Overlap | Partial compute/comm | Internal optimization |
+| Overlap | None (synchronous) | Internal optimization |
 
 ### Why 160 KB?
 
@@ -236,8 +237,8 @@ ncu --set roofline -o roofline_stencil \
 | Custom 2 GPUs (10k) | `profiling/nsys/mpi_2ranks_profile_10000.nsys-rep` | A100 |
 | AmgX 1 GPU (10k) | `profiling/nsys/amgx_1ranks_profile_10000.nsys-rep` | A100 |
 | AmgX 2 GPUs (10k) | `profiling/nsys/amgx_2ranks_profile_10000.nsys-rep` | A100 |
-| CSR roofline | `profiling/ncu/roofline_cusparse_csr_7000_rtx4090.ncu-rep` | RTX 4090 |
-| Stencil roofline | `profiling/ncu/roofline_stencil_7000_rtx4090.ncu-rep` | RTX 4090 |
+| CSR roofline | `profiling/ncu/roofline_cusparse_csr_7000_rtx4060.ncu-rep` | RTX 4060 Laptop |
+| Stencil roofline | `profiling/ncu/roofline_stencil_7000_rtx4060.ncu-rep` | RTX 4060 Laptop |
 
 ---
 
@@ -250,14 +251,3 @@ ncu --set roofline -o roofline_stencil \
 3. **Gains compound at scale**: Single-GPU advantage (1.40×) maintained through 8 GPUs (1.44×)
 
 4. **Not a limitation of AmgX**: AmgX correctly handles arbitrary sparse matrices; the performance gap reflects the value of specialization when problem structure is known
-
----
-
-## Future Work
-
-- [x] ~~Generate annotated Nsight Systems screenshots on A100~~ (added Custom CG timeline)
-- [ ] Add AmgX timeline screenshot for side-by-side comparison
-- [x] ~~Create roofline comparison figure from Nsight Compute~~ (added RTX 4060 profiles)
-- [ ] Profile larger problem sizes (15k, 20k) for scaling analysis
-- [ ] Analyze kernel occupancy and register pressure
-- [ ] Generate A100 roofline profiles for direct comparison with benchmark results
