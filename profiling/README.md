@@ -26,8 +26,8 @@ profiling/
 
 | Profile                                      | Description        | Hardware |
 |----------------------------------------------|--------------------|----------|
-| `roofline_cusparse_csr_7000_rtx4090.ncu-rep` | cuSPARSE CSR SpMV  | RTX 4090 |
-| `roofline_stencil_7000_rtx4090.ncu-rep`      | Stencil SpMV (7k)  | RTX 4090 |
+| `roofline_cusparse_csr_7000_rtx4060.ncu-rep` | cuSPARSE CSR SpMV  | RTX 4060 Laptop |
+| `roofline_stencil_7000_rtx4060.ncu-rep`      | Stencil SpMV (7k)  | RTX 4060 Laptop |
 | `roofline_stencil_5000_rtx4090.ncu-rep`      | Stencil SpMV (5k)  | RTX 4090 |
 | `roofline_stencil_512_rtx4090.ncu-rep`       | Stencil SpMV (512) | RTX 4090 |
 
@@ -45,7 +45,7 @@ profiling/
 nsys-ui profiling/nsys/mpi_2ranks_profile_10000.nsys-rep
 
 # Nsight Compute GUI
-ncu-ui profiling/ncu/roofline_stencil_7000_rtx4090.ncu-rep
+ncu-ui profiling/ncu/roofline_stencil_7000_rtx4060.ncu-rep
 ```
 
 ## Generating New Profiles
