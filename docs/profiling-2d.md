@@ -165,20 +165,22 @@ Both implementations scale well, but the custom solver **maintains its single-GP
   <img src="figures/custom_cg_nsys_profile_4k_2n.png" alt="Custom CG Timeline" width="100%">
 </p>
 
-The timeline shows the CG iteration pattern:
-- **Green bars**: `stencil5_csr_partitioned_halo_kernel` (SpMV) - dominates each iteration
-- **Small colored bars**: `void dot_kernel`, `axpy_kernel`, `axpby_kernel` - BLAS operations
-- **MPI row**: Brief synchronization points for halo exchange
-
 **NVIDIA AmgX** (4k×4k, 2 GPUs):
 
 <p align="center">
   <img src="figures/amgx_cg_nsys_profile_4k_2n.png" alt="AmgX Timeline" width="100%">
 </p>
 
-The AmgX timeline shows the same CG iteration pattern, but with longer SpMV kernels (generic CSR with index indirection) and the same synchronous halo exchange. One CG iteration is visibly longer than the Custom CG timeline above, consistent with the kernel-level breakdown in §1.
+**Figure** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100 GPU). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Although halo exchanges are synchronous in both cases, the custom implementation achieves shorter iteration time due to a faster SpMV kernel and reduced communication volume.
 
-**Key observation**: Performance gains come from more efficient SpMV kernel and reduced communication volume, not from compute-communication overlap. MPI halo exchange is synchronous in both implementations.
+**Reading the Custom CG timeline (top):**
+- **Green bars**: `stencil5_csr_partitioned_halo_kernel` (SpMV) — dominates each iteration
+- **Small colored bars**: `dot_kernel`, `axpy_kernel`, `axpby_kernel` — BLAS operations
+- **MPI row**: Brief synchronization points for halo exchange
+
+*NVTX ranges denote algorithmic phases and do not necessarily correspond to exact GPU kernel execution time; CUDA HW tracks provide the authoritative timing.*
+
+**Key observation**: Performance gains come from a more efficient SpMV kernel and reduced communication volume, not from compute-communication overlap. MPI halo exchange is synchronous in both implementations.
 
 ---
 
