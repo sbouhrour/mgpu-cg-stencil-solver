@@ -171,12 +171,7 @@ Both implementations scale well, but the custom solver **maintains its single-GP
   <img src="figures/amgx_cg_nsys_profile_4k_2n.png" alt="AmgX Timeline" width="100%">
 </p>
 
-**Figure** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100 GPU). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Although halo exchanges are synchronous in both cases, the custom implementation achieves shorter iteration time due to a faster SpMV kernel and reduced communication volume.
-
-**Reading the Custom CG timeline (top):**
-- **Green bars**: `stencil5_csr_partitioned_halo_kernel` (SpMV) — dominates each iteration
-- **Small colored bars**: `dot_kernel`, `axpy_kernel`, `axpby_kernel` — BLAS operations
-- **MPI row**: Brief synchronization points for halo exchange
+**Figure** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100 GPU). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Annotations (green arrows, red rectangles) mark key phases: SpMV, halo exchange (DtoH → MPI → HtoD), and one full CG iteration. The AmgX iteration is approximately twice as long as the Custom CG, driven primarily by the longer cuSPARSE CSR SpMV kernel.
 
 *NVTX ranges denote algorithmic phases and do not necessarily correspond to exact GPU kernel execution time; CUDA HW tracks provide the authoritative timing.*
 
