@@ -172,7 +172,11 @@ The timeline shows the CG iteration pattern:
 
 **NVIDIA AmgX** (4k×4k, 2 GPUs):
 
-*Direct AmgX timeline visualization is omitted; the kernel-level breakdown above provides a quantitative comparison.*
+<p align="center">
+  <img src="figures/amgx_cg_nsys_profile_4k_2n.png" alt="AmgX Timeline" width="100%">
+</p>
+
+The AmgX timeline shows the same CG iteration pattern, but with longer SpMV kernels (generic CSR with index indirection) and the same synchronous halo exchange. One CG iteration is visibly longer than the Custom CG timeline above, consistent with the kernel-level breakdown in §1.
 
 **Key observation**: Performance gains come from more efficient SpMV kernel and reduced communication volume, not from compute-communication overlap. MPI halo exchange is synchronous in both implementations.
 
