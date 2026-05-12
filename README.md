@@ -98,8 +98,6 @@ Exploiting stencil structure enables consistent performance gains over generic s
 - Communication overhead decreases relative to computation for larger problems
 - All problem sizes maintain > 85% efficiency at 8 GPUs
 
-See [detailed problem size analysis](docs/PROBLEM_SIZE_SCALING_RESULTS.md) for complete results.
-
 </details>
 
 ### Single-GPU SpMV Performance
@@ -578,9 +576,7 @@ behind useful computation.
 
 - **[Profiling Analysis](docs/profiling-2d.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
 - **[Strong Scaling Results](docs/SHOWCASE_SCALING_RESULTS.md)**: Detailed analysis of 15k×15k scaling
-- **[Problem Size Scaling](docs/PROBLEM_SIZE_SCALING_RESULTS.md)**: Multi-size benchmark results
 - **[Performance Summary](docs/scaling_summary.md)**: Technical metrics and talking points
-- **[API Documentation](docs/API.md)**: Code structure and operator interface
 
 ---
 

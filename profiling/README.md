@@ -28,8 +28,8 @@ profiling/
 |----------------------------------------------|--------------------|----------|
 | `roofline_cusparse_csr_7000_rtx4060.ncu-rep` | cuSPARSE CSR SpMV  | RTX 4060 Laptop |
 | `roofline_stencil_7000_rtx4060.ncu-rep`      | Stencil SpMV (7k)  | RTX 4060 Laptop |
-| `roofline_stencil_5000_rtx4090.ncu-rep`      | Stencil SpMV (5k)  | RTX 4090 |
-| `roofline_stencil_512_rtx4090.ncu-rep`       | Stencil SpMV (512) | RTX 4090 |
+| `roofline_stencil_5000_rtx4060.ncu-rep`      | Stencil SpMV (5k)  | RTX 4060 Laptop |
+| `roofline_stencil_512_rtx4060.ncu-rep`       | Stencil SpMV (512) | RTX 4060 Laptop |
 
 ### `images/` - Exported Screenshots
 
