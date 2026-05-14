@@ -51,54 +51,17 @@ Exploiting stencil structure enables consistent performance gains over generic s
 
 **Multi-GPU Strong Scaling** on 8× NVIDIA A100-SXM4-80GB
 
-| Problem Size | 1 GPU | 8 GPUs | Speedup | Efficiency |
-|--------------|-------|--------|---------|------------|
-| **100M unknowns** (10k×10k stencil) | 133.9 ms | 19.3 ms | 6.94× | 86.8% |
-| **225M unknowns** (15k×15k stencil) | 300.1 ms | 40.4 ms | 7.43× | 92.9% |
-| **400M unknowns** (20k×20k stencil) | 531.4 ms | 71.0 ms | **7.48×** | **93.5%** |
-
-<sub>*Median of 10 runs; 3 warmup runs discarded.*</sub>
-
 **Key Results:**
-- **7.48× speedup** on 400M unknowns with 8 GPUs (93.5% parallel efficiency)
-- **Near-linear 2-GPU scaling**: 1.95-1.97× speedup (97-99% efficiency)
-- **Deterministic convergence**: All configurations converge in exactly 14 iterations
-- **Better scaling with larger problems**: Efficiency improves from 86.8% to 93.5%
+- **7.48× speedup** on 400M unknowns (20k×20k) with 8 GPUs — **93.5% parallel efficiency**
+- **Near-linear 2-GPU scaling**: 1.95–1.97× speedup (97–99% efficiency)
+- **Deterministic convergence**: all configurations converge in exactly 14 iterations
+- **Better scaling with larger problems**: efficiency improves from 86.8% (10k) to 93.5% (20k)
 
 ### Strong Scaling Visualization
 
 <p align="center">
   <img src="docs/figures/scaling_main_a100.png" alt="Multi-GPU Strong Scaling" width="100%">
 </p>
-
-<details>
-<summary><b>📊 Detailed Analysis</b></summary>
-
-<p align="center">
-  <img src="docs/figures/scaling_detailed_a100.png" alt="Detailed Scaling Analysis" width="100%">
-</p>
-
-**Performance breakdown:**
-- SpMV kernel time scales near-linearly with GPU count
-- MPI communication overhead remains < 10% at 8 GPUs
-- Reductions (cuBLAS dot products) maintain high efficiency
-- Larger problems amortize communication cost more effectively
-
-</details>
-
-<details>
-<summary><b>📈 Problem Size Scaling</b></summary>
-
-<p align="center">
-  <img src="docs/figures/problem_size_scaling_overview.png" alt="Problem Size Scaling" width="100%">
-</p>
-
-**Observations:**
-- 20k×20k matrix achieves best parallel efficiency (93.5%)
-- Communication overhead decreases relative to computation for larger problems
-- All problem sizes maintain > 85% efficiency at 8 GPUs
-
-</details>
 
 ### Single-GPU SpMV Performance
 
@@ -108,19 +71,11 @@ Exploiting stencil structure enables consistent performance gains over generic s
   <img src="docs/figures/spmv_format_comparison_a100.png" alt="SpMV Format Comparison" width="100%">
 </p>
 
-| Matrix Size | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup | Bandwidth Improvement |
-|-------------|----------------|-------------------|---------|----------------------|
-| **10k×10k** (100M unknowns) | 6.77 ms | 3.25 ms | **2.08×** | 1.98× (1182 → 2339 GB/s) |
-| **15k×15k** (225M unknowns) | 15.00 ms | 7.29 ms | **2.06×** | 1.96× (1200 → 2346 GB/s) |
-| **20k×20k** (400M unknowns) | 26.77 ms | 12.86 ms | **2.08×** | 1.98× (1195 → 2364 GB/s) |
-
-<sub>*Median of 10 runs; 3 warmup runs discarded.*</sub>
-
 **Key Results:**
 - **2.07× average speedup** over cuSPARSE CSR implementation
 - **~310 GFLOPS sustained** across all problem sizes (STENCIL5)
 - **1.97× bandwidth improvement** through optimized memory access patterns
-- **Consistent performance scaling**: Speedup stable at 2.06-2.08× from 100M to 400M unknowns
+- **Consistent performance scaling**: speedup stable at 2.06–2.08× from 100M to 400M unknowns
 
 <details>
 <summary><b>📊 Detailed Format Analysis</b></summary>
@@ -166,6 +121,8 @@ The stencil optimization operates directly on CSR without converting to DIA/ELL/
 
 </details>
 
+See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison, 3D overlap).
+
 ### Comparison with NVIDIA AmgX
 
 AmgX is NVIDIA's production-grade multi-GPU solver library, used here as reference implementation. To run AmgX benchmarks: `./scripts/setup/full_setup.sh --amgx` (see [AmgX build instructions](external/benchmarks/amgx/README.md)).
@@ -176,16 +133,7 @@ AmgX is NVIDIA's production-grade multi-GPU solver library, used here as referen
   <img src="docs/figures/custom_vs_amgx_overview.png" alt="Custom CG vs NVIDIA AmgX Comparison" width="100%">
 </p>
 
-| Matrix Size     | Implementation  |    1 GPU |   8 GPUs | Speedup | Efficiency |
-|-----------------|-----------------|----------|----------|---------|------------|
-| **10k×10k**     | Custom CG       | 133.9 ms |  19.3 ms |   6.94× |      86.8% |
-| (100M unknowns) | NVIDIA AmgX     | 188.7 ms |  27.0 ms |   6.99× |      87.4% |
-|                 |                 |          |          |         |            |
-| **15k×15k**     | Custom CG       | 300.1 ms |  40.4 ms |   7.43× |      92.9% |
-| (225M unknowns) | NVIDIA AmgX     | 420.0 ms |  57.0 ms |   7.36× |      92.0% |
-|                 |                 |          |          |         |            |
-| **20k×20k**     | Custom CG       | 531.4 ms |  71.0 ms |   7.48× |      93.5% |
-| (400M unknowns) | NVIDIA AmgX     | 746.7 ms | 102.3 ms |   7.30× |      91.3% |
+See [`results.md`](docs/results.md#2d--custom-cg-vs-nvidia-amgx) for the full comparison table (10k/15k/20k × Custom CG / AmgX × 1/8 GPUs).
 
 **Key Findings:**
 - **~40% faster at every scale**: Custom CG outperforms AmgX on both single-GPU and 8 GPUs
@@ -416,11 +364,11 @@ behind useful computation.
 
 ## Documentation
 
+- **[Results](docs/results.md)**: All benchmark tables — 2D scaling, SpMV comparison, AmgX comparison, 3D overlap
 - **[Profiling Analysis (2D)](docs/profiling-2d.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
-- **[Profiling Analysis (3D)](docs/profiling-3d.md)**: Compute-communication overlap, interior/boundary decomposition, full scaling tables
+- **[Profiling Analysis (3D)](docs/profiling-3d.md)**: Compute-communication overlap, interior/boundary decomposition
 - **[Methodology](docs/methodology.md)**: Measurement protocol, statistical approach, profiling tools
 - **[Reproducing the Results](docs/reproducing.md)**: Build, run, and profile on your own hardware
-- **[Performance Summary](docs/scaling_summary.md)**: Concise technical metrics
 
 ---
 

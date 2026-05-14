@@ -2,7 +2,7 @@
 
 This document describes how the performance results are measured: timing scope, statistical methodology, reproducibility conditions, compilation flags, and profiling tools.
 
-For build and run instructions, see [`reproducing.md`](reproducing.md).
+For build and run instructions, see [`reproducing.md`](reproducing.md). For the full benchmark results, see [`results.md`](results.md).
 
 > **Hardware context.** All headline results were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). Profiling for roofline analysis was performed on RTX 4060 Laptop due to NCU permission constraints on shared A100 hosts. See [`profiling-2d.md`](profiling-2d.md) and [`profiling-3d.md`](profiling-3d.md) for the analyses themselves.
 

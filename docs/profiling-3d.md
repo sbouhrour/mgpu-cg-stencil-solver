@@ -16,7 +16,7 @@ This section extends the solver to realistic 3D stencils (7-point and 27-point) 
 
 ![Overlap timeline](figures/profiling_nsys_timeline_overlap_512_3d_7pt_4n_a100_nv12.png)
 
-*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). The red rectangle marks the overlap phase: the interior SpMV kernel (`stencil7_overlap_subrange_kernel_3d`) runs concurrently with halo D2H memcpy, MPI interprocess communication (`process_vm_readv` on the OS runtime libraries row), and `MPI_Waitall` — all visible inside the rectangle. After the rectangle, H2D memcpy completes and small boundary SpMV kernels execute. The 4.82 → 3.76 ms reduction matches the benchmark table.*
+*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). The red rectangle marks the overlap phase: the interior SpMV kernel (`stencil7_overlap_subrange_kernel_3d`) runs concurrently with halo D2H memcpy, MPI interprocess communication (`process_vm_readv` on the OS runtime libraries row), and `MPI_Waitall` — all visible inside the rectangle. After the rectangle, H2D memcpy completes and small boundary SpMV kernels execute. The 4.82 → 3.76 ms reduction matches the 7-point 512³/4-GPU result in [`results.md`](results.md#3d--7-point-stencil-sync-vs-overlap).*
 
 ```
 stream_compute: |--- interior SpMV ---|                  |-- boundary SpMV --|
@@ -26,41 +26,27 @@ stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
 
 ### 7-Point Stencil — Sync vs Overlap
 
-**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink)
+Representative results (full table for all 12 configurations in [`results.md`](results.md#3d--7-point-stencil-sync-vs-overlap)):
 
-| Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain | Iterations |
-|------|------|-----------|--------------|--------------|------------|
-| 128³ | 1 | 73.2 | 74.0 | — | 261 |
-| 128³ | 2 | 52.8 | 43.9 | 1.20× | 261 |
-| 128³ | 4 | 51.4 | 46.7 | 1.10× | 261 |
-| 128³ | 8 | 47.8 | 49.7 | 0.96× | 261 |
-| 256³ | 1 | 970.3 | 972.4 | — | 527 |
-| 256³ | 2 | 583.3 | 515.7 | 1.13× | 527 |
-| 256³ | 4 | 409.0 | 318.0 | 1.29× | 527 |
-| 256³ | 8 | 304.7 | 265.8 | 1.15× | 527 |
-| 512³ | 1 | 15127 | 15129 | — | 1065 |
-| 512³ | 2 | 8211 | 7682 | 1.07× | 1065 |
-| 512³ | 4 | 5088 | 3944 | 1.29× | 1065 |
-| 512³ | 8 | 3323 | 2453 | 1.36× | 1065 |
+| Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain |
+|------|------|-----------|--------------|--------------|
+| 512³ | 8 | 3323 | 2453 | 1.36× |
+| 256³ | 4 | 409.0 | 318.0 | 1.29× |
+| 128³ | 8 | 47.8 | 49.7 | 0.96× |
 
-<sub>1-GPU rows show no overlap gain (no communication to hide). 128³/8GPU shows slight overhead (0.96×): per-GPU workload is too small for dual-stream overhead to pay off.</sub>
+Best gain: 1.36× (512³, 8 GPUs). The 128³/8-GPU case shows slight overhead — per-GPU workload too small for dual-stream to pay off.
 
 ### 27-Point Stencil — Sync vs Overlap
 
-| Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain | Iterations |
-|------|------|-----------|--------------|--------------|------------|
-| 128³ | 1 | 89.2 | 89.6 | — | 151 |
-| 128³ | 2 | 57.3 | 51.1 | 1.12× | 151 |
-| 128³ | 4 | 47.3 | 36.6 | 1.29× | 151 |
-| 128³ | 8 | 40.5 | 33.6 | 1.21× | 151 |
-| 256³ | 1 | 1315.4 | 1315.4 | — | 303 |
-| 256³ | 2 | 718.9 | 680.3 | 1.06× | 303 |
-| 256³ | 4 | 447.5 | 367.5 | 1.22× | 303 |
-| 256³ | 8 | 294.0 | 203.5 | 1.45× | 303 |
-| 512³ | 1 | 22016 | 21997 | — | 611 |
-| 512³ | 2 | 11438 | 11142 | 1.03× | 611 |
-| 512³ | 4 | 6461 | 5815 | 1.11× | 611 |
-| 512³ | 8 | 3809 | 3110 | 1.23× | 611 |
+Representative results (full table for all 12 configurations in [`results.md`](results.md#3d--27-point-stencil-sync-vs-overlap)):
+
+| Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain |
+|------|------|-----------|--------------|--------------|
+| 256³ | 8 | 294.0 | 203.5 | 1.45× |
+| 512³ | 8 | 3809 | 3110 | 1.23× |
+| 128³ | 4 | 47.3 | 36.6 | 1.29× |
+
+Best gain: 1.45× (256³, 8 GPUs).
 
 ### Strong Scaling Efficiency (overlap solver)
 
@@ -68,34 +54,9 @@ stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
   <img src="figures/3d_scaling_overlap_a100.png" alt="3D Strong Scaling: Sync vs Overlap" width="100%">
 </p>
 
-**7-point stencil** — speedup relative to 1-GPU sync baseline:
+At 512³ on 8 GPUs: the 7-point stencil reaches 6.17× speedup (77% parallel efficiency) and the 27-point stencil reaches 7.08× speedup (**88% parallel efficiency**) relative to the 1-GPU sync baseline.
 
-| Grid | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
-|------|-------|--------|--------|--------|
-| 128³ | 1.00× | 1.69× | 1.59× | 1.49× |
-| 256³ | 1.00× | 1.88× | 3.06× | 3.66× |
-| 512³ | 1.00× | 1.97× | 3.84× | 6.17× |
-
-<sub>512³ at 8 GPUs: 15127/2453 = 6.17× → 77% parallel efficiency</sub>
-
-**27-point stencil** — speedup relative to 1-GPU sync baseline:
-
-| Grid | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
-|------|-------|--------|--------|--------|
-| 128³ | 1.00× | 1.75× | 2.44× | 2.66× |
-| 256³ | 1.00× | 1.93× | 3.58× | 6.47× |
-| 512³ | 1.00× | 1.98× | 3.79× | 7.08× |
-
-<sub>512³ at 8 GPUs: 22016/3110 = 7.08× → **88% parallel efficiency**</sub>
-
-<details>
-<summary><b>📊 Overlap Gain by Configuration</b></summary>
-
-<p align="center">
-  <img src="figures/3d_overlap_gain_by_gpu.png" alt="Overlap Gain vs GPU Count" width="100%">
-</p>
-
-</details>
+Full per-grid efficiency tables (7-point and 27-point, all GPU counts) are in [`results.md`](results.md#3d--strong-scaling-efficiency-overlap-solver).
 
 ### Key Observations
 
@@ -103,7 +64,7 @@ Overlap gain scales with both GPU count and problem size. Larger grids have a la
 
 Small workloads show diminishing returns. At 128³ on 8 GPUs the per-GPU workload is too brief to mask halo exchange latency, and the 7pt/128³/8GPU case incurs slight overhead (0.96×) from dual-stream management. 1-GPU runs confirm zero overhead: sync and overlap times are equivalent with no communication to hide.
 
-The best scaling result — 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap) — comes from combining kernel specialization with communication hiding. The Nsight timelines above show how a 4.82 ms synchronous iteration (GPU idle during halo exchange) becomes a 3.76 ms overlapped iteration, matching the 1.28× gain in the benchmark table.
+The best scaling result — 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap) — comes from combining kernel specialization with communication hiding. The Nsight timelines above show how a 4.82 ms synchronous iteration (GPU idle during halo exchange) becomes a 3.76 ms overlapped iteration — a 1.28× gain (see the 7-point 512³/4-GPU row in [`results.md`](results.md#3d--7-point-stencil-sync-vs-overlap)).
 
 ### How to Reproduce
 
