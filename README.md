@@ -269,25 +269,9 @@ See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables acr
 | Convergence criterion | Relative residual < 1e-6 |
 | Profiling tools | Nsight Systems (timeline), Nsight Compute (roofline) |
 
-**Reproducibility conditions**: Identical test matrices, GPU clocks at default (no boost lock), 3 warmup runs before measurement, separate process per configuration, same binary for all runs.
+Identical test matrices, GPU clocks at default, separate process per configuration. Showcase results measured on 8× NVIDIA A100-SXM4-80GB.
 
-**Compilation flags** (release build):
-```
-nvcc -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true -std=c++11
-```
-
-**Run benchmarks on your hardware:**
-```bash
-# Quick test (512×512)
-./scripts/run_all.sh --quick
-
-# Full benchmark suite
-./scripts/run_all.sh --size=1000
-```
-
-Results are saved to `results/raw/` (TXT) and `results/json/` (structured data).
-
-> **Note**: Showcase results above were measured on 8× A100-SXM4-80GB with 10k-20k matrices. To reproduce those specific results, use `--size=10000` (or larger) on equivalent hardware.
+See [`methodology.md`](docs/methodology.md) for full reproducibility conditions, compilation flags, and statistical methodology.
 
 ---
 
@@ -317,55 +301,23 @@ Results are saved to `results/raw/` (TXT) and `results/json/` (structured data).
 
 ## Quick Start
 
-### Prerequisites
-- **Hardware**: NVIDIA GPUs with Compute Capability ≥ 7.0
-- **Software**: CUDA Toolkit ≥ 11.0, OpenMPI or MPICH, C++11 compiler
-
-### Reproduce All Results (One Command)
-
 ```bash
 git clone https://github.com/sbouhrour/mgpu-cg-stencil-solver.git
 cd mgpu-cg-stencil-solver
 
 # Setup (auto-detects GPU, installs dependencies)
-./scripts/setup/full_setup.sh            # Basic setup
-./scripts/setup/full_setup.sh --amgx     # With AmgX comparison (optional, ~15 min build)
+./scripts/setup/full_setup.sh
 
-# Run benchmarks (auto-detects AmgX if installed)
+# Run the full benchmark suite
 ./scripts/run_all.sh
 
-# Options
-./scripts/run_all.sh --quick             # Quick verification (~2 min)
-./scripts/run_all.sh --size=10000        # Custom matrix size
+# Quick verification (~2 min)
+./scripts/run_all.sh --quick
 ```
 
-### Manual Build and Run
+Results are saved to `results/raw/` (TXT), `results/json/` (structured), and `results/figures/` (plots).
 
-```bash
-# Build all (spmv_bench, cg_solver_mgpu_stencil) - requires MPI
-make
-
-# Build AmgX benchmarks (requires AmgX installed)
-make -C external/benchmarks/amgx
-
-# Generate 5-point stencil matrix
-./bin/generate_matrix 1000 matrix/stencil_1k.mtx
-```
-
-```bash
-# SpMV benchmark (single-GPU)
-./bin/spmv_bench matrix/stencil_1k.mtx --mode=cusparse-csr,stencil5-csr
-
-# CG solver (single-GPU)
-mpirun -np 1 ./bin/cg_solver_mgpu_stencil matrix/stencil_1k.mtx
-
-# CG solver (multi-GPU)
-mpirun -np 2 ./bin/cg_solver_mgpu_stencil matrix/stencil_1k.mtx
-
-# AmgX comparison (if installed)
-./external/benchmarks/amgx/amgx_cg_solver matrix/stencil_1k.mtx
-mpirun -np 2 ./external/benchmarks/amgx/amgx_cg_solver_mgpu matrix/stencil_1k.mtx
-```
+See [`reproducing.md`](docs/reproducing.md) for prerequisites, AmgX comparison setup, manual build steps, custom benchmark commands, and profiling instructions.
 
 ---
 
@@ -464,49 +416,11 @@ behind useful computation.
 
 ## Documentation
 
-- **[Profiling Analysis](docs/profiling-2d.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
-- **[Performance Summary](docs/scaling_summary.md)**: Technical metrics and talking points
-
----
-
-## Benchmarking
-
-### One Command
-
-```bash
-./scripts/run_all.sh
-```
-
-This builds all components, runs benchmarks, and saves results to:
-- `results/raw/` — Raw TXT outputs
-- `results/json/` — Structured JSON data
-- `results/figures/` — Generated plots (after running plotting script)
-
-### Custom Benchmarks
-
-```bash
-# Single configuration with JSON export
-mpirun -np 2 ./bin/cg_solver_mgpu_stencil matrix/stencil_1k.mtx --json=custom.json
-
-# Extract timing from JSON
-jq '.timing.median_ms' custom.json
-```
-
-### Profiling with Nsight Systems
-
-```bash
-# Generate timeline report (multi-rank MPI)
-nsys profile \
-  --trace=cuda,nvtx,osrt,mpi \
-  --trace-fork-before-exec=true \
-  --stats=true \
-  --cuda-memory-usage=true \
-  --output=cg_profile \
-  mpirun -np 2 ./bin/cg_solver_mgpu_stencil matrix/stencil_1k.mtx
-
-# View in GUI
-nsys-ui cg_profile.nsys-rep
-```
+- **[Profiling Analysis (2D)](docs/profiling-2d.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
+- **[Profiling Analysis (3D)](docs/profiling-3d.md)**: Compute-communication overlap, interior/boundary decomposition, full scaling tables
+- **[Methodology](docs/methodology.md)**: Measurement protocol, statistical approach, profiling tools
+- **[Reproducing the Results](docs/reproducing.md)**: Build, run, and profile on your own hardware
+- **[Performance Summary](docs/scaling_summary.md)**: Concise technical metrics
 
 ---
 
@@ -549,21 +463,6 @@ cmake .. && make && ./test_runner
 # Specific test suite
 ./test_runner --gtest_filter="PartitionedSolver*"
 ```
-
----
-
-## Requirements
-
-- **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Hopper)
-- **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries
-- **MPI Implementation**: OpenMPI ≥ 4.0 or MPICH ≥ 3.3
-- **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
-- **Optional**: Nsight Systems/Compute for profiling
-
-**Tested configurations:**
-- NVIDIA A100-SXM4-80GB (8 GPUs) - Primary development
-- NVIDIA RTX 3090 (2 GPUs) - Validation
-- NVIDIA H100 NVL (single GPU) - Compatibility
 
 ---
 
