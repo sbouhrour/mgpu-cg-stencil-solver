@@ -1,0 +1,58 @@
+site_name: Multi-GPU CG Stencil Solver
+site_description: High-performance multi-GPU Conjugate Gradient solver for stencil-structured sparse linear systems (CUDA + MPI)
+site_url: https://sbouhrour.github.io/mgpu-cg-stencil-solver/
+repo_url: https://github.com/sbouhrour/mgpu-cg-stencil-solver
+repo_name: sbouhrour/mgpu-cg-stencil-solver
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.sections
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Results: results.md
+  - Profiling Analysis (2D): profiling-2d.md
+  - Profiling Analysis (3D): profiling-3d.md
+  - Methodology: methodology.md
+  - Reproducing: reproducing.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
