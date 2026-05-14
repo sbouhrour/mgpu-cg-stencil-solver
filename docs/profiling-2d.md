@@ -148,14 +148,9 @@ Compare to naive AllGather: 100M doubles × 8 bytes = 800 MB (5000× more data).
 
 ### Scaling Efficiency
 
-| GPUs | Custom CG | AmgX | Notes |
-|-----:|----------:|-----:|-------|
-| 1 | baseline | baseline | 1.40× faster (custom) |
-| 2 | 1.95× | 1.94× | Near-linear scaling |
-| 4 | 3.82× | 3.76× | Maintained advantage |
-| 8 | 6.94× | 6.99× | Similar efficiency |
+At 8 GPUs, the custom CG achieves a 6.94× speedup vs AmgX's 6.99× — similar parallel efficiency. The custom solver **maintains its single-GPU advantage (1.40×) at every scale**, reaching 1.44× at 8 GPUs.
 
-Both implementations scale well, but the custom solver **maintains its single-GPU advantage** at every scale.
+Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`results.md`](results.md#2d--custom-cg-vs-nvidia-amgx).
 
 ### Timeline Comparison (Nsight Systems)
 
