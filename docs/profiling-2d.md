@@ -83,9 +83,7 @@ Each interior row has exactly 5 non-zeros at fixed offsets: `-grid_size`, `-1`, 
 
 Profiled on RTX 4060 Laptop GPU (7k×7k matrix, same relative behavior):
 
-<p align="center">
-  <img src="figures/roofline_spmv_comparison.png" alt="Roofline Comparison" width="90%">
-</p>
+![Roofline Comparison](figures/roofline_spmv_comparison.png)
 
 | Kernel | Duration | Memory Throughput | Performance |
 |--------|----------|-------------------|-------------|
@@ -98,20 +96,15 @@ Profiled on RTX 4060 Laptop GPU (7k×7k matrix, same relative behavior):
 - The 2× speedup comes from better memory system utilization, not more compute
 - CSR's index indirection creates irregular access patterns that reduce effective bandwidth
 
-<details>
-<summary><b>Raw Nsight Compute Screenshots</b></summary>
+??? note "Raw Nsight Compute Screenshots"
 
-**cuSPARSE CSR:**
-<p align="center">
-  <img src="figures/profiling_roofline_cusparse_csr.png" alt="cuSPARSE CSR Roofline" width="100%">
-</p>
+    **cuSPARSE CSR:**
 
-**Custom Stencil:**
-<p align="center">
-  <img src="figures/profiling_roofline_stencil.png" alt="Stencil Kernel Roofline" width="100%">
-</p>
+    ![cuSPARSE CSR Roofline](figures/profiling_roofline_cusparse_csr.png)
 
-</details>
+    **Custom Stencil:**
+
+    ![Stencil Kernel Roofline](figures/profiling_roofline_stencil.png)
 
 ### Arithmetic Intensity Analysis
 
@@ -156,15 +149,11 @@ Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`res
 
 **Custom CG Solver** (4k×4k, 2 GPUs):
 
-<p align="center">
-  <img src="figures/custom_cg_nsys_profile_4k_2n.png" alt="Custom CG Timeline" width="100%">
-</p>
+![Custom CG Timeline](figures/custom_cg_nsys_profile_4k_2n.png)
 
 **NVIDIA AmgX** (4k×4k, 2 GPUs):
 
-<p align="center">
-  <img src="figures/amgx_cg_nsys_profile_4k_2n.png" alt="AmgX Timeline" width="100%">
-</p>
+![AmgX Timeline](figures/amgx_cg_nsys_profile_4k_2n.png)
 
 **Figure** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100 GPU). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Annotations (green arrows, red rectangles) mark key phases: SpMV, halo exchange (DtoH → MPI → HtoD), and one full CG iteration. The AmgX iteration is approximately twice as long as the Custom CG, driven primarily by the longer cuSPARSE CSR SpMV kernel.
 

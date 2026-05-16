@@ -30,6 +30,4 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 ## At a Glance
 
-<p align="center">
-  <img src="figures/performance_summary_horizontal.png" alt="Performance Summary: SpMV, single-GPU CG, and multi-GPU CG gains" width="100%">
-</p>
+![Performance Summary: SpMV, single-GPU CG, and multi-GPU CG gains](figures/performance_summary_horizontal.png)

@@ -50,9 +50,7 @@ Best gain: 1.45× (256³, 8 GPUs).
 
 ### Strong Scaling Efficiency (overlap solver)
 
-<p align="center">
-  <img src="figures/3d_scaling_overlap_a100.png" alt="3D Strong Scaling: Sync vs Overlap" width="100%">
-</p>
+![3D Strong Scaling: Sync vs Overlap](figures/3d_scaling_overlap_a100.png)
 
 At 512³ on 8 GPUs: the 7-point stencil reaches 6.17× speedup (77% parallel efficiency) and the 27-point stencil reaches 7.08× speedup (**88% parallel efficiency**) relative to the 1-GPU sync baseline.
 
