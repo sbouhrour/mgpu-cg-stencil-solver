@@ -3,12 +3,15 @@
 [![CI](https://github.com/sbouhrour/mgpu-cg-stencil-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/sbouhrour/mgpu-cg-stencil-solver/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CUDA](https://img.shields.io/badge/CUDA-11.8%20%7C%2012.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://sbouhrour.github.io/mgpu-cg-stencil-solver/)
 
 High-performance multi-GPU Conjugate Gradient solver for large-scale sparse linear systems using CUDA and MPI. Optimized for structured stencil grids with excellent strong scaling efficiency.
 
 This project evaluates GPU sparse matrix–vector multiplication strategies and their impact on iterative solvers, with a focus on stencil-structured workloads common in scientific computing (PDE discretizations, CFD, FEM).
 
 *Built by [Stéphane Bouhrour](https://github.com/sbouhrour) — GPU & parallel performance engineer, available for freelance missions ([contact](#contact)).*
+
+📖 **[Full documentation site →](https://sbouhrour.github.io/mgpu-cg-stencil-solver/)**
 
 ## TL;DR — Key Numbers
 
@@ -24,7 +27,7 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 ---
 
-## Performance Summary
+## Performance
 
 Exploiting stencil structure enables consistent performance gains over generic sparse solvers, from single-GPU to multi-GPU.
 
@@ -40,42 +43,25 @@ Exploiting stencil structure enables consistent performance gains over generic s
 </p>
 
 - **SpMV kernel**: 2.07× faster than cuSPARSE CSR (single-GPU)
-- **CG solver**: 1.40× faster than NVIDIA AmgX (single-GPU, same convergence)
-- **Multi-GPU CG**: 1.44× faster than NVIDIA AmgX (8 GPUs, equivalent scaling)
+- **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (same convergence)
+- **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
+- **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
+- **Deterministic convergence**: all configurations converge in exactly 14 iterations
+- **Efficiency improves with problem size**: 86.8% (10k) → 93.5% (20k)
 
 **Key insight**: Generic solvers cannot exploit known stencil structure for memory access and communication minimization, leading to systematic overhead even when scaling efficiently.
 
----
-
-## Performance Highlights
-
-**Multi-GPU Strong Scaling** on 8× NVIDIA A100-SXM4-80GB
-
-**Key Results:**
-- **7.48× speedup** on 400M unknowns (20k×20k) with 8 GPUs — **93.5% parallel efficiency**
-- **Near-linear 2-GPU scaling**: 1.95–1.97× speedup (97–99% efficiency)
-- **Deterministic convergence**: all configurations converge in exactly 14 iterations
-- **Better scaling with larger problems**: efficiency improves from 86.8% (10k) to 93.5% (20k)
-
-### Strong Scaling Visualization
+**Multi-GPU strong scaling:**
 
 <p align="center">
   <img src="docs/figures/scaling_main_a100.png" alt="Multi-GPU Strong Scaling" width="100%">
 </p>
 
-### Single-GPU SpMV Performance
-
-**Format Comparison** on NVIDIA A100 80GB PCIe
+**Single-GPU SpMV format comparison:**
 
 <p align="center">
   <img src="docs/figures/spmv_format_comparison_a100.png" alt="SpMV Format Comparison" width="100%">
 </p>
-
-**Key Results:**
-- **2.07× average speedup** over cuSPARSE CSR implementation
-- **~310 GFLOPS sustained** across all problem sizes (STENCIL5)
-- **1.97× bandwidth improvement** through optimized memory access patterns
-- **Consistent performance scaling**: speedup stable at 2.06–2.08× from 100M to 400M unknowns
 
 <details>
 <summary><b>📊 Detailed Format Analysis</b></summary>
@@ -123,7 +109,9 @@ The stencil optimization operates directly on CSR without converting to DIA/ELL/
 
 See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison, 3D overlap).
 
-### Comparison with NVIDIA AmgX
+---
+
+## Comparison with NVIDIA AmgX
 
 AmgX is NVIDIA's production-grade multi-GPU solver library, used here as reference implementation. To run AmgX benchmarks: `./scripts/setup/full_setup.sh --amgx` (see [AmgX build instructions](external/benchmarks/amgx/README.md)).
 
@@ -146,50 +134,9 @@ See [`results.md`](docs/results.md#2d--custom-cg-vs-nvidia-amgx) for the full co
 
 Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. By exploiting the known 5-point stencil structure, the custom kernel achieves 2× higher throughput—translating to 1.4× overall solver speedup.
 
-### Timeline Comparison (Nsight Systems)
-
-**Custom CG** — Stencil SpMV executes faster:
-<p align="center">
-  <img src="docs/figures/custom_cg_nsys_profile_4k_2n.png" alt="Custom CG Timeline" width="100%">
-</p>
-
-**NVIDIA AmgX** — Generic CSR SpMV takes longer:
-<p align="center">
-  <img src="docs/figures/amgx_cg_nsys_profile_4k_2n.png" alt="AmgX Timeline" width="100%">
-</p>
-
-<sub>**Figure 1** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100 GPU). Top: custom CG using stencil-optimized CSR SpMV. Bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution, MPI tracks highlight halo exchange phases. Although halo exchanges are synchronous in both cases, the custom implementation achieves shorter iteration time due to a faster SpMV kernel and reduced communication volume.</sub>
-
-<sub>*NVTX ranges denote algorithmic phases and do not necessarily correspond to exact GPU kernel execution time; CUDA HW tracks provide the authoritative timing.*</sub>
-
-### Why the SpMV Difference (Roofline)
-
-<p align="center">
-  <img src="docs/figures/roofline_spmv_comparison.png" alt="Roofline Analysis" width="80%">
-</p>
-
-<sub>**Figure 2** — Roofline analysis of SpMV kernels on RTX 4060 Laptop GPU (profiling environment with full NCU permissions). Both kernels are memory-bound (positioned on the bandwidth roof). The custom stencil kernel achieves **95% memory throughput** vs 67% for cuSPARSE CSR. Performance gains come from improved memory access patterns and reduced indirections, not increased arithmetic intensity.</sub>
-
-<details>
-<summary><b>📊 Detailed Kernel Breakdown</b></summary>
-
-| Kernel Type | AmgX | Custom CG |
-|-------------|-----:|----------:|
-| SpMV | 48% | 41% |
-| AXPY/AXPBY | 28% | 42% |
-| Dot products | 10% | 16% |
-| Other | 14% | <1% |
-
-**Key optimizations:**
-- **No index indirection**: Column indices computed from row index
-- **Minimal halo exchange**: 160 KB per neighbor vs 800 MB with AllGather
-- **Grouped memory accesses**: W-C-E (stride-1) then N-S (stride grid_size)
-
-</details>
-
 Performance gains come from a more efficient SpMV kernel and reduced communication volume—not from compute-communication overlap. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
 
-See [Profiling Analysis](docs/profiling-2d.md) for complete methodology and [`external/benchmarks/amgx/BENCHMARK_RESULTS.md`](external/benchmarks/amgx/BENCHMARK_RESULTS.md) for AmgX details.
+See [Profiling Analysis (2D)](docs/profiling-2d.md) for the Nsight Systems timeline comparison, roofline analysis, and kernel-level breakdown, and [`external/benchmarks/amgx/BENCHMARK_RESULTS.md`](external/benchmarks/amgx/BENCHMARK_RESULTS.md) for AmgX details.
 
 ---
 
@@ -369,48 +316,7 @@ behind useful computation.
 - **[Profiling Analysis (3D)](docs/profiling-3d.md)**: Compute-communication overlap, interior/boundary decomposition
 - **[Methodology](docs/methodology.md)**: Measurement protocol, statistical approach, profiling tools
 - **[Reproducing the Results](docs/reproducing.md)**: Build, run, and profile on your own hardware
-
----
-
-## Development
-
-### Build System
-
-**Dual build approach** for flexibility:
-- **Makefile**: Primary build for CUDA/MPI binaries
-- **CMake**: Testing framework with Google Test
-
-```bash
-# Release build (default)
-make
-
-# Debug build with GPU debugging (-g -G)
-make BUILD_TYPE=debug
-
-# Build specific targets
-make cg_solver_mgpu_stencil
-make generate_matrix
-
-# Run tests
-cd tests && mkdir build && cd build
-cmake .. && make && ./test_runner
-```
-
-### Adding Features
-
-1. **New SpMV kernel**: Implement in `src/spmv/`, register in `get_operator()`
-2. **New solver**: Add to `src/solvers/`, create entry point in `src/main/`
-3. **Performance metrics**: Extend `benchmark_stats_mgpu_partitioned.cu`
-
-### Testing
-
-```bash
-# All tests
-./test_runner
-
-# Specific test suite
-./test_runner --gtest_filter="PartitionedSolver*"
-```
+- **[Development](docs/development.md)**: Build system, adding kernels and solvers, running tests
 
 ---
 
