@@ -48,9 +48,9 @@ make -C external/benchmarks/amgx
 
 # Generate 5-point stencil matrix
 ./bin/generate_matrix 1000 matrix/stencil_1k.mtx
-```
 
-```bash
+# --- Run benchmarks ---
+
 # SpMV benchmark (single-GPU)
 ./bin/spmv_bench matrix/stencil_1k.mtx --mode=cusparse-csr,stencil5-csr
 
