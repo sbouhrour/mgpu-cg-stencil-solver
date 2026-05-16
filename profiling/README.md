@@ -71,13 +71,13 @@ ncu --set roofline -o profiling/ncu/roofline_cusparse \
 
 # Stencil kernel roofline
 ncu --set roofline -o profiling/ncu/roofline_stencil \
-    ./bin/spmv_bench matrix/stencil_7000x7000.mtx --mode=stencil5
+    ./bin/spmv_bench matrix/stencil_7000x7000.mtx --mode=stencil5-csr
 ```
 
 ## Key Observations
 
 - **SpMV dominates**: ~48% of AmgX time, ~41% of custom CG time
-- **Memory throughput**: Stencil achieves 94% vs 67% for CSR (see roofline)
+- **Memory throughput**: Stencil achieves 95% vs 67% for CSR (see roofline)
 - **Scaling**: Both implementations show similar parallel efficiency
 - **Communication**: MPI staging (D2H → MPI → H2D) visible in custom implementation
 

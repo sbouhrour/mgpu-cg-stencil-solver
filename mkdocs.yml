@@ -42,6 +42,7 @@ nav:
   - Profiling Analysis (3D): profiling-3d.md
   - Methodology: methodology.md
   - Reproducing: reproducing.md
+  - Development: development.md
 
 markdown_extensions:
   - admonition
