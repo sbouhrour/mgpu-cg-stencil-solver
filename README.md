@@ -136,7 +136,7 @@ Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. 
 
 Performance gains come from a more efficient SpMV kernel and reduced communication volume—not from compute-communication overlap. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
 
-See [Profiling Analysis (2D)](docs/profiling-2d.md) for the Nsight Systems timeline comparison, roofline analysis, and kernel-level breakdown, and [`external/benchmarks/amgx/BENCHMARK_RESULTS.md`](external/benchmarks/amgx/BENCHMARK_RESULTS.md) for AmgX details.
+See [Profiling Analysis (2D)](docs/profiling-2d.md) for the Nsight Systems timeline comparison, roofline analysis, and kernel-level breakdown.
 
 ---
 
