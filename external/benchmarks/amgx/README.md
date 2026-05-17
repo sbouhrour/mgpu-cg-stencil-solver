@@ -78,3 +78,14 @@ When running with multiple MPI ranks, the solution checksum varies slightly from
 - ✅ Consistent and reproducible
 
 **Status:** Normal for distributed linear solvers. Bit-exact reproducibility would require deterministic reductions (significant performance penalty).
+
+## Implementation Notes
+
+**AmgX API**: Multi-GPU uses `AMGX_matrix_upload_all_global` with `int64_t` global column indices; the number of halo rings is taken from `AMGX_config_get_default_number_of_rings` (the config default, not a hardcoded value). Single-GPU uses `AMGX_matrix_upload_all`.
+**Matrix format**: Local CSR partition with global column indices (`int64_t`), no separate diagonal (plain CSR).
+**Communication**: An explicit `MPI_COMM_WORLD` communicator is passed to `AMGX_resources_create`; `AMGX_matrix_upload_all_global` then performs automatic halo detection and communication setup.
+**Partitioning**: 1D row-band decomposition (equal distribution; the last rank absorbs the remainder).
+**Solver**: Unpreconditioned CG — multi-GPU config uses `solver=CG`, single-GPU uses `solver=PCG, preconditioner=NOSOLVER` (equivalent). Default tolerance 1e-6.
+
+Benchmark results for AmgX (single and multi-GPU, 10k/15k/20k) are in
+the consolidated [results page](../../../docs/results.md).
