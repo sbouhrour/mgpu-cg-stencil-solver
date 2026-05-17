@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/development/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/methodology/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/profiling-2d/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/profiling-3d/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/reproducing/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/results/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+    <url>
+         <loc>https://sbouhrour.github.io/mgpu-cg-stencil-solver/figures/</loc>
+         <lastmod>2026-05-17</lastmod>
+    </url>
+</urlset>
