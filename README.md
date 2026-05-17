@@ -190,7 +190,7 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 - **Compared NCCL vs MPI**: MPI staging 43% faster for small repeated messages
 - **Profiling-driven**: Nsight Systems analysis to identify bottlenecks
 - **Numerical stability**: Deterministic results across all GPU counts
-- **Fair benchmarking**: Unified compilation flags (-O2) and consistent test methodology
+- **Conservative benchmarking**: the custom kernels are built at `-O2` while the AmgX driver and library are built at `-O3`, so the custom solver is the less-optimized side of the comparison — reported speedups are conservative. Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
 
 ---
 
