@@ -1,0 +1,37 @@
+Loading matrix (Path B): matrix/stencil3d_27pt_192.mtx
+Generating 27pt stencil in memory for N=192, partition [rank 0/1, i=0..191]...
+  local nnz = 189119224, allocating 3.0 GB for COO entries...
+  Generating entries: 0%  Generating entries: 4%  Generating entries: 9%  Generating entries: 14%  Generating entries: 19%  Generating entries: 24%  Generating entries: 29%  Generating entries: 34%  Generating entries: 39%  Generating entries: 44%  Generating entries: 49%  Generating entries: 54%  Generating entries: 59%  Generating entries: 64%  Generating entries: 69%  Generating entries: 74%  Generating entries: 79%  Generating entries: 84%  Generating entries: 89%  Generating entries: 94%  Generating entries: 99%  Generating entries: 100%
+  Done: global 7077888 rows, local 189119224 nnz (rank 0/1)
+Matrix: 7077888 x 7077888, 189119224 nnz, grid_size=192
+🔄 Building CSR structure (7077888x7077888, 189119224 nnz)...
+   ➤ Counting non-zeros per row...
+   ➤ Building row offset prefix sums...
+   ➤ Allocating column indices and values arrays...
+   ➤ Populating CSR arrays...
+   ➤ Sorting CSR entries by column index...
+✅ CSR structure built successfully
+GPU: NVIDIA GeForce RTX 4060 Laptop GPU (CC 8.9, 24 SMs)
+Launch config: blocks=27648, threads=256 (n=7077888, nnz=189119224)
+
+=== stencil27_full ===
+  median ms: 10.4335   (min 10.0536, max 11.6480)   y checksum: 1.983752e+06
+
+=== stencil27_boundary_neutralized ===
+  median ms: 10.1591   (min 9.5447, max 11.3234)   y checksum: 1.983752e+06
+
+=== stencil27_interior_pure ===
+  median ms: 10.5196   (min 10.1489, max 11.1145)   y checksum: 0.000000e+00
+
+============ SUMMARY (interleaved, 30 rounds) ============
+  per-kernel median ms:
+    stencil27_full                   10.4335
+    stencil27_boundary_neutralized   10.1591
+    stencil27_interior_pure          10.5196
+---------------------------------------------------------
+  paired per-round deltas (clock-robust), median:
+    full - A (full - neutralized)  : +0.2861 ms
+    A - B (neutralized - interior) : -0.1449 ms
+    full - B (full - interior)     : +0.0236 ms
+  median-of-medians deltas: full-A +0.2744, A-B -0.3604, full-B -0.0860 ms
+=========================================================
