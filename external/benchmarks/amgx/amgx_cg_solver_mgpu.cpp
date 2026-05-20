@@ -57,6 +57,7 @@ struct MatrixMarket {
     int* row_ptr;
     int* col_idx;
     double* values;
+    int grid_dim;  // N for a stencil grid (from STENCIL_GRID_SIZE header); -1 if absent
 };
 
 MatrixMarket read_matrix_market(const char* filename, int rank) {
@@ -66,15 +67,20 @@ MatrixMarket read_matrix_market(const char* filename, int rank) {
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    // Skip comments
+    // Skip comments, capturing the stencil grid size if the generator emitted it
+    int grid_dim = -1;
     char line[1024];
     while (fgets(line, sizeof(line), f)) {
         if (line[0] != '%')
             break;
+        int n;
+        if (sscanf(line, "%% STENCIL_GRID_SIZE %d", &n) == 1)
+            grid_dim = n;
     }
 
     MatrixMarket mat;
     sscanf(line, "%d %d %d", &mat.rows, &mat.cols, &mat.nnz);
+    mat.grid_dim = grid_dim;
 
     // Temporary storage for COO format
     int* coo_rows = (int*)malloc(mat.nnz * sizeof(int));
@@ -333,11 +339,24 @@ int main(int argc, char* argv[]) {
 
     // Load full matrix (each rank independently)
     MatrixMarket mat = read_matrix_market(matrix_file, rank);
-    int grid_size = (int)sqrt(mat.rows);
+
+    // Grid label: prefer the generator's STENCIL_GRID_SIZE header. A 3D stencil
+    // matrix has rows = N^3 (NxNxN grid); fall back to the 2D sqrt label otherwise.
+    int grid_size;
+    bool grid_is_3d =
+        (mat.grid_dim > 0 && (long long)mat.grid_dim * mat.grid_dim * mat.grid_dim == mat.rows);
+    if (grid_is_3d) {
+        grid_size = mat.grid_dim;
+    } else {
+        grid_size = (int)sqrt((double)mat.rows);
+    }
 
     if (rank == 0) {
         printf("Matrix loaded: %dx%d, %d nonzeros\n", mat.rows, mat.cols, mat.nnz);
-        printf("Grid: %dx%d\n\n", grid_size, grid_size);
+        if (grid_is_3d)
+            printf("Grid: %dx%dx%d (3D stencil)\n\n", grid_size, grid_size, grid_size);
+        else
+            printf("Grid: %dx%d\n\n", grid_size, grid_size);
     }
 
     // Build consistent global partition vector FIRST (all ranks must agree)
