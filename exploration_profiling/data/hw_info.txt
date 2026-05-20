@@ -1,0 +1,2 @@
+name, driver_version, compute_cap
+NVIDIA GeForce RTX 4060 Laptop GPU, 575.57.08, 8.9

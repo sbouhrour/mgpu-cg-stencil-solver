@@ -1,0 +1,20 @@
+Loading matrix (Path B): matrix/stencil3d_27pt_192.mtx
+Generating 27pt stencil in memory for N=192, partition [rank 0/1, i=0..191]...
+  local nnz = 189119224, allocating 3.0 GB for COO entries...
+  Generating entries: 0%  Generating entries: 4%  Generating entries: 9%  Generating entries: 14%  Generating entries: 19%  Generating entries: 24%  Generating entries: 29%  Generating entries: 34%  Generating entries: 39%  Generating entries: 44%  Generating entries: 49%  Generating entries: 54%  Generating entries: 59%  Generating entries: 64%  Generating entries: 69%  Generating entries: 74%  Generating entries: 79%  Generating entries: 84%  Generating entries: 89%  Generating entries: 94%  Generating entries: 99%  Generating entries: 100%
+  Done: global 7077888 rows, local 189119224 nnz (rank 0/1)
+Matrix: 7077888 x 7077888, 189119224 nnz, grid_size=192
+🔄 Building CSR structure (7077888x7077888, 189119224 nnz)...
+   ➤ Counting non-zeros per row...
+   ➤ Building row offset prefix sums...
+   ➤ Allocating column indices and values arrays...
+   ➤ Populating CSR arrays...
+   ➤ Sorting CSR entries by column index...
+✅ CSR structure built successfully
+==PROF== Connected to process 9762 (/home/stephane/cuda_train/dev_spmv/bin/profile_27pt_full)
+==PROF== Profiling "stencil27_csr_partitioned_halo_kernel_3d": 0%....50%....100% - 40 passes
+GPU: NVIDIA GeForce RTX 4060 Laptop GPU (CC 8.9, 24 SMs)
+Launch config: blocks=27648, threads=256 (n=7077888, nnz=189119224)
+kernel launched OK
+==PROF== Disconnected from process 9762
+==PROF== Report: /home/stephane/cuda_train/dev_spmv/exploration_profiling/data/27pt_profile_rtx4060.ncu-rep
