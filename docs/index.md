@@ -8,7 +8,7 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 | Metric | Result |
 |--------|--------|
-| **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU, 10k×10k), 1.44× faster (8 GPUs, 20k×20k) |
+| **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100 80GB (20k×20k) |
 | **3D overlap (7pt/27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |

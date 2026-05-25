@@ -189,9 +189,6 @@ for S in "${STENCIL_TYPES[@]}"; do
             fi
         else
             MATRIX="matrix/stencil3d_27pt_${GRID}.mtx"
-            if [ "$GRID" = "256" ]; then
-                echo "  Note: 27pt 256³ matrix file is ~2 GB"
-            fi
             if [ ! -f "$MATRIX" ]; then
                 echo "Creating 27pt ${GRID}³ header file (solver generates entries in memory)..."
                 mkdir -p matrix

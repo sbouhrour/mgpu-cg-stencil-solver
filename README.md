@@ -17,8 +17,8 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 | Metric | Result |
 |--------|--------|
-| **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU), 1.44× faster (8 GPUs) |
-| **Stencil SpMV vs cuSPARSE CSR** | 2.07× speedup on A100 80GB |
+| **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
+| **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100 80GB (20k×20k) |
 | **3D overlap (7pt/27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
@@ -42,8 +42,8 @@ Exploiting stencil structure enables consistent performance gains over generic s
   <img src="docs/figures/performance_summary_horizontal.png" alt="Performance Summary: All Gains" width="100%">
 </p>
 
-- **SpMV kernel**: 2.07× faster than cuSPARSE CSR (single-GPU)
-- **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (same convergence)
+- **SpMV kernel**: 2.08× faster than cuSPARSE CSR (single-GPU, 20k×20k)
+- **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, same convergence)
 - **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
 - **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
 - **Deterministic convergence**: all configurations converge in exactly 14 iterations
@@ -330,7 +330,7 @@ If you use this code in your research, please cite:
   title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
   year = {2026},
   url = {https://github.com/sbouhrour/mgpu-cg-stencil-solver},
-  note = {2.07× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
+  note = {2.08× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
 }
 ```
 
