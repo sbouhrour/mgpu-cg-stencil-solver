@@ -209,8 +209,10 @@ ncu --set roofline -o roofline_cusparse \
 
 # Stencil kernel roofline
 ncu --set roofline -o roofline_stencil \
-    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=stencil5
+    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=stencil5-csr
 ```
+
+These commands document the profiling of this specific analysis. For general reproduction of the published numbers, see the [Reproducing](reproducing.md#profiling) page.
 
 ### Available Profile Data
 

@@ -64,19 +64,6 @@ Small workloads show diminishing returns. At 128³ on 8 GPUs the per-GPU workloa
 
 The best scaling result — 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap) — comes from combining kernel specialization with communication hiding. The Nsight timelines above show how a 4.82 ms synchronous iteration (GPU idle during halo exchange) becomes a 3.76 ms overlapped iteration — a 1.28× gain (see the 7-point 512³/4-GPU row in [`results.md`](results.md#3d-7-point-stencil-sync-vs-overlap)).
 
-### How to Reproduce
+### Reproducing these results
 
-```bash
-# Generate matrices
-./bin/generate_matrix_3d 256 matrix/stencil3d_256.mtx
-./bin/generate_matrix_3d_27pt 256 matrix/stencil3d_27pt_256.mtx
-
-# Run sync solver
-mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27
-
-# Run overlap solver
-mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap
-
-# Verify correctness
-mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap --verify
-```
+See the [Reproducing](reproducing.md#reproducing-specific-results) page, section "Reproducing specific results", for the exact commands to reproduce each measurement above (including the 27-point matrix header-file convention).
