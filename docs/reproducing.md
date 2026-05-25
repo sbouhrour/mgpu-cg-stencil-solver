@@ -86,6 +86,47 @@ A reviewer comparing against NVIDIA AmgX needs the AmgX build, which is optional
 
 With AmgX present, `run_all.sh` adds the single-GPU and multi-GPU AmgX reference runs and reports the Custom-CG-vs-AmgX ratios in the `PERFORMANCE SUMMARY`.
 
+### Manual AmgX install
+
+`full_setup.sh --amgx` delegates to `scripts/setup/install_amgx.sh`, which clones, builds, and installs AmgX, then builds the comparison binaries. The equivalent manual steps, run from the repository root:
+
+```bash
+REPO=$(pwd)
+
+# 1. Clone AmgX (the setup script tracks the main branch — see version note below)
+git clone --depth 1 --branch main https://github.com/NVIDIA/AMGX.git /tmp/AMGX
+cd /tmp/AMGX
+git submodule update --init --recursive        # Thrust dependency
+
+# 2. Configure (CUDA archs: 80 = A100, 86 = RTX 30xx, 90 = H100)
+mkdir build && cd build
+cmake -DCMAKE_INSTALL_PREFIX="$REPO/external/amgx" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DCMAKE_NO_MPI=0 \
+      -DCMAKE_CUDA_ARCHITECTURES="80;86;90" \
+      ..
+
+# 3. Build and install (10-15 min)
+make -j$(nproc)
+make install
+```
+
+This installs into `external/amgx/`: headers in `external/amgx/include/` (`amgx_c.h`) and the library in `external/amgx/lib/` (`libamgxsh.so` shared, `libamgx.a` static). Then build the comparison binaries against it from the repository root:
+
+```bash
+export AMGX_DIR="$REPO/external/amgx"
+make -C external/benchmarks/amgx
+```
+
+`run_all.sh` auto-detects AmgX via `external/amgx/include/amgx_c.h` (it also accepts `external/amgx-src/include/amgx_c.h`) and enables the reference runs.
+
+Notes:
+
+- `-DCMAKE_NO_MPI=0` requires MPI and is needed for the multi-GPU distributed API; without MPI the setup script sets `-DCMAKE_NO_MPI=1` and only single-GPU AmgX works.
+- `install_amgx.sh` only passes `-DCMAKE_CUDA_ARCHITECTURES` automatically in detected cloud/container environments, where it derives the list from the CUDA version (e.g. `70;75;80;86;89;90` for CUDA 12.x). Setting it explicitly as above keeps the build portable across A100/RTX/H100.
+- **Version**: the script clones the moving `main` branch (`AMGX_VERSION="main"`), not a fixed tag or commit, so the exact AmgX revision behind the published Key Numbers is **not pinned** in the repo. The recorded toolchain is CUDA 12.8 / Driver 575.57.
+
 ## Reproducing specific results
 
 Each row maps a published number to the exact command that produces it. Expected values are the published figures in [`results.md`](results.md); they were measured on 8× A100-SXM4-80GB and will differ on other hardware.
