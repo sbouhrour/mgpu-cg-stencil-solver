@@ -193,11 +193,12 @@ for S in "${STENCIL_TYPES[@]}"; do
                 echo "  Note: 27pt 256³ matrix file is ~2 GB"
             fi
             if [ ! -f "$MATRIX" ]; then
-                echo "Generating 27pt ${GRID}³ matrix (in-memory format)..."
+                echo "Creating 27pt ${GRID}³ header file (solver generates entries in memory)..."
                 mkdir -p matrix
-                # The binary generates in-memory from the filename's grid size
-                # Create a placeholder so the filename pattern is recognizable
-                touch "$MATRIX"
+                # The 27pt solver reads the grid size from the % STENCIL_GRID_SIZE
+                # header and generates the matrix entries in memory; only the header
+                # line is needed on disk. An empty file makes the solver MPI_ABORT.
+                echo "% STENCIL_GRID_SIZE ${GRID}" > "$MATRIX"
             fi
         fi
 
