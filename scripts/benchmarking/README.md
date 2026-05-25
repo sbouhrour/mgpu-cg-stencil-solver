@@ -22,7 +22,7 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 # Résultats dans: results_single_gpu_formats_[GPU]_[DATE]/
 ```
 
-**Résultats attendus (A100)**: Speedup **2.07×** (Stencil vs cuSPARSE)
+**Résultats attendus (A100)**: Speedup **2.08×** (Stencil vs cuSPARSE, 20k×20k)
 
 ---
 
@@ -85,7 +85,7 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 # Résultats dans: results_amgx_comparison_[GPU]_[DATE]/
 ```
 
-**Résultats attendus**: Custom CG **1.40× faster** (single-GPU), **1.44× faster** (8 GPUs)
+**Résultats attendus**: Custom CG **1.40× faster** (single-GPU, 20k×20k), **1.44× faster** (8 GPUs, 20k×20k)
 
 ---
 
