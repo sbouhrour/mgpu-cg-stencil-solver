@@ -249,5 +249,5 @@ cg3d: cg_solver_single_gpu_3d
 # ============================================================================
 
 clean:
-	rm -rf build bin results
+	rm -rf build bin
 

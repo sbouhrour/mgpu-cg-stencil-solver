@@ -185,7 +185,7 @@ for S in "${STENCIL_TYPES[@]}"; do
             if [ ! -f "$MATRIX" ]; then
                 echo "Generating 7pt ${GRID}³ matrix..."
                 mkdir -p matrix
-                ./bin/release/generate_matrix_3d "$GRID" "$MATRIX"
+                "$GEN7" "$GRID" "$MATRIX"
             fi
         else
             MATRIX="matrix/stencil3d_27pt_${GRID}.mtx"
@@ -208,7 +208,7 @@ for S in "${STENCIL_TYPES[@]}"; do
             OUTDIR="${OUTPUT_DIR}"
             LABEL="${S}pt ${GRID}³ ${N}GPU"
             MPIRUN_CMD="mpirun --allow-run-as-root -np ${N}"
-            BASE_CMD="./bin/release/cg_solver_mgpu_stencil_3d ${MATRIX} --stencil=${S}"
+            BASE_CMD="${BIN} ${MATRIX} --stencil=${S}"
 
             echo ""
             echo "--- ${LABEL} ---"
@@ -248,7 +248,7 @@ if [ "$PROFILE" = "1" ] && [ -n "$PROFILE_LABEL" ]; then
     echo ""
     echo "--- nsys profiling: ${PROFILE_LABEL} overlap ---"
     MPIRUN_CMD="mpirun --allow-run-as-root -np ${PROFILE_N}"
-    BASE_CMD="./bin/release/cg_solver_mgpu_stencil_3d ${PROFILE_MATRIX} --stencil=${PROFILE_STENCIL}"
+    BASE_CMD="${BIN} ${PROFILE_MATRIX} --stencil=${PROFILE_STENCIL}"
     nsys profile \
         --trace=cuda,nvtx,mpi \
         --trace-fork-before-exec=true \
