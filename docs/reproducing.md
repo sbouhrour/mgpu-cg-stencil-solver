@@ -14,12 +14,19 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 
 **Notes on common setup gaps:**
 
-- If `nvcc` is not in your `PATH` (frequent on fresh cloud images):
-  `export PATH=/usr/local/cuda/bin:$PATH`
-- If MPI is missing, install it on Ubuntu/Debian with:
-  `apt install libopenmpi-dev openmpi-bin`. Without MPI, only the SpMV
-  benchmark runs — the CG (single- and multi-GPU) and 3D benchmarks are
-  skipped silently.
+If `nvcc` is not in your `PATH` (frequent on fresh cloud images):
+
+```bash
+export PATH=/usr/local/cuda/bin:$PATH
+```
+
+If MPI is missing, install it on Ubuntu/Debian (run `apt update` first, or `apt install` fails with "Unable to locate package"):
+
+```bash
+apt update && apt install -y libopenmpi-dev openmpi-bin
+```
+
+Without MPI, only the SpMV benchmark runs — the CG (single- and multi-GPU) and 3D benchmarks are skipped silently.
 
 **Tested configurations:**
 
@@ -37,6 +44,15 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 
 Verifies that the build and the full pipeline work, without running the large showcase problem sizes.
 
+Clone the repository and enter it:
+
+```bash
+git clone https://github.com/sbouhrour/mgpu-cg-stencil-solver.git
+cd mgpu-cg-stencil-solver
+```
+
+Then run the smoke test:
+
 ```bash
 ./scripts/run_all.sh --quick
 ```
@@ -45,6 +61,10 @@ Verifies that the build and the full pipeline work, without running the large sh
 
 - Matrix size: **512×512** instead of the default 1000×1000.
 - Runs per benchmark: **3** instead of 10.
+
+Both the default 1000×1000 and `--quick`'s 512×512 are small pipeline-validation sizes meant to confirm everything runs end to end; they are not the showcase problem. Reproducing the published Key Numbers requires a showcase size such as `--size=20000`.
+
+`--quick` runs only the custom solver path — AmgX is **not** included. To compare against AmgX, run `./scripts/setup/full_setup.sh --amgx` first, then run with or without `--quick`.
 
 It builds the binaries, generates the matrix, then runs SpMV (single-GPU), CG (single-GPU), and — if MPI and ≥2 GPUs are present — multi-GPU CG and the 3D overlap benchmark. Outputs land in `results/raw/` (TXT), `results/json/` (JSON), and `results/3d/` (3D benchmark).
 
