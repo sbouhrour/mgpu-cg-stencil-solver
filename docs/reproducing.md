@@ -12,6 +12,15 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 - **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
 - **Optional**: Nsight Systems/Compute for profiling
 
+**Notes on common setup gaps:**
+
+- If `nvcc` is not in your `PATH` (frequent on fresh cloud images):
+  `export PATH=/usr/local/cuda/bin:$PATH`
+- If MPI is missing, install it on Ubuntu/Debian with:
+  `apt install libopenmpi-dev openmpi-bin`. Without MPI, only the SpMV
+  benchmark runs — the CG (single- and multi-GPU) and 3D benchmarks are
+  skipped silently.
+
 **Tested configurations:**
 
 - NVIDIA A100-SXM4-80GB (8 GPUs) — primary development
@@ -45,6 +54,10 @@ It builds the binaries, generates the matrix, then runs SpMV (single-GPU), CG (s
 - TXT files appear in `results/raw/` (e.g. `spmv_512_<timestamp>.txt`) and JSON files in `results/json/`.
 
 Runtime not measured — to be confirmed on local hardware.
+
+> Absolute timings and ratios depend on hardware; the headline numbers in
+> this page are 8× A100-SXM4-80GB measurements. Expect different values on
+> other GPUs.
 
 ## Full benchmark suite
 
@@ -85,6 +98,14 @@ A reviewer comparing against NVIDIA AmgX needs the AmgX build, which is optional
 ```
 
 With AmgX present, `run_all.sh` adds the single-GPU and multi-GPU AmgX reference runs and reports the Custom-CG-vs-AmgX ratios in the `PERFORMANCE SUMMARY`.
+
+To validate the AmgX comparison quickly (small problem, fewer runs) or to go
+straight for the headline numbers:
+
+```bash
+./scripts/setup/full_setup.sh --amgx     # one-time setup (adds build time)
+./scripts/run_all.sh --quick             # or --size=20000 for headline numbers
+```
 
 ### Manual AmgX install
 
