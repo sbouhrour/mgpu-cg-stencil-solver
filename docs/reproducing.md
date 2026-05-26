@@ -42,38 +42,25 @@ Without MPI, only the SpMV benchmark runs — the CG (single- and multi-GPU) and
 
 ## Quick smoke test
 
-Verifies that the build and the full pipeline work, without running the large showcase problem sizes.
-
-Clone the repository and enter it:
-
 ```bash
 git clone https://github.com/sbouhrour/mgpu-cg-stencil-solver.git
 cd mgpu-cg-stencil-solver
-```
-
-Then run the smoke test:
-
-```bash
 ./scripts/run_all.sh --quick
 ```
 
-`--quick` differs from the full run in two ways (see `scripts/run_all.sh`):
+Validates that the build and full pipeline run end to end. Uses a small matrix and minimal benchmark iterations — sufficient to confirm the environment is set up, not to reproduce the published Key Numbers (those need `--size=20000` — see [Reproducing specific results](#reproducing-specific-results)).
 
-- Matrix size: **512×512** instead of the default 1000×1000.
-- Runs per benchmark: **3** instead of 10.
+To include AmgX in the comparison, run the AmgX setup once before launching:
 
-Both the default 1000×1000 and `--quick`'s 512×512 are small pipeline-validation sizes meant to confirm everything runs end to end; they are not the showcase problem. Reproducing the published Key Numbers requires a showcase size such as `--size=20000`.
-
-`--quick` runs only the custom solver path — AmgX is **not** included. To compare against AmgX, run `./scripts/setup/full_setup.sh --amgx` first, then run with or without `--quick`.
-
-It builds the binaries, generates the matrix, then runs SpMV (single-GPU), CG (single-GPU), and — if MPI and ≥2 GPUs are present — multi-GPU CG and the 3D overlap benchmark. Outputs land in `results/raw/` (TXT), `results/json/` (JSON), and `results/3d/` (3D benchmark).
+```bash
+./scripts/setup/full_setup.sh --amgx
+./scripts/run_all.sh --quick
+```
 
 **How to know it worked:**
 
 - A `PERFORMANCE SUMMARY` block is printed at the end, listing SpMV and CG timings with their ratios.
 - TXT files appear in `results/raw/` (e.g. `spmv_512_<timestamp>.txt`) and JSON files in `results/json/`.
-
-Runtime not measured — to be confirmed on local hardware.
 
 > Absolute timings and ratios depend on hardware; the headline numbers in
 > this page are 8× A100-SXM4-80GB measurements. Expect different values on
