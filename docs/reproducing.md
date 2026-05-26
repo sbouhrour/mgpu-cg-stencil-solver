@@ -20,7 +20,7 @@ If `nvcc` is not in your `PATH` (frequent on fresh cloud images):
 export PATH=/usr/local/cuda/bin:$PATH
 ```
 
-If MPI is missing, install it on Ubuntu/Debian (run `apt update` first, or `apt install` fails with "Unable to locate package"):
+If MPI is missing, install it on Ubuntu/Debian:
 
 ```bash
 apt update && apt install -y libopenmpi-dev openmpi-bin
