@@ -2,7 +2,7 @@
 
 This document explains **why** the custom CG solver outperforms NVIDIA AmgX, using profiling data from Nsight Systems and Nsight Compute.
 
-> **Hardware note.** Performance numbers in this document (solver timings, kernel breakdowns, SpMV throughput) were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The roofline analysis in §2 was profiled on an RTX 4060 Laptop GPU due to NCU permission constraints on shared A100 hosts. Both kernels remain memory-bound on either architecture, so the relative comparison (95% vs 67% memory throughput) transfers; absolute GFLOP/s values reflect the RTX 4060 only.
+> **Hardware note.** Performance numbers in this document (solver timings, kernel breakdowns, SpMV throughput) were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The roofline analysis in [section 2](#2-spmv-kernel-analysis) was profiled on an RTX 4060 Laptop GPU due to NCU permission constraints on shared A100 hosts. Both kernels remain memory-bound on either architecture, so the relative comparison (95% vs 67% memory throughput) transfers; absolute GFLOP/s values reflect the RTX 4060 only.
 
 ## Executive Summary
 
@@ -10,7 +10,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 |---------|--------|
 | AmgX spends **48% of compute time** in generic CSR SpMV | Primary optimization target |
 | Custom stencil kernel achieves **2× higher throughput** | Eliminates index indirection |
-| Stencil-aware halo exchange: **160 KB per neighbor** | Minimal communication overhead |
+| Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
 | Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
 **Key insight**: By exploiting the known 5-point stencil structure, the custom solver eliminates memory indirections and minimizes communication, translating kernel-level gains into solver-level performance.
@@ -38,7 +38,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | Dot product (cuBLAS) | 16% | cuBLAS ddot |
 | AXPBY | 13% | Scaled vector operations |
 
-*Both breakdowns measured on a single A100 to isolate kernel-level distribution from communication overhead. Multi-GPU scaling is analyzed separately in §3.*
+*Both breakdowns measured on a single A100 to isolate kernel-level distribution from communication overhead. Multi-GPU scaling is analyzed separately in [section 3](#3-multi-gpu-scaling-analysis).*
 
 ### Observation
 
@@ -126,7 +126,7 @@ The stencil kernel moves **45% less data** per row by eliminating index storage 
 
 | Aspect | Custom CG | AmgX |
 |--------|-----------|------|
-| Halo exchange | 160 KB per neighbor | Generic CSR pattern |
+| Halo exchange | One boundary row per neighbor (N × 8 bytes) | Generic CSR pattern |
 | Method | MPI explicit staging | Internal NCCL/MPI |
 | Overlap | None (synchronous) | Internal optimization |
 

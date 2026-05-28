@@ -1,6 +1,6 @@
 # Results
 
-All benchmark results for the multi-GPU CG stencil solver. Measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12), median of 10 runs with 3 warmup runs discarded.
+All benchmark results for the multi-GPU CG stencil solver. Measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12).
 
 For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) (2D, kernel breakdown, roofline) and [`profiling-3d.md`](profiling-3d.md) (3D, compute-communication overlap). For measurement methodology, see [`methodology.md`](methodology.md).
 
@@ -13,8 +13,6 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | **100M unknowns** (10k×10k stencil) | 133.9 ms | 19.3 ms | 6.94× | 86.8% |
 | **225M unknowns** (15k×15k stencil) | 300.1 ms | 40.4 ms | 7.43× | 92.9% |
 | **400M unknowns** (20k×20k stencil) | 531.4 ms | 71.0 ms | **7.48×** | **93.5%** |
-
-<sub>*Median of 10 runs; 3 warmup runs discarded.*</sub>
 
 ## 2D — Detailed Scaling (1 / 2 / 4 / 8 GPUs)
 
@@ -45,7 +43,7 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | 4    | 136.3     | 3.90×   | 97.5%      |
 | 8    | 71.0      | **7.48×** | **93.5%**  |
 
-<sub>Convergence: 14 iterations across all configurations. Source: `results_archive/results_problem_size_scaling_NVIDIAA100-SXM4-80GB_20260109_123920/`.</sub>
+<sub>Convergence: 14 iterations across all configurations.</sub>
 
 ## 2D — SpMV Format Comparison
 
@@ -56,8 +54,6 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | **10k×10k** (100M unknowns) | 6.77 ms | 3.25 ms | **2.08×** | 1.98× (1182 → 2339 GB/s) |
 | **15k×15k** (225M unknowns) | 15.00 ms | 7.29 ms | **2.06×** | 1.96× (1200 → 2346 GB/s) |
 | **20k×20k** (400M unknowns) | 26.77 ms | 12.86 ms | **2.08×** | 1.98× (1195 → 2364 GB/s) |
-
-<sub>*Median of 10 runs; 3 warmup runs discarded.*</sub>
 
 ## 2D — Custom CG vs NVIDIA AmgX
 
@@ -122,7 +118,7 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | 256³ | 1.00× | 1.88× | 3.06× | 3.66× |
 | 512³ | 1.00× | 1.97× | 3.84× | 6.17× |
 
-<sub>512³ at 8 GPUs: 15127/2453 = 6.17× → 77% parallel efficiency</sub>
+<sub>512³ at 8 GPUs: 6.17× speedup (77% parallel efficiency).</sub>
 
 **27-point stencil** — speedup relative to 1-GPU sync baseline:
 

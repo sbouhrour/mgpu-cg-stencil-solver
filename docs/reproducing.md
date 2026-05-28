@@ -97,22 +97,20 @@ AmgX auto-detection: if AmgX is not installed, benchmarks 4 and 5 are skipped an
 
 ## AmgX comparison setup
 
-A reviewer comparing against NVIDIA AmgX needs the AmgX build, which is optional and adds build time:
+A reviewer comparing against NVIDIA AmgX needs the AmgX build first (optional, adds build time):
 
 ```bash
-./scripts/setup/full_setup.sh --amgx     # install main components + AmgX
-./scripts/run_all.sh                      # auto-detects AmgX once installed
+./scripts/setup/full_setup.sh --amgx
 ```
 
-With AmgX present, `run_all.sh` adds the single-GPU and multi-GPU AmgX reference runs and reports the Custom-CG-vs-AmgX ratios in the `PERFORMANCE SUMMARY`.
-
-To validate the AmgX comparison quickly (small problem, fewer runs) or to go
-straight for the headline numbers:
+Once installed, `run_all.sh` auto-detects AmgX. Run with `--quick` for a smoke test or `--size=20000` for the headline numbers:
 
 ```bash
-./scripts/setup/full_setup.sh --amgx     # one-time setup (adds build time)
-./scripts/run_all.sh --quick             # or --size=20000 for headline numbers
+./scripts/run_all.sh --quick           # smoke test with AmgX comparison
+./scripts/run_all.sh --size=20000      # headline numbers
 ```
+
+With AmgX present, the `PERFORMANCE SUMMARY` reports the Custom-CG-vs-AmgX ratios for both single-GPU and multi-GPU runs.
 
 ### Manual AmgX install
 

@@ -2,7 +2,7 @@
 
 This document presents the 3D extension of the multi-GPU CG solver (7-point and 27-point stencils) with compute-communication overlap. The analysis demonstrates how interior/boundary decomposition and dual-stream execution hide MPI halo exchange behind GPU computation.
 
-> **Hardware note.** All results in this document were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). Each configuration uses median of 10 runs with 3 warmups discarded. See [`profiling-2d.md`](profiling-2d.md) for the 2D analysis and methodology details.
+> **Hardware note.** All results in this document were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). See [`profiling-2d.md`](profiling-2d.md) for the 2D analysis and [`methodology.md`](methodology.md) for measurement details.
 
 **88% strong scaling efficiency on 8 A100 GPUs** (27-point stencil, 512³ grid, overlap solver).
 

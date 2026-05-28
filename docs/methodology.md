@@ -23,6 +23,8 @@ For build and run instructions, see [`reproducing.md`](reproducing.md). For the 
 nvcc -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true -std=c++11
 ```
 
+**Compilation flags asymmetry**: the Custom CG is built with `-O2`, while the AmgX comparison harness (`external/benchmarks/amgx/Makefile`) is built with `-O3`. Each setting is the default of its project and is not changed in this harness. The asymmetry favors AmgX; the speedup measured against AmgX is therefore conservative.
+
 **Run benchmarks on your hardware:**
 ```bash
 # Quick test (512×512)
