@@ -128,4 +128,4 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | 256³ | 1.00× | 1.93× | 3.58× | 6.47× |
 | 512³ | 1.00× | 1.98× | 3.79× | 7.08× |
 
-<sub>512³ at 8 GPUs: 22016/3110 = 7.08× → **88% parallel efficiency**</sub>
+<sub>512³ at 8 GPUs: 7.08× speedup (**88% parallel efficiency**).</sub>

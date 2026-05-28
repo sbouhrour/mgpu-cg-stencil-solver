@@ -130,9 +130,9 @@ The stencil kernel moves **45% less data** per row by eliminating index storage 
 | Method | MPI explicit staging | Internal NCCL/MPI |
 | Overlap | None (synchronous) | Internal optimization |
 
-### Why 160 KB?
+### Halo volume in practice (10k×10k on 8 GPUs)
 
-For a 10k×10k grid partitioned across 8 GPUs:
+Applying the formula above to a concrete configuration:
 - Each GPU owns ~12,500 rows
 - Halo zone = 1 row = 10,000 doubles = 80 KB
 - Two neighbors (top + bottom) = 160 KB total
@@ -168,7 +168,7 @@ Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`res
 The 1.40× single-GPU and 1.44× multi-GPU advantage of the custom CG over AmgX stems from three compounding factors:
 
 - **SpMV kernel specialization (primary driver)** — Eliminating index indirection in the generic CSR representation, by exploiting the known 5-point stencil pattern, provides a 2.08× isolated throughput gain on the dominant kernel (48% of AmgX execution time on the single-GPU breakdown).
-- **Halo exchange volume** — Sending only the stencil-specific boundary rows (160 KB per neighbor for a 10k×10k grid on 8 GPUs) replaces generic communication patterns and AllGather-based approaches that would require orders of magnitude more data.
+- **Halo exchange volume** — Sending only the stencil-specific boundary rows (160 KB total for a 10k×10k grid on 8 GPUs — see [Halo volume in practice](#halo-volume-in-practice-10k10k-on-8-gpus)) replaces generic communication patterns and AllGather-based approaches that would require orders of magnitude more data.
 - **BLAS1 memory access patterns** — Coalesced accesses in AXPY/AXPBY/dot kernels operating on partitioned local vectors improve memory throughput compared to AmgX's library-level operations.
 
 ### Theoretical vs Observed
