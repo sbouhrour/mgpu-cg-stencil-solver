@@ -13,7 +13,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
 | Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
-**Key insight**: By exploiting the known 5-point stencil structure, the custom solver eliminates memory indirections and minimizes communication, translating kernel-level gains into solver-level performance.
+**Key insight**: By exploiting the known 5-point stencil structure, the custom solver removes the index indirection that dominates AmgX's SpMV (the primary source of the 2D solver speedup) and reduces halo communication to one boundary row per neighbor (a design property whose measurable payoff appears at scale — see [`profiling-3d.md`](profiling-3d.md)).
 
 ---
 
@@ -159,26 +159,28 @@ Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`res
 
 *NVTX ranges denote algorithmic phases and do not necessarily correspond to exact GPU kernel execution time; CUDA HW tracks provide the authoritative timing.*
 
-**Key observation**: Performance gains come from a more efficient SpMV kernel and reduced communication volume, not from compute-communication overlap. MPI halo exchange is synchronous in both implementations.
+**Key observation**: Performance gains come from a more efficient SpMV kernel and faster BLAS1 operations, not from compute-communication overlap (MPI halo exchange is synchronous in both implementations). The reduced communication volume of the stencil-aware exchange is a design property; its measurable impact appears at larger scale than the 4k×4k timeline shown here.
 
 ---
 
 ## Speedup Attribution
 
-The 1.40× single-GPU and 1.44× multi-GPU advantage of the custom CG over AmgX stems from three compounding factors:
+The custom CG's single-GPU advantage over AmgX (**1.41× at 10k×10k**, the size of the kernel breakdowns above; the headline **1.40×** refers to 20k×20k — see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx)) comes from two measurable sources, not one:
 
-- **SpMV kernel specialization (primary driver)** — Eliminating index indirection in the generic CSR representation, by exploiting the known 5-point stencil pattern, provides a 2.08× isolated throughput gain on the dominant kernel (48% of AmgX execution time on the single-GPU breakdown).
-- **Halo exchange volume** — Sending only the stencil-specific boundary rows (160 KB total for a 10k×10k grid on 8 GPUs — see [Halo volume in practice](#halo-volume-in-practice-10k10k-on-8-gpus)) replaces generic communication patterns and AllGather-based approaches that would require orders of magnitude more data.
-- **BLAS1 memory access patterns** — Coalesced accesses in AXPY/AXPBY/dot kernels operating on partitioned local vectors improve memory throughput compared to AmgX's library-level operations.
+- **SpMV specialization (primary)** — The custom stencil SpMV runs **1.65× faster in-solver** than AmgX's cuSPARSE CSR SpMV (derived from the kernel breakdowns: 41% of custom time vs 48% of AmgX time, normalized by the 1.41× overall speedup). The isolated microbenchmark shows a larger 2.08× gain; the in-solver figure is lower because cache state, launch patterns, and co-running operations differ from the isolated case.
+- **A faster rest-of-solver (secondary)** — The non-SpMV operations (AXPY, dot, AXPBY) are collectively **1.24× faster in-solver**. This is consistent with operating on partitioned local vectors with coalesced access rather than AmgX's library-level operations on global vectors, though this contribution is not isolated to a single mechanism in the current measurements.
+
+Communication volume is a design property of the stencil-aware halo exchange (one boundary row per neighbor vs generic patterns), but at the single-GPU and small-multi-GPU sizes profiled here it is not a measurable driver of the 2D speedup. Its impact appears at larger scale and is the central mechanism of the 3D overlap solver (see [`profiling-3d.md`](profiling-3d.md)).
 
 ### Theoretical vs Observed
 
-Using Amdahl's Law with SpMV = 48% of time and 2× speedup:
+Using Amdahl's Law with SpMV at 48% of AmgX time and the isolated 2× SpMV speedup, the predicted solver speedup if SpMV were the only optimization would be:
+
 ```
-Theoretical speedup = 1 / (0.48/2 + 0.52) = 1 / 0.76 = 1.32×
+Theoretical (SpMV-only) speedup = 1 / (0.48/2 + 0.52) = 1.32×
 ```
 
-Observed speedup (1.40×) slightly exceeds the simple Amdahl estimate. The 6% residual is within the margin where the isolated-kernel speedup (2.08×) and the in-solver effective speedup may diverge: microbenchmark and full-solver execution differ in cache state, kernel launch patterns, and co-running operations. A precise attribution would require per-kernel timing inside the full solver run; this is beyond the scope of the current comparison.
+The observed 1.41× exceeds this SpMV-only prediction. The gap is not measurement noise: it reflects the faster rest-of-solver quantified above (1.24× in-solver). In other words, the speedup has two contributors — a large gain on SpMV and a smaller but real gain on the BLAS1 operations — and the simple SpMV-only Amdahl model captures only the first.
 
 ---
 
