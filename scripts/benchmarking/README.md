@@ -1,6 +1,6 @@
 # Benchmark Scripts Guide
 
-Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
+Four scripts to evaluate the performance of the multi-GPU CG solver and SpMV.
 
 ---
 
@@ -8,21 +8,21 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 
 **Script**: `benchmark_spmv_comparison.sh`
 
-**Objectif**: Comparer cuSPARSE CSR vs Stencil CSR sur single-GPU
+**Goal**: Compare cuSPARSE CSR vs Stencil CSR on a single GPU
 
 **Test**:
 - Kernels: cuSPARSE CSR, Stencil CSR
-- Tailles: 10k, 15k, 20k (100M à 400M unknowns)
+- Sizes: 10k, 15k, 20k (100M to 400M unknowns)
 - Hardware: 1 GPU
 
 **Usage**:
 ```bash
 ./scripts/benchmarking/benchmark_spmv_comparison.sh
 
-# Résultats dans: results_single_gpu_formats_[GPU]_[DATE]/
+# Results in: results_single_gpu_formats_[GPU]_[DATE]/
 ```
 
-**Résultats attendus (A100)**: Speedup **2.08×** (Stencil vs cuSPARSE, 20k×20k)
+**Expected results (A100)**: **2.08×** speedup (Stencil vs cuSPARSE, 20k×20k)
 
 ---
 
@@ -30,21 +30,21 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 
 **Script**: `benchmark_problem_sizes.sh`
 
-**Objectif**: Tester strong scaling (même problème, plus de GPUs = plus rapide)
+**Goal**: Test strong scaling (same problem, more GPUs = faster)
 
 **Test**:
 - GPU counts: 1, 2, 4, 8
-- Tailles: 10k, 15k, 20k
-- Métrique: Speedup et parallel efficiency
+- Sizes: 10k, 15k, 20k
+- Metric: Speedup and parallel efficiency
 
 **Usage**:
 ```bash
 ./scripts/benchmarking/benchmark_problem_sizes.sh
 
-# Résultats dans: results_problem_size_scaling_[GPU]_[DATE]/
+# Results in: results_problem_size_scaling_[GPU]_[DATE]/
 ```
 
-**Résultats attendus (8× A100)**:
+**Expected results (8× A100)**:
 - 20k×20k: **7.48× speedup, 93.5% efficiency**
 
 ---
@@ -53,7 +53,7 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 
 **Script**: `benchmark_weak_scaling.sh`
 
-**Objectif**: Tester weak scaling (constant work per GPU, temps constant idéal)
+**Goal**: Test weak scaling (constant work per GPU, ideally constant time)
 
 **Test**:
 - 1 GPU: 5k×5k (25M unknowns)
@@ -65,7 +65,7 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 ```bash
 ./scripts/benchmarking/benchmark_weak_scaling.sh
 
-# Résultats dans: results_weak_scaling_[GPU]_[DATE]/
+# Results in: results_weak_scaling_[GPU]_[DATE]/
 ```
 
 ---
@@ -74,28 +74,28 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 
 **Script**: `benchmark_amgx.sh`
 
-**Objectif**: Comparer Custom CG vs NVIDIA AmgX
+**Goal**: Compare Custom CG vs NVIDIA AmgX
 
-**Prérequis**: AmgX installé (`./scripts/setup/full_setup.sh --amgx`)
+**Prerequisites**: AmgX installed (`./scripts/setup/full_setup.sh --amgx`)
 
 **Usage**:
 ```bash
 ./scripts/benchmarking/benchmark_amgx.sh
 
-# Résultats dans: results_amgx_comparison_[GPU]_[DATE]/
+# Results in: results_amgx_comparison_[GPU]_[DATE]/
 ```
 
-**Résultats attendus**: Custom CG **1.40× faster** (single-GPU, 20k×20k), **1.44× faster** (8 GPUs, 20k×20k)
+**Expected results**: Custom CG **1.40× faster** (single-GPU, 20k×20k), **1.44× faster** (8 GPUs, 20k×20k)
 
 ---
 
-## Workflow Showcase
+## Showcase Workflow
 
 ```bash
-# 1. SpMV comparison (pour section hero)
+# 1. SpMV comparison (for the hero section)
 ./scripts/benchmarking/benchmark_spmv_comparison.sh
 
-# 2. Strong scaling CG (showcase principal)
+# 2. Strong scaling CG (main showcase)
 ./scripts/benchmarking/benchmark_problem_sizes.sh
 
 # 3. AmgX comparison
@@ -106,10 +106,10 @@ Quatre scripts pour évaluer les performances du solver CG multi-GPU et SpMV.
 
 ## Configuration
 
-Tous les scripts utilisent les mêmes conventions :
-- **RUNS=10** : Nombre de runs per config (median reporté)
-- **Auto-detection** : GPU name, date pour nommage résultats
-- **Matrix generation** : Automatique si fichier manquant
+All scripts share the same conventions:
+- **RUNS=10**: Number of runs per config (median reported)
+- **Auto-detection**: GPU name and date for result naming
+- **Matrix generation**: Automatic if the file is missing
 
 ---
 
@@ -119,13 +119,13 @@ Tous les scripts utilisent les mêmes conventions :
 ```bash
 make cg_solver_mgpu_stencil  # Multi-GPU
 make spmv_bench              # Single-GPU
-make generate_matrix         # Génération matrices
+make generate_matrix         # Matrix generation
 ```
 
-**Out of memory**: Réduire MATRIX_SIZES dans le script
+**Out of memory**: Reduce MATRIX_SIZES in the script
 
 **MPI errors**:
 ```bash
-nvidia-smi --list-gpus       # Vérifier GPU count
+nvidia-smi --list-gpus       # Check GPU count
 mpirun -np 2 hostname        # Test MPI
 ```

@@ -33,7 +33,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 
 | Kernel Type | Time % | Notes |
 |-------------|-------:|-------|
-| Stencil SpMV | 41% | Structure-aware kernel |
+| Stencil SpMV | 41% | Stencil-aware kernel |
 | AXPY | 29% | Vector addition |
 | Dot product (cuBLAS) | 16% | cuBLAS ddot |
 | AXPBY | 13% | Scaled vector operations |
@@ -133,7 +133,7 @@ The stencil kernel moves **45% less data** per row by eliminating index storage 
 ### Halo volume in practice (10k×10k on 8 GPUs)
 
 Applying the formula above to a concrete configuration:
-- Each GPU owns ~12,500 rows
+- Each GPU owns ~12.5M rows
 - Halo zone = 1 row = 10,000 doubles = 80 KB
 - Two neighbors (top + bottom) = 160 KB total
 

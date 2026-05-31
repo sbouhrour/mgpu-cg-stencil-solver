@@ -49,7 +49,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 - **Deterministic convergence**: all configurations converge in exactly 14 iterations
 - **Efficiency improves with problem size**: 86.8% (10k) → 93.5% (20k)
 
-**Key insight**: Generic solvers cannot exploit known stencil structure for memory access and communication minimization, leading to systematic overhead even when scaling efficiently.
+**Key insight**: Generic solvers cannot exploit known stencil structure for memory access, leaving systematic per-iteration overhead even when they scale efficiently.
 
 **Multi-GPU strong scaling:**
 
@@ -132,9 +132,9 @@ See [`results.md`](docs/results.md#2d--custom-cg-vs-nvidia-amgx) for the full co
 
 > **TL;DR:** SpMV dominates CG performance. A stencil-aware kernel improves memory efficiency, yielding faster iterations without relying on communication overlap.
 
-Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. By exploiting the known 5-point stencil structure, the custom kernel achieves 2× higher throughput—translating to 1.4× overall solver speedup.
+Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. By exploiting the known 5-point stencil structure, the custom kernel achieves 2× higher throughput. This SpMV specialization is the primary contributor to the 1.4× solver speedup, with a faster rest-of-solver (the surrounding BLAS1 vector operations) accounting for the remainder.
 
-Performance gains come from a more efficient SpMV kernel and reduced communication volume—not from compute-communication overlap. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
+These gains come from a more efficient SpMV kernel and faster vector operations—not from compute-communication overlap (the 2D solver's halo exchange is synchronous). The stencil-aware halo exchange does reduce communication volume, but that is a design property whose payoff appears at larger scale and in the 3D overlap solver; at the sizes profiled here it is not a measurable driver of the 2D speedup. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
 
 See [Profiling Analysis (2D)](docs/profiling-2d.md) for the Nsight Systems timeline comparison, roofline analysis, and kernel-level breakdown.
 
@@ -223,14 +223,14 @@ See [`reproducing.md`](docs/reproducing.md) for prerequisites, AmgX comparison s
 ```
 Row-band partitioning (8 GPUs, 10k×10k grid):
 
-GPU 0: rows [0, 12.5k)       ┐
-GPU 1: rows [12.5k, 25k)     │
-GPU 2: rows [25k, 37.5k)     │  Halo exchange:
-GPU 3: rows [37.5k, 50k)     │  - 160 KB per GPU
-GPU 4: rows [50k, 62.5k)     │  - MPI_Isend/Irecv
-GPU 5: rows [62.5k, 75k)     │  - ~2 ms latency
-GPU 6: rows [75k, 87.5k)     │
-GPU 7: rows [87.5k, 100k)    ┘
+GPU 0: rows [0, 12.5M)       ┐
+GPU 1: rows [12.5M, 25M)     │
+GPU 2: rows [25M, 37.5M)     │  Halo exchange:
+GPU 3: rows [37.5M, 50M)     │  - 160 KB per GPU
+GPU 4: rows [50M, 62.5M)     │  - MPI_Isend/Irecv
+GPU 5: rows [62.5M, 75M)     │  - ~2 ms latency
+GPU 6: rows [75M, 87.5M)     │
+GPU 7: rows [87.5M, 100M)    ┘
 ```
 
 ```

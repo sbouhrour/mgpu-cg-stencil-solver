@@ -13,7 +13,7 @@
 ## Run All Benchmarks
 
 ```bash
-# Full benchmarks (5000×5000 matrix, 10 runs)
+# Full benchmarks (1000×1000 matrix, 10 runs)
 ./scripts/run_all.sh
 
 # Quick verification (~2 min, 512×512)
