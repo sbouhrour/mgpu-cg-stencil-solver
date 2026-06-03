@@ -1,0 +1,58 @@
+{
+  "benchmark_info": {
+    "gpu": "NVIDIA A100 80GB PCIe",
+    "date": "2026-01-10",
+    "branch": "main",
+    "runs": 10
+  },
+  "results": [
+    {
+      "size": 10000,
+      "unknowns": 100000000,
+      "nnz": 499960000,
+      "csr": {
+        "time_ms": 6.767,
+        "gflops": 147.756,
+        "bandwidth_gb_s": 1182.068
+      },
+      "stencil5": {
+        "time_ms": 3.249,
+        "gflops": 307.781,
+        "bandwidth_gb_s": 2339.325
+      },
+      "speedup": 2.08
+    },
+    {
+      "size": 15000,
+      "unknowns": 225000000,
+      "nnz": 1124940000,
+      "csr": {
+        "time_ms": 15.004,
+        "gflops": 149.947,
+        "bandwidth_gb_s": 1199.594
+      },
+      "stencil5": {
+        "time_ms": 7.289,
+        "gflops": 308.667,
+        "bandwidth_gb_s": 2345.993
+      },
+      "speedup": 2.06
+    },
+    {
+      "size": 20000,
+      "unknowns": 400000000,
+      "nnz": 1999920000,
+      "csr": {
+        "time_ms": 26.767,
+        "gflops": 149.431,
+        "bandwidth_gb_s": 1195.461
+      },
+      "stencil5": {
+        "time_ms": 12.859,
+        "gflops": 311.061,
+        "bandwidth_gb_s": 2364.160
+      },
+      "speedup": 2.08
+    }
+  ]
+}
