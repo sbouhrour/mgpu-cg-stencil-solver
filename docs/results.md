@@ -57,6 +57,8 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 
 ## 2D — Custom CG vs NVIDIA AmgX
 
+Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect implementation efficiency on the same algorithm, not an algorithmic difference.
+
 **Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57 (same configuration for both solvers)
 
 | Matrix Size     | Implementation  |    1 GPU |   8 GPUs | Speedup | Efficiency |

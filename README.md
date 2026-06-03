@@ -36,14 +36,14 @@ Exploiting stencil structure enables consistent performance gains over generic s
 | Single-GPU (20k×20k) |          531.4 ms |       746.7 ms | **1.40×** |
 | 8 GPUs (20k×20k)     |           71.0 ms |       102.3 ms | **1.44×** |
 
-<sub>*Median of 10 runs per configuration; 3 warmup runs discarded.*</sub>
+<sub>*Iso-algorithm comparison: both sides run unpreconditioned CG (AmgX as plain CG, not multigrid). Median of 10 runs per configuration; 3 warmup runs discarded.*</sub>
 
 <p align="center">
   <img src="docs/figures/performance_summary_horizontal.png" alt="Performance Summary: All Gains" width="100%">
 </p>
 
 - **SpMV kernel**: 2.08× faster than cuSPARSE CSR (single-GPU, 20k×20k)
-- **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, same convergence)
+- **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, both unpreconditioned CG to the same tolerance)
 - **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
 - **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
 - **Deterministic convergence**: all configurations converge in exactly 14 iterations
@@ -113,7 +113,7 @@ See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV f
 
 ## Comparison with NVIDIA AmgX
 
-AmgX is NVIDIA's production-grade multi-GPU solver library, used here as reference implementation. To run AmgX benchmarks: `./scripts/setup/full_setup.sh --amgx` (see [AmgX build instructions](external/benchmarks/amgx/README.md)).
+AmgX is NVIDIA's production-grade multi-GPU solver library, used here as reference implementation. Both solvers run unpreconditioned CG — AmgX is configured as plain CG (not multigrid) — so this is an iso-algorithm comparison. To run AmgX benchmarks: `./scripts/setup/full_setup.sh --amgx` (see [AmgX build instructions](external/benchmarks/amgx/README.md)).
 
 **Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57 (same configuration for both solvers)
 
