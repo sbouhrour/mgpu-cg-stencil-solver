@@ -18,12 +18,12 @@ For build and run instructions, see [`reproducing.md`](reproducing.md). For the 
 
 **Reproducibility conditions**: Identical test matrices, GPU clocks at default (no boost lock), 3 warmup runs before measurement, separate process per configuration, same binary for all runs.
 
+**Iso-algorithm comparison.** The benchmark compares the same algorithm on both sides: both the Custom CG and AmgX run unpreconditioned Conjugate Gradient. AmgX is configured as plain CG (multi-GPU: `solver=CG`; single-GPU: `solver=PCG` with `preconditioner=NOSOLVER`, equivalent), with no multigrid or other preconditioner. The comparison therefore measures implementation efficiency on the same algorithm, not algorithmic differences — a stencil-specialized CG against a general-purpose CG, both solving the same system to the same tolerance.
+
 **Compilation flags** (release build):
 ```
 nvcc -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true -std=c++11
 ```
-
-**Iso-algorithm comparison.** The benchmark compares the same algorithm on both sides: both the Custom CG and AmgX run unpreconditioned Conjugate Gradient. AmgX is configured as plain CG (multi-GPU: `solver=CG`; single-GPU: `solver=PCG` with `preconditioner=NOSOLVER`, equivalent), with no multigrid or other preconditioner. The comparison therefore measures implementation efficiency on the same algorithm, not algorithmic differences — a stencil-specialized CG against a general-purpose CG, both solving the same system to the same tolerance.
 
 **Compilation flags asymmetry.** The Custom CG and the AmgX library are not built with the same settings, and the difference favors AmgX:
 

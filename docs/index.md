@@ -14,6 +14,8 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
 
+*AmgX comparison is iso-algorithm: both run unpreconditioned CG.*
+
 **Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57
 
 ## Where to Go Next
