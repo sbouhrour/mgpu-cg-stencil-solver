@@ -173,22 +173,20 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 ## Technical Highlights
 
 ### Multi-GPU Architecture
-- **MPI explicit staging**: D2H → MPI_Isend/Irecv → H2D for low-latency halo exchange
+- **Communication**: non-blocking halo exchange via explicit D2H → MPI_Isend/Irecv → H2D staging over PCIe Gen4 — NCCL evaluated but MPI retained (43% faster on the small, repeated halo messages, profiled with Nsight Systems)
 - **Row-band partitioning**: 1D decomposition with CSR format and halo zone exchange
 - **Z-slab partitioning (3D)**: 3D grids split along the Z axis into contiguous slabs of XY-planes; each GPU exchanges one boundary XY-plane per neighbor
 - **Compute-communication overlap**: interior/boundary decomposition with dual-stream execution hides halo exchange behind SpMV computation (3D stencils)
 - **Efficient reductions**: cuBLAS dot products replace a naive in-kernel atomic reduction (238× slower in our tests)
-- **Optimized for A100**: Takes advantage of NVLink/PCIe Gen4 bandwidth
 
 ### Algorithm Features
 - **Conjugate Gradient (CG)**: Iterative Krylov method for symmetric positive definite systems
-- **2D/3D stencils**: Custom CUDA kernels for 5-point (2D), 7-point and 27-point (3D) finite difference discretizations
+- **2D/3D stencils**: Custom CUDA kernels for 5-point (2D), 7-point and 27-point (3D) stencil operators on structured grids
 - **Interior/boundary split**: 3D solver decomposes SpMV into halo-independent interior rows and halo-dependent boundary rows for concurrent execution
 - **Halo exchange**: Minimal communication (160 KB per exchange for 10k grid)
 - **Convergence criterion**: Relative residual < 1e-6
 
 ### Performance Engineering
-- **NCCL evaluated, MPI retained**: MPI explicit staging is 43% faster for the small, repeated halo messages
 - **Profiling-driven**: Nsight Systems analysis to identify bottlenecks
 - **Numerical stability**: Deterministic results across all GPU counts
 - **Conservative benchmarking**: the custom CUDA kernels are compiled with `nvcc -O2 --ptxas-options=-O2` (device-side PTX/SASS optimization), while the AmgX driver and library are built at `-O3`, so the custom solver is the less-optimized side — reported speedups are conservative. Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
