@@ -175,8 +175,9 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 ### Multi-GPU Architecture
 - **MPI explicit staging**: D2H → MPI_Isend/Irecv → H2D for low-latency halo exchange
 - **Row-band partitioning**: 1D decomposition with CSR format and halo zone exchange
+- **Z-slab partitioning (3D)**: 3D grids split along the Z axis into contiguous slabs of XY-planes; each GPU exchanges one boundary XY-plane per neighbor
 - **Compute-communication overlap**: interior/boundary decomposition with dual-stream execution hides halo exchange behind SpMV computation (3D stencils)
-- **Efficient reductions**: cuBLAS dot products instead of atomics (238× faster)
+- **Efficient reductions**: cuBLAS dot products replace a naive in-kernel atomic reduction (238× slower in our tests)
 - **Optimized for A100**: Takes advantage of NVLink/PCIe Gen4 bandwidth
 
 ### Algorithm Features
@@ -187,10 +188,10 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 - **Convergence criterion**: Relative residual < 1e-6
 
 ### Performance Engineering
-- **Compared NCCL vs MPI**: MPI staging 43% faster for small repeated messages
+- **NCCL evaluated, MPI retained**: MPI explicit staging is 43% faster for the small, repeated halo messages
 - **Profiling-driven**: Nsight Systems analysis to identify bottlenecks
 - **Numerical stability**: Deterministic results across all GPU counts
-- **Conservative benchmarking**: the custom kernels are built at `-O2` while the AmgX driver and library are built at `-O3`, so the custom solver is the less-optimized side of the comparison — reported speedups are conservative. Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
+- **Conservative benchmarking**: the custom CUDA kernels are compiled with `nvcc -O2 --ptxas-options=-O2` (device-side PTX/SASS optimization), while the AmgX driver and library are built at `-O3`, so the custom solver is the less-optimized side — reported speedups are conservative. Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
 
 ---
 
@@ -330,7 +331,7 @@ If you use this code in your research, please cite:
   title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
   year = {2026},
   url = {https://github.com/sbouhrour/mgpu-cg-stencil-solver},
-  note = {2.08× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
+  note = {2.08× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (iso-algorithm, both unpreconditioned CG; 8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
 }
 ```
 
