@@ -1,0 +1,8 @@
+name, driver_version, compute_cap
+NVIDIA GeForce RTX 4060 Laptop GPU, 575.57.08, 8.9
+--- clocks (idle, pre-run) ---
+clocks.current.sm [MHz], clocks.current.memory [MHz], clocks.max.sm [MHz], clocks.max.memory [MHz]
+1470 MHz, 8000 MHz, 3105 MHz, 8001 MHz
+--- toolchain ---
+Build cuda_12.9.r12.9/compiler.36037853_0
+Version 2025.2.1.0 (build 35987062) (public-release)
