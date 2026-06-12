@@ -131,7 +131,10 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    int device_id = rank % device_count;
+    CUDA_CHECK(cudaSetDevice(device_id));
 
     // Z-slab partition: contiguous Z-planes per GPU
     int n_local = n / world_size;
@@ -142,8 +145,9 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, device_id, prop.name, prop.major,
+               prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -506,6 +510,16 @@ extern __global__ void stencil27_csr_partitioned_halo_kernel_3d(
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
 
+// SoA variant (coefficient-major values, ghost-layer x), defined in
+// src/spmv/spmv_stencil_3d_27pt_soa_halo_kernel.cu
+extern __global__ void stencil27_soa_halo_kernel_3d(const double* __restrict__ values_soa,
+                                                    const double* __restrict__ x_ext,
+                                                    double* __restrict__ y, int n_local,
+                                                    int grid_size);
+extern void build_values_soa_27pt_3d(const long long* row_ptr, const int* col_idx,
+                                     const double* values, int n_local, long long row_offset,
+                                     int grid_size, double* values_soa);
+
 /**
  * @brief Multi-GPU CG solver for 3D 27-point stencil with Z-slab partitioning (synchronous)
  */
@@ -532,7 +546,10 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    int device_id = rank % device_count;
+    CUDA_CHECK(cudaSetDevice(device_id));
 
     int n_local = n / world_size;
     int row_offset = rank * n_local;
@@ -542,8 +559,9 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, device_id, prop.name, prop.major,
+               prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -567,13 +585,12 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
     long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
-    long long* d_row_ptr;
-    int* d_col_idx;
-    double* d_values;
+    const int use_soa = config.spmv_soa;
 
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
+    long long* d_row_ptr = NULL;
+    int* d_col_idx = NULL;
+    double* d_values = NULL;
+    double* d_values_soa = NULL;
 
     long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
     long long offset = csr_mat.row_ptr[row_offset];
@@ -581,37 +598,83 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
 
-    CUDA_CHECK(cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset], (size_t)local_nnz * sizeof(int),
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], (size_t)local_nnz * sizeof(double),
-                          cudaMemcpyHostToDevice));
+    if (use_soa) {
+        // Coefficient-major transform; the device never sees row_ptr/col_idx
+        double* h_values_soa = (double*)calloc((size_t)27 * n_local, sizeof(double));
+        if (!h_values_soa) {
+            fprintf(stderr, "[Rank %d] values_soa host allocation failed\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        build_values_soa_27pt_3d(local_row_ptr, &csr_mat.col_indices[offset],
+                                 &csr_mat.values[offset], n_local, row_offset, grid_size,
+                                 h_values_soa);
+        CUDA_CHECK(cudaMalloc(&d_values_soa, (size_t)27 * n_local * sizeof(double)));
+        CUDA_CHECK(cudaMemcpy(d_values_soa, h_values_soa, (size_t)27 * n_local * sizeof(double),
+                              cudaMemcpyHostToDevice));
+        free(h_values_soa);
+    } else {
+        CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+        CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
+
+        CUDA_CHECK(cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_col_idx, &csr_mat.col_indices[offset],
+                              (size_t)local_nnz * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_values, &csr_mat.values[offset], (size_t)local_nnz * sizeof(double),
+                              cudaMemcpyHostToDevice));
+    }
 
     free(local_row_ptr);
 
     if (config.verbose >= 1) {
-        printf("[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
-               (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
-                   1e6);
+        if (use_soa) {
+            printf("[Rank %d] Local SoA values: %d rows, 27 coefficient streams (%.2f MB)\n", rank,
+                   n_local, (double)27 * n_local * sizeof(double) / 1e6);
+        } else {
+            printf(
+                "[Rank %d] Local CSR: %d rows, %lld nnz (%.2f MB)\n", rank, n_local, local_nnz,
+                (n_local * sizeof(long long) + (double)local_nnz * (sizeof(int) + sizeof(double))) /
+                    1e6);
+        }
     }
 
     double *d_x_local, *d_r_local, *d_p_local, *d_Ap, *d_b;
     double *d_p_halo_prev = NULL, *d_p_halo_next = NULL;
     double *d_r_halo_prev = NULL, *d_r_halo_next = NULL;
+    // SoA mode: x and p live in ghost-layer buffers [N2 | n_local | N2] so the
+    // SpMV reads one contiguous vector; the halo pointers alias the ghost
+    // planes and the existing exchange/copy logic works unchanged.
+    double *d_x_ext = NULL, *d_p_ext = NULL;
+    const size_t ext_elems = (size_t)n_local + 2 * (size_t)halo_size;
 
-    CUDA_CHECK(cudaMalloc(&d_x_local, n_local * sizeof(double)));
+    if (use_soa) {
+        CUDA_CHECK(cudaMalloc(&d_x_ext, ext_elems * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_p_ext, ext_elems * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_x_ext, 0, ext_elems * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_p_ext, 0, ext_elems * sizeof(double)));
+        d_x_local = d_x_ext + halo_size;
+        d_p_local = d_p_ext + halo_size;
+    } else {
+        CUDA_CHECK(cudaMalloc(&d_x_local, n_local * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_p_local, n_local * sizeof(double)));
+    }
     CUDA_CHECK(cudaMalloc(&d_r_local, n_local * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_p_local, n_local * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_Ap, n_local * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_b, n_local * sizeof(double)));
 
     if (rank > 0) {
-        CUDA_CHECK(cudaMalloc(&d_p_halo_prev, halo_size * sizeof(double)));
+        if (use_soa)
+            d_p_halo_prev = d_p_ext;  // alias: prev ghost plane
+        else
+            CUDA_CHECK(cudaMalloc(&d_p_halo_prev, halo_size * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_r_halo_prev, halo_size * sizeof(double)));
     }
     if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMalloc(&d_p_halo_next, halo_size * sizeof(double)));
+        if (use_soa)
+            d_p_halo_next = d_p_ext + halo_size + n_local;  // alias: next ghost plane
+        else
+            CUDA_CHECK(cudaMalloc(&d_p_halo_next, halo_size * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_r_halo_next, halo_size * sizeof(double)));
     }
 
@@ -649,20 +712,31 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     // Initial x halo exchange
     double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
     if (rank > 0) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
+        if (use_soa)
+            d_x_halo_prev = d_x_ext;  // alias: prev ghost plane
+        else
+            CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
     }
     if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
+        if (use_soa)
+            d_x_halo_next = d_x_ext + halo_size + n_local;  // alias
+        else
+            CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
     }
 
     exchange_halo_mpi_3d(d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev, d_x_halo_next,
                          h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
                          world_size, stream);
 
-    // Initial SpMV: Ap = A*x (27-point kernel)
-    stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
-        d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
-        row_offset, n, grid_size);
+    // Initial SpMV: Ap = A*x (27-point kernel, CSR or SoA)
+    if (use_soa) {
+        stencil27_soa_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
+            d_values_soa, d_x_ext, d_Ap, n_local, grid_size);
+    } else {
+        stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
+            d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
+            row_offset, n, grid_size);
+    }
 
     // r = b - Ap
     axpy_kernel<<<blocks_local, threads, 0, stream>>>(-1.0, d_Ap, d_b, n_local);
@@ -703,11 +777,16 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     for (iter = 0; iter < config.max_iters; iter++) {
         nvtxRangePush("CG_Iteration_27PT_3D");
 
-        // Ap = A * p (27-point kernel)
+        // Ap = A * p (27-point kernel, CSR or SoA)
         nvtxRangePush("SpMV_27PT_3D");
-        stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
-            d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap, n_local,
-            row_offset, n, grid_size);
+        if (use_soa) {
+            stencil27_soa_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
+                d_values_soa, d_p_ext, d_Ap, n_local, grid_size);
+        } else {
+            stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
+                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                n_local, row_offset, n, grid_size);
+        }
         nvtxRangePop();
 
         // alpha = rs_old / (p^T * Ap)
@@ -831,23 +910,29 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         stats->solution_norm = sqrt(sol_norm_sq);
     }
 
-    cudaFree(d_x_local);
+    if (use_soa) {
+        // x/p halo pointers alias the ghost layers: free the buffers once
+        cudaFree(d_x_ext);
+        cudaFree(d_p_ext);
+        cudaFree(d_values_soa);
+    } else {
+        cudaFree(d_x_local);
+        cudaFree(d_p_local);
+        cudaFree(d_row_ptr);
+        cudaFree(d_col_idx);
+        cudaFree(d_values);
+        if (d_x_halo_prev)
+            cudaFree(d_x_halo_prev);
+        if (d_x_halo_next)
+            cudaFree(d_x_halo_next);
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+    }
     cudaFree(d_r_local);
-    cudaFree(d_p_local);
     cudaFree(d_Ap);
     cudaFree(d_b);
-    cudaFree(d_row_ptr);
-    cudaFree(d_col_idx);
-    cudaFree(d_values);
-
-    if (d_x_halo_prev)
-        cudaFree(d_x_halo_prev);
-    if (d_x_halo_next)
-        cudaFree(d_x_halo_next);
-    if (d_p_halo_prev)
-        cudaFree(d_p_halo_prev);
-    if (d_p_halo_next)
-        cudaFree(d_p_halo_next);
     if (d_r_halo_prev)
         cudaFree(d_r_halo_prev);
     if (d_r_halo_next)

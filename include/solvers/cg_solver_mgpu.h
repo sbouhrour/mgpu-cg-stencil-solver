@@ -41,6 +41,7 @@ typedef struct {
     int verbose;                 ///< Verbosity level (0=silent, 1=summary, 2=per-iter)
     int enable_detailed_timers;  ///< Enable timing breakdown
     int enable_overlap;          ///< Enable compute-communication overlap
+    int spmv_soa;                ///< Use coefficient-major (SoA) SpMV (27-point 3D sync solver)
 } CGConfigMultiGPU;
 
 /**

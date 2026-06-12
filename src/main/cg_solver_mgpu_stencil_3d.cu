@@ -42,6 +42,9 @@ int main(int argc, char** argv) {
             printf("  --max-iters=N   Set maximum CG iterations (default: 5000)\n");
             printf("  --json=<file>   Export results to JSON file\n");
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
+            printf("  --spmv=MODE     SpMV kernel: csr (default) or soa\n");
+            printf(
+                "                  (soa: coefficient-major values; 27-point sync solver only)\n");
         }
         MPI_Finalize();
         return 1;
@@ -53,6 +56,7 @@ int main(int argc, char** argv) {
     int custom_max_iters = 0;
     int max_iters_value = 5000;
     int stencil_points = 7;  // default: 7-point stencil
+    int spmv_soa = 0;        // default: CSR kernel
 
     // Configuration
     CGConfigMultiGPU config;
@@ -60,6 +64,7 @@ int main(int argc, char** argv) {
     config.tolerance = 1e-6;
     config.verbose = 1;
     config.enable_overlap = 0;
+    config.spmv_soa = 0;
 
     // Parse arguments before using them
     for (int i = 1; i < argc; i++) {
@@ -86,8 +91,36 @@ int main(int argc, char** argv) {
             }
             if (rank == 0)
                 printf("Stencil: %d-point\n", stencil_points);
+        } else if (strncmp(argv[i], "--spmv=", 7) == 0) {
+            const char* mode = argv[i] + 7;
+            if (strcmp(mode, "csr") == 0) {
+                spmv_soa = 0;
+            } else if (strcmp(mode, "soa") == 0) {
+                spmv_soa = 1;
+            } else {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --spmv must be csr or soa\n");
+                MPI_Finalize();
+                return 1;
+            }
         }
     }
+
+    if (spmv_soa && stencil_points != 27) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --spmv=soa requires --stencil=27\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (spmv_soa && config.enable_overlap) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --spmv=soa is not supported with --overlap yet\n");
+        MPI_Finalize();
+        return 1;
+    }
+    config.spmv_soa = spmv_soa;
+    if (spmv_soa && rank == 0)
+        printf("SpMV kernel: soa (coefficient-major values)\n");
 
     if (custom_max_iters) {
         config.max_iters = max_iters_value;
@@ -310,7 +343,9 @@ int main(int argc, char** argv) {
         if (json_file) {
             const char* mode_str =
                 (stencil_points == 27)
-                    ? (config.enable_overlap ? "3d-stencil-27pt-overlap" : "3d-stencil-27pt")
+                    ? (config.enable_overlap
+                           ? "3d-stencil-27pt-overlap"
+                           : (spmv_soa ? "3d-stencil-27pt-soa" : "3d-stencil-27pt"))
                     : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
             export_cg_mgpu_json(json_file, mode_str, &mat, &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);
