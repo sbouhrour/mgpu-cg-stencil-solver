@@ -40,6 +40,7 @@ nav:
   - Results: results.md
   - Profiling Analysis (2D): profiling-2d.md
   - Profiling Analysis (3D): profiling-3d.md
+  - Kernel Optimization (NCU): kernel-optimization-ncu.md
   - Methodology: methodology.md
   - Reproducing: reproducing.md
   - Development: development.md

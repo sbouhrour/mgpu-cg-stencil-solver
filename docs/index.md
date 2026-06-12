@@ -26,6 +26,8 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 **[Compute-Communication Overlap — 3D Analysis](profiling-3d.md)** — How interior/boundary decomposition and dual-stream execution hide MPI halo exchange behind GPU computation, reaching 88% strong scaling efficiency on 8 GPUs.
 
+**[Kernel Optimization Case Study — NCU](kernel-optimization-ncu.md)** — Metrics-driven optimization of the 3D 27-point SpMV: baseline byte model, bottleneck attribution at the SASS level, and a coefficient-major layout that lifts the kernel from 71% to 96% of DRAM peak.
+
 **[Reproducing the Results](reproducing.md)** — Build the solver, run the benchmark suite, and profile on your own hardware.
 
 **[Methodology](methodology.md)** — Measurement protocol: timing scope, statistical approach, reproducibility conditions, profiling tools.
