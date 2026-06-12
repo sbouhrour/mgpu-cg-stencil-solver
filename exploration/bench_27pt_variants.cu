@@ -41,6 +41,12 @@ __global__ void stencil27_csr_partitioned_halo_kernel_3d(
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
 
+// SoA variant launchers, defined in exploration/stencil27_soa_kernel.cu
+void launch_stencil27_soa(int blocks, int threads, const double* values_soa, const double* x,
+                          double* y, int n, int N);
+void launch_stencil27_soa_ldcs(int blocks, int threads, const double* values_soa, const double* x,
+                               double* y, int n, int N);
+
 // ---------------------------------------------------------------------------
 // Variant registry
 // ---------------------------------------------------------------------------
@@ -49,6 +55,7 @@ struct DeviceData {
     const long long* row_ptr;
     const int* col_idx;
     const double* values;
+    const double* values_soa;  // [27][n] coefficient-major, 0.0-padded
     const double* x;
     double* y;
     int n;  // rows (= N^3)
@@ -64,16 +71,89 @@ static void launch_baseline(const DeviceData& d) {
         d.row_ptr, d.col_idx, d.values, d.x, NULL, NULL, d.y, d.n, 0, d.n, d.N);
 }
 
+static void launch_soa(const DeviceData& d) {
+    const int threads = 256;
+    const int blocks = (d.n + threads - 1) / threads;
+    launch_stencil27_soa(blocks, threads, d.values_soa, d.x, d.y, d.n, d.N);
+}
+
+static void launch_soa_b128(const DeviceData& d) {
+    const int threads = 128;
+    const int blocks = (d.n + threads - 1) / threads;
+    launch_stencil27_soa(blocks, threads, d.values_soa, d.x, d.y, d.n, d.N);
+}
+
+static void launch_soa_b512(const DeviceData& d) {
+    const int threads = 512;
+    const int blocks = (d.n + threads - 1) / threads;
+    launch_stencil27_soa(blocks, threads, d.values_soa, d.x, d.y, d.n, d.N);
+}
+
+static void launch_soa_ldcs(const DeviceData& d) {
+    const int threads = 256;
+    const int blocks = (d.n + threads - 1) / threads;
+    launch_stencil27_soa_ldcs(blocks, threads, d.values_soa, d.x, d.y, d.n, d.N);
+}
+
 struct Variant {
     const char* name;
     LaunchFn launch;
 };
 
 // Index 0 is the reference; later entries are validated against it.
+// NCU --profile launch order for -k regex:stencil27_soa filtering:
+//   launch 0 = soa@256, 1 = soa@128, 2 = soa@512, 3 = soa_ldcs@256.
 static const Variant VARIANTS[] = {
     {"baseline (production kernel)", launch_baseline},
+    {"soa (coefficient-major values)", launch_soa},
+    {"soa, block 128", launch_soa_b128},
+    {"soa, block 512", launch_soa_b512},
+    {"soa + __ldcs on values", launch_soa_ldcs},
 };
 static const int N_VARIANTS = (int)(sizeof(VARIANTS) / sizeof(VARIANTS[0]));
+
+// ---------------------------------------------------------------------------
+// CSR -> coefficient-major (SoA) transform, 0.0-padded
+// ---------------------------------------------------------------------------
+// values_soa[c * n + row] = coefficient of neighbor offset offs[c] for `row`,
+// with offs[] the 27 stencil offsets in ascending order (same order as the
+// ascending-column CSR rows). Missing neighbors (boundary rows) stay 0.0.
+// Also re-validates that every CSR entry maps to a stencil offset and that
+// per-row columns are sorted ascending (both assumed by the production
+// kernel's fast path).
+static double* build_values_soa_host(int n, int N) {
+    long long offs[27];
+    int c = 0;
+    for (int di = -1; di <= 1; di++)
+        for (int dj = -1; dj <= 1; dj++)
+            for (int dk = -1; dk <= 1; dk++)
+                offs[c++] = (long long)di * N * N + (long long)dj * N + dk;
+
+    double* soa = (double*)calloc((size_t)27 * n, sizeof(double));
+    if (!soa) {
+        fprintf(stderr, "calloc of values_soa (%zu bytes) failed\n",
+                (size_t)27 * n * sizeof(double));
+        exit(EXIT_FAILURE);
+    }
+    for (int r = 0; r < n; r++) {
+        int ci = 0;
+        for (long long e = csr_mat.row_ptr[r]; e < csr_mat.row_ptr[r + 1]; e++) {
+            long long delta = (long long)csr_mat.col_indices[e] - r;
+            while (ci < 27 && offs[ci] < delta)
+                ci++;
+            if (ci >= 27 || offs[ci] != delta) {
+                fprintf(stderr,
+                        "SoA transform: row %d entry has non-stencil/unsorted "
+                        "column (delta %lld)\n",
+                        r, delta);
+                exit(EXIT_FAILURE);
+            }
+            soa[(size_t)ci * n + r] = csr_mat.values[e];
+            ci++;
+        }
+    }
+    return soa;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -144,8 +224,17 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMemcpy(d_x, h_x, (size_t)n * sizeof(double), cudaMemcpyHostToDevice));
     free(h_x);
 
-    DeviceData dd_ref = {d_row_ptr, d_col_idx, d_values, d_x, d_y_ref, n, N};
-    DeviceData dd_cur = {d_row_ptr, d_col_idx, d_values, d_x, d_y_cur, n, N};
+    // SoA values (variant input), built from the validated host CSR
+    printf("Building coefficient-major (SoA) values, 27 x %d doubles...\n", n);
+    double* h_soa = build_values_soa_host(n, N);
+    double* d_values_soa;
+    CUDA_CHECK(cudaMalloc(&d_values_soa, (size_t)27 * n * sizeof(double)));
+    CUDA_CHECK(
+        cudaMemcpy(d_values_soa, h_soa, (size_t)27 * n * sizeof(double), cudaMemcpyHostToDevice));
+    free(h_soa);
+
+    DeviceData dd_ref = {d_row_ptr, d_col_idx, d_values, d_values_soa, d_x, d_y_ref, n, N};
+    DeviceData dd_cur = {d_row_ptr, d_col_idx, d_values, d_values_soa, d_x, d_y_cur, n, N};
 
     printf("Registered variants: %d\n", N_VARIANTS);
     for (int v = 0; v < N_VARIANTS; v++)
@@ -252,6 +341,7 @@ cleanup:
     CUDA_CHECK(cudaFree(d_row_ptr));
     CUDA_CHECK(cudaFree(d_col_idx));
     CUDA_CHECK(cudaFree(d_values));
+    CUDA_CHECK(cudaFree(d_values_soa));
     CUDA_CHECK(cudaFree(d_x));
     CUDA_CHECK(cudaFree(d_y_ref));
     CUDA_CHECK(cudaFree(d_y_cur));
