@@ -1,0 +1,47 @@
+Loading matrix: matrix/stencil3d_27pt_128.mtx
+Generating 27pt stencil in memory for N=128, partition [rank 0/1, i=0..127]...
+  local nnz = 55742968, allocating 0.9 GB for COO entries...
+  Done: global 2097152 rows, local 55742968 nnz (rank 0/1)
+Matrix: 2097152 x 2097152, 55742968 nnz, grid_size=128
+🔄 Building CSR structure (2097152x2097152, 55742968 nnz)...
+✅ CSR structure built successfully
+GPU: NVIDIA A100-SXM4-80GB (CC 8.0, 108 SMs)
+Building coefficient-major (SoA) values, 27 x 2097152 doubles...
+Registered variants: 5
+  [0] baseline (production kernel)
+  [1] soa (coefficient-major values)
+  [2] soa, block 128
+  [3] soa, block 512
+  [4] soa + __ldcs on values
+
+===== CORRECTNESS [1] soa (coefficient-major values) =====
+rows disagree : 0 (rel diff > 1e-12)
+max abs diff  : 0.000e+00
+max rel diff  : 0.000e+00 (row -1)
+CHECKSUM PASSED.
+
+===== CORRECTNESS [2] soa, block 128 =====
+rows disagree : 0 (rel diff > 1e-12)
+max abs diff  : 0.000e+00
+max rel diff  : 0.000e+00 (row -1)
+CHECKSUM PASSED.
+
+===== CORRECTNESS [3] soa, block 512 =====
+rows disagree : 0 (rel diff > 1e-12)
+max abs diff  : 0.000e+00
+max rel diff  : 0.000e+00 (row -1)
+CHECKSUM PASSED.
+
+===== CORRECTNESS [4] soa + __ldcs on values =====
+rows disagree : 0 (rel diff > 1e-12)
+max abs diff  : 0.000e+00
+max rel diff  : 0.000e+00 (row -1)
+CHECKSUM PASSED.
+
+===== TIMING (median of 10, 3 warmups dropped) =====
+Reminder: medians/deltas only — DVFS makes absolute times unreliable on this GPU.
+[0] baseline (production kernel)         median 0.4357 ms
+[1] soa (coefficient-major values)       median 0.2985 ms
+[2] soa, block 128                       median 0.3016 ms
+[3] soa, block 512                       median 0.2949 ms
+[4] soa + __ldcs on values               median 0.3057 ms
