@@ -1,0 +1,9 @@
+name, driver_version, compute_cap, memory.total [MiB], memory.free [MiB]
+NVIDIA A100-SXM4-80GB, 580.126.09, 8.0, 81920 MiB, 81152 MiB
+--- clocks (max) ---
+clocks.max.sm [MHz], clocks.max.memory [MHz]
+1410 MHz, 1593 MHz
+--- host ---
+               total        used        free      shared  buff/cache   available
+Mem:             118           3          98           0          16         114
+Build cuda_12.0.r12.0/compiler.32267302_0

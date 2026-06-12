@@ -135,3 +135,52 @@ operator contract), or mixed precision for the coefficients.
 Real-time validation (wall-clock speedup, CG integration) belongs to
 A100/H100 with locked clocks: FP64 1:2 and HBM change the ratios, datacenter
 parts honor `nvidia-smi -lgc`, and the showcase baseline is A100.
+
+## A100 validation (remote, wall-clock)
+
+Run: `run_remote.sh` on a rented A100-SXM4-80GB (driver 580.126.09, CUDA
+12.0 build, `-arch=sm_80`), 2026-06-12. Data:
+`data/remote/NVIDIA_A100-SXM4-80GB_20260612_0819/`. NCU counters blocked on
+the instance (anticipated; script degraded to wall-clock). Clock lock not
+permitted in the container either; stability is evidenced by the per-rep
+spread instead: **0.03–1.6 %** across 3 × (10-run medians) per
+configuration. The 1 Hz clock traces are empty — driver 580 rejects the
+`clocks.memory` field name (fixed to `clocks.mem` in the script for future
+runs).
+
+Correctness gates: **15 runs × 4/4 variants bitwise-identical** to the
+production kernel, 128³ through 384³ (1.52 B nnz).
+
+Median of per-rep medians; implied bandwidth = analytic byte model / time,
+peak = 2039 GB/s:
+
+| Grid | nnz | baseline | SoA | speedup | baseline BW | SoA BW |
+|---|---|---|---|---|---|---|
+| 128³ | 55.7 M | 0.436 ms | 0.298 ms | 1.46× | 1154 GB/s (56.6 %) | 1630 GB/s (79.9 %) |
+| 192³ | 189.1 M | 1.445 ms | 0.989 ms | 1.46× | 1176 GB/s (57.7 %) | 1660 GB/s (81.4 %) |
+| 256³ | 449.5 M | 3.362 ms | 2.351 ms | 1.43× | 1197 GB/s (58.7 %) | 1656 GB/s (81.2 %) |
+| 320³ | 879.2 M | 6.644 ms | 4.562 ms | 1.46× | 1184 GB/s (58.1 %) | 1666 GB/s (81.7 %) |
+| 384³ | 1.52 B | 12.046 ms | 7.970 ms | 1.51× | 1128 GB/s (55.3 %) | 1648 GB/s (80.8 %) |
+
+Prediction scorecard (stated before the run):
+
+1. Gates 4/4 at every size — **pass**.
+2. soa/baseline ratio 0.60–0.80 — **pass** (0.66–0.70; local fixed-clock was
+   0.72). The speedup is *larger* on A100, consistent with the mechanism:
+   A100 offers more bandwidth per SM-cycle, so the baseline's LSU front-end
+   saturation binds harder (baseline reaches only 56–59 % of HBM peak vs
+   71 % of GDDR6 peak locally).
+3. Block size flat for SoA — **pass** (block 512 consistently −1–2 %, within
+   the stated band; A100 allows 64 warps/SM vs Ada's 48, slightly favoring
+   larger blocks).
+4. Ratio stable or better with N — **pass** (best at 384³: 1.51×, where the
+   boundary fraction is smallest).
+
+Secondary finding: `__ldcs` is **slightly negative on A100** (+0.5–2.6 % vs
+plain SoA at every size) while it was −0.9 % on the RTX 4060: cache-policy
+hints are microarchitecture-dependent and should be re-measured per target.
+Default policy is the right production choice.
+
+SoA holds a flat ~1630–1666 GB/s (≈80–82 % of peak) across a 27× range of
+problem sizes — the kernel is bandwidth-limited and size-insensitive, as a
+stencil SpMV should be.

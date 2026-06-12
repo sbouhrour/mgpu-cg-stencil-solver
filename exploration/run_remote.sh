@@ -113,7 +113,7 @@ for N in $SIZES; do
     for rep in $(seq 1 "$REPS"); do
         echo "----- N=$N rep $rep/$REPS -----"
         TRACE="$OUT/clock_trace_N${N}_rep${rep}.csv"
-        nvidia-smi --query-gpu=clocks.sm,clocks.memory,temperature.gpu,power.draw \
+        nvidia-smi --query-gpu=clocks.sm,clocks.mem,temperature.gpu,power.draw \
             --format=csv,noheader -l 1 > "$TRACE" 2>/dev/null &
         TRACE_PID=$!
 

@@ -1,8 +1,8 @@
 # NCU Case Study: Optimizing the 3D 27-Point SpMV
 
-This document walks through a complete Nsight Compute (NCU) optimization of the 3D 27-point stencil SpMV kernel — from baseline profile to a variant running at **96% of DRAM peak bandwidth** (from 71%), with **−28% elapsed cycles** at fixed clocks. The emphasis is on the *process*: how each metric was read, which hypotheses it eliminated, and how every optimization was predicted quantitatively before being measured. Experiments that returned null results are documented alongside the one that worked, because they are part of the evidence.
+This document walks through a complete Nsight Compute (NCU) optimization of the 3D 27-point stencil SpMV kernel — from baseline profile to a variant running at **96% of DRAM peak bandwidth** (from 71%), with **−28% elapsed cycles** at fixed clocks, subsequently validated at **1.43–1.51× wall-clock speedup on A100-SXM4-80GB** up to 1.5 billion nonzeros. The emphasis is on the *process*: how each metric was read, which hypotheses it eliminated, and how every optimization was predicted quantitatively before being measured. Experiments that returned null results are documented alongside the one that worked, because they are part of the evidence.
 
-> **Hardware note.** All NCU metrics in this document were collected on an RTX 4060 Laptop GPU (Ada, CC 8.9, 24 SMs, GDDR6 ≈256 GB/s peak, FP64 at 1/64 of FP32 rate), CUDA 12.9, NCU 2025.2.1, with clocks fixed by the profiler (SM 1.14 GHz, DRAM 7.99 GHz). On this laptop GPU, DVFS makes absolute wall-clock times unreliable, so the analysis uses **static metrics and ratios only**; wall-clock validation at locked clocks is performed separately on A100 ([section 6](#6-hardware-validation-status)). This mirrors the approach already used for the [2D roofline analysis](profiling-2d.md).
+> **Hardware note.** All NCU metrics in this document were collected on an RTX 4060 Laptop GPU (Ada, CC 8.9, 24 SMs, GDDR6 ≈256 GB/s peak, FP64 at 1/64 of FP32 rate), CUDA 12.9, NCU 2025.2.1, with clocks fixed by the profiler (SM 1.14 GHz, DRAM 7.99 GHz). On this laptop GPU, DVFS makes absolute wall-clock times unreliable, so the analysis uses **static metrics and ratios only**; wall-clock validation is performed separately on A100 ([section 6](#6-hardware-validation-on-a100)). This mirrors the approach already used for the [2D roofline analysis](profiling-2d.md).
 
 **Problem setup**: 192³ grid (7,077,888 unknowns, 189,119,224 nonzeros), double precision, single-GPU configuration of the partitioned kernel (1 rank, no halos). Kernel: `stencil27_csr_partitioned_halo_kernel_3d` (`src/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu`), launched as 1 thread per row, 256-thread blocks.
 
@@ -15,6 +15,7 @@ This document walks through a complete Nsight Compute (NCU) optimization of the 
 | All excess traffic comes from **one stream**: the CSR coefficients | 31.7 cache lines touched per warp-load vs 2 ideal (measured per-instruction) |
 | Fix: **coefficient-major (SoA) storage** with implicit indices | DRAM 71.3 → **96.1%** of peak, cycles **−28.2%**, bitwise-identical output |
 | Remaining headroom ≤ 4% → stop | Block-size sweep: null (±0.15%); `__ldcs`: −0.9%; further rewrites bounded out |
+| A100 validation: **1.43–1.51× wall-clock**, 128³–384³ | Baseline 55–59% vs SoA 80–82% of HBM peak; 15/15 runs bitwise-identical |
 
 ---
 
@@ -161,9 +162,27 @@ The transferable checklist this case study follows:
 7. **Keep a blocking correctness gate** — bitwise comparison against the reference on every variant, boundaries included.
 8. **Document null results** — the block-size sweep and the rejected tiling attempt are evidence about *why* the winning fix wins.
 
-## 6. Hardware Validation Status
+## 6. Hardware Validation on A100
 
-NCU metrics above are static/ratio measurements on the RTX 4060 at profiler-fixed clocks. The wall-clock claim is validated separately on datacenter hardware, where clocks can actually be locked (`nvidia-smi -lgc/-lmc`) and FP64 runs at 1:2: correctness gates plus paired timing medians (3 × 10 runs per variant) across 128³–384³ grids, with per-run clock traces. *A100 results: campaign in progress — this section will carry the locked-clock numbers and the size scaling table.*
+NCU metrics above are static/ratio measurements on the RTX 4060 at profiler-fixed clocks. The wall-clock claim was validated separately on an **A100-SXM4-80GB** (driver 580.126.09, `-arch=sm_80` build): blocking correctness gates plus paired timing medians (3 × 10-run medians per variant) across 128³–384³ grids. GPU performance counters were blocked on the rented instance (no NCU there) and clock locking was not permitted; run-to-run stability is evidenced by the per-rep spread of **0.03–1.6%** across all configurations.
+
+All 15 runs passed the bitwise gate (4/4 variants, up to 1.52 billion nonzeros). Implied bandwidth = analytic byte model / measured time, against the 2,039 GB/s HBM2e peak:
+
+| Grid | Nonzeros | Baseline (CSR) | SoA | Speedup | Baseline → SoA bandwidth |
+|------|----------|---------------|-----|---------|--------------------------|
+| 128³ | 55.7 M | 0.436 ms | 0.298 ms | 1.46× | 57% → 80% of peak |
+| 192³ | 189.1 M | 1.445 ms | 0.989 ms | 1.46× | 58% → 81% |
+| 256³ | 449.5 M | 3.362 ms | 2.351 ms | 1.43× | 59% → 81% |
+| 320³ | 879.2 M | 6.644 ms | 4.562 ms | 1.46× | 58% → 82% |
+| 384³ | 1.52 B | 12.046 ms | 7.970 ms | **1.51×** | 55% → 81% |
+
+Three observations close the loop on the RTX 4060 analysis:
+
+- **The mechanism transfers, amplified.** The speedup is *larger* on A100 (1.43–1.51×) than the local fixed-clock −28% (1.39×). A100 offers more memory bandwidth per SM-cycle, so the baseline's LSU front-end saturation binds harder there: the CSR layout reaches only 55–59% of HBM peak, while the SoA layout holds a flat ~80–82% across a 27× range of problem sizes — bandwidth-limited and size-insensitive, as a stencil SpMV should be.
+- **Block size remains a non-factor** (block 512 is consistently 1–2% faster on A100, which allows 64 resident warps/SM vs Ada's 48 — within the predicted "flat" band).
+- **`__ldcs` does not travel**: −0.9% on the RTX 4060 but +0.5–2.6% on A100. Cache-policy hints are microarchitecture-dependent; the default policy is the right production choice.
+
+Raw data (medians, per-run logs, summary) is archived on the exploration branch under `exploration/data/remote/`.
 
 ## Glossary
 
