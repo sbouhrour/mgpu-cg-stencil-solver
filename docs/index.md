@@ -26,6 +26,8 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 **[Compute-Communication Overlap — 3D Analysis](profiling-3d.md)** — How interior/boundary decomposition and dual-stream execution hide MPI halo exchange behind GPU computation, reaching 88% strong scaling efficiency on 8 GPUs.
 
+**[SpMV Integration (SoA)](spmv-soa-integration.md)** — A coefficient-major SpMV option (`--spmv=soa`) for the 3D 27-point solver: the data-layout change, its bitwise-identical output, the memory/capacity tradeoff, and when the format is worth its cost in a shared-matrix application.
+
 **[Reproducing the Results](reproducing.md)** — Build the solver, run the benchmark suite, and profile on your own hardware.
 
 **[Methodology](methodology.md)** — Measurement protocol: timing scope, statistical approach, reproducibility conditions, profiling tools.
