@@ -146,23 +146,31 @@ cores**, not the MMA pipeline — a stencil has no matmul shape to feed it. The 
 is bandwidth, not throughput. They are worth using for exactly that reason, and it is worth saying which
 reason.
 
-#### Where the numerical cost actually is
+#### Why this matrix cannot measure the numerical cost
 
-Zero error is reported above, and it measures nothing about precision. Checked against hardware
+The zero error above is a property of the test matrix, not of the method. Checked against hardware
 conversion on sm_89:
 
 | | FP32 | FP16 | BF16 | FP8 E4M3 |
 |---|---|---|---|---|
 | Coefficients `26.0`, `-1.0` (3D) and `5.0` (2D) | exact | exact | exact | **exact** |
-| Vector `x`, 100 000 samples | 99 999 inexact | 99 999 inexact, max rel. err. **4.9e-4** | 99 999 inexact, **3.9e-3** | — |
+| Generic values (`1 + 0.5 sin`, 100 000 samples) | 99 999 inexact | 99 999 inexact, max rel. err. **4.9e-4** | 99 999 inexact, **3.9e-3** | — |
 
-`26.0` is `1.101` × 2⁴ — four significand bits, and FP8 E4M3 carries three plus the implicit one. **Reducing
-the precision of the operator costs nothing here, down to eight bits.** The entire numerical cost of mixed
-precision in this solver lives in the **vector**.
+`26.0` is `1.101` × 2⁴ — four significand bits, and FP8 E4M3 carries three plus the implicit one, so the
+constant-coefficient Laplacian survives every format intact.
 
-That inverts the usual design instinct: be aggressive on the coefficients, which are 90 % of the traffic
-and are free to narrow, and conservative on `x`, which is 3 % of the traffic and carries all the error. A
-variable-coefficient discretisation would change the first half of that statement; this one does not.
+**This is a limitation of the benchmark, not a result to build on.** A solver that consumes a general
+sparse matrix cannot assume anything about its coefficients; designing the precision strategy around the
+fact that *these particular* coefficients happen to be exact would be the same mistake as hard-coding
+them. The honest figure is the second row: storing arbitrary values at width *w* costs roughly 2⁻⁽ᵖ⁺¹⁾
+relative per element — about 6e-8 in FP32, 4.9e-4 in FP16, 3.9e-3 in BF16 — and that applies to
+coefficients and vector alike.
+
+The consequence is a prerequisite rather than a conclusion: **quantifying the accuracy cost of reduced
+precision requires a variable-coefficient operator**, such as ∇·(a(**x**)∇u) with a spatially varying
+diffusion field, which is also the problem class where the question actually arises. The constant-
+coefficient Poisson matrix remains the right benchmark for bandwidth and scaling, and the wrong one for
+precision.
 
 ### Lever 2 — specialise the operator, and why this benchmark does not
 
