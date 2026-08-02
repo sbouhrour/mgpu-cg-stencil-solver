@@ -35,6 +35,10 @@ endif
 CUDA_TOOLKIT_DIR := $(patsubst %/bin/nvcc,%,$(shell which $(NVCC) 2>/dev/null))
 CUDA_LIBDIR := $(CUDA_TOOLKIT_DIR)/lib64
 
+# Header dependency tracking. Without it, editing a header rebuilds no object file, and a struct
+# whose layout changed leaves stale objects disagreeing on field offsets: a silent, crashing binary.
+DEPFLAGS := -MMD -MP
+
 # Base includes and libraries
 INCLUDES := -I$(INC_DIR) -I$(INC_DIR)/solvers
 LDFLAGS := -lcusparse -lcublas -Xlinker --disable-new-dtags -Xlinker -rpath=$(CUDA_LIBDIR)
@@ -149,7 +153,7 @@ $(BIN_CG): $(CU_CG_OBJS)
 # Compile CUDA sources
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cu
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 # ============================================================================
 # Multi-GPU CG Solvers with MPI
@@ -177,39 +181,39 @@ OBJ_MGPU_3D_27PT_HALO_KERNEL := $(OBJ_DIR)/mgpu/spmv_stencil_3d_27pt_partitioned
 # Compile MPI sources with NVCC + MPI headers
 $(OBJ_DIR)/mgpu/%.o: $(SRC_DIR)/main/%.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/%.o: $(SRC_DIR)/solvers/%.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/io.o: $(SRC_DIR)/io/io.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/spmv_csr.o: $(SRC_DIR)/spmv/spmv_cusparse_csr.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/spmv_stencil_csr_direct.o: $(SRC_DIR)/spmv/spmv_stencil_csr_direct.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/spmv_stencil_partitioned_halo_kernel.o: $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/benchmark_stats_mgpu_partitioned.o: $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/spmv_stencil_3d_partitioned_halo_kernel.o: $(SRC_DIR)/spmv/spmv_stencil_3d_partitioned_halo_kernel.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/mgpu/spmv_stencil_3d_27pt_partitioned_halo_kernel.o: $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
 # Link stencil solver with MPI (halo P2P approach + overlap variant)
 # Note: OBJ_MGPU_3D_HALO_KERNEL needed because overlap solver contains 3D functions
@@ -258,4 +262,7 @@ cg3d: cg_solver_single_gpu_3d
 
 clean:
 	rm -rf build bin
+
+# Pull in the generated header dependencies (no-op on a clean tree)
+-include $(shell find $(OBJ_DIR) -name '*.d' 2>/dev/null)
 
