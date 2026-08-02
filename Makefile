@@ -65,6 +65,7 @@ BIN_CG   := $(BIN_DIR)/cg_solver
 BIN_MGPU_STENCIL := $(BIN_DIR)/cg_solver_mgpu_stencil
 BIN_MGPU_STENCIL_3D := $(BIN_DIR)/cg_solver_mgpu_stencil_3d
 BIN_SINGLE_GPU_3D := $(BIN_DIR)/cg_solver_single_gpu_3d
+BIN_27PT_PREC := $(BIN_DIR)/bench_27pt_precision
 
 # CG solver: exclude generator, spmv_bench, and multi-GPU sources
 CU_CG_SRCS := $(filter-out $(SRC_DIR)/matrix/generate_matrix.cu $(SRC_DIR)/main/main.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil_3d.cu $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/main/generate_matrix_3d.cu $(SRC_DIR)/main/generate_matrix_3d_27pt.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned_3d.cu $(SRC_DIR)/solvers/cg_solver_mgpu_overlap.cu $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu, $(CU_SRCS))
@@ -74,10 +75,14 @@ CU_CG_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_CG_SRCS))
 CU_SINGLE_GPU_3D_SRCS := $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/spmv/spmv_stencil_3d_partitioned_halo_kernel.cu $(SRC_DIR)/io/io.cu $(SRC_DIR)/spmv/spmv_cusparse_csr.cu $(SRC_DIR)/solvers/cg_metrics.cu
 CU_SINGLE_GPU_3D_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_SINGLE_GPU_3D_SRCS))
 
+# 27-point coefficient-precision benchmark (single GPU, no MPI)
+CU_27PT_PREC_SRCS := $(SRC_DIR)/main/bench_27pt_precision.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/io/io.cu $(SRC_DIR)/spmv/spmv_cusparse_csr.cu
+CU_27PT_PREC_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_27PT_PREC_SRCS))
+
 # PHONY targets
 .PHONY: all clean help check-mpi-message
 .PHONY: spmv_bench generate_matrix generate_matrix_3d generate_matrix_3d_27pt cg_solver cg_solver_mgpu_stencil cg_solver_mgpu_stencil_3d cg_solver_single_gpu_3d
-.PHONY: spmv gen gen3d gen3d_27pt cg cg3d_mgpu cg3d
+.PHONY: spmv gen gen3d gen3d_27pt cg cg3d_mgpu cg3d bench_27pt_precision
 
 # Main target - conditionally include MPI targets
 ifeq ($(HAS_MPI),1)
@@ -119,6 +124,11 @@ help:
 
 # SpMV benchmark binary
 $(BIN_SPMV): $(CU_SPMV_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# 27-point coefficient-precision benchmark
+$(BIN_27PT_PREC): $(CU_27PT_PREC_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
@@ -228,6 +238,7 @@ $(BIN_SINGLE_GPU_3D): $(CU_SINGLE_GPU_3D_OBJS)
 # ============================================================================
 
 spmv_bench: $(BIN_SPMV)
+bench_27pt_precision: $(BIN_27PT_PREC)
 generate_matrix: $(BIN_GEN)
 generate_matrix_3d: $(BIN_GEN3D)
 generate_matrix_3d_27pt: $(BIN_GEN3D_27PT)

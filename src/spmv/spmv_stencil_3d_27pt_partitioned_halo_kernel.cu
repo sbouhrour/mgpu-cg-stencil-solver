@@ -7,34 +7,29 @@
  * Halo contains one full XY-plane (N² elements) from neighbors.
  * 27-point stencil: center + 6 face + 12 edge + 8 corner neighbors.
  *
+ * The row body is templated on the storage type of the matrix coefficients. Accumulation is always
+ * double; only the width of the `values` array changes. Coefficients are 90% of this kernel's DRAM
+ * traffic (216 B of 240 B per row, measured), so halving their width is the dominant bandwidth
+ * lever. The kernel still reads every coefficient from memory — precision is a storage choice, not
+ * knowledge of the operator.
+ *
  * Author: Bouhrour Stephane
  */
 
+#include "spmv_stencil_3d_27pt.h"
+
 /**
- * @brief Optimized 3D 27-point stencil SpMV kernel for partitioned CSR with Z-slab halo
+ * @brief One interior or boundary row of the 27-point operator.
  *
- * @param[in] row_ptr CSR row pointers
- * @param[in] col_idx CSR column indices
- * @param[in] values CSR values
- * @param[in] x_local Local vector partition
- * @param[in] x_halo_prev Previous Z-plane halo (NULL if rank==0)
- * @param[in] x_halo_next Next Z-plane halo (NULL if rank==world_size-1)
- * @param[out] y Output vector partition
- * @param[in] n_local Number of local rows
- * @param[in] row_offset Global row offset for this partition
- * @param[in] N_total Total grid dimension (NxNxN grid)
- * @param[in] grid_size N (used for stencil pattern)
+ * @tparam ValueT Storage type of the matrix coefficients (double or float)
+ * @return The row's dot product, accumulated in double
  */
-__global__ void stencil27_csr_partitioned_halo_kernel_3d(
-    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
-    const double* __restrict__ values, const double* __restrict__ x_local,
-    const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
-    double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size) {
-
-    int local_row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (local_row >= n_local)
-        return;
-
+template <typename ValueT>
+__device__ __forceinline__ double
+stencil27_row_3d(const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
+                 const ValueT* __restrict__ values, const double* __restrict__ x_local,
+                 const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
+                 int local_row, int n_local, int row_offset, int grid_size) {
     int global_row = row_offset + local_row;
     int N = grid_size;
 
@@ -121,5 +116,69 @@ __global__ void stencil27_csr_partitioned_halo_kernel_3d(
         }
     }
 
-    y[local_row] = sum;
+    return sum;
 }
+
+/**
+ * @brief Optimized 3D 27-point stencil SpMV kernel for partitioned CSR with Z-slab halo
+ *
+ * @param[in] row_ptr CSR row pointers
+ * @param[in] col_idx CSR column indices
+ * @param[in] values Local vector partition
+ * @param[in] x_local Local vector partition
+ * @param[in] x_halo_prev Previous Z-plane halo (NULL if rank==0)
+ * @param[in] x_halo_next Next Z-plane halo (NULL if rank==world_size-1)
+ * @param[out] y Output vector partition
+ * @param[in] n_local Number of local rows
+ * @param[in] row_offset Global row offset for this partition
+ * @param[in] N_total Total grid dimension (NxNxN grid)
+ * @param[in] grid_size N (used for stencil pattern)
+ */
+__global__ void stencil27_csr_partitioned_halo_kernel_3d(
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const double* __restrict__ values, const double* __restrict__ x_local,
+    const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
+    double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size) {
+    (void)N_total;
+
+    int local_row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (local_row >= n_local)
+        return;
+
+    y[local_row] = stencil27_row_3d<double>(row_ptr, col_idx, values, x_local, x_halo_prev,
+                                            x_halo_next, local_row, n_local, row_offset, grid_size);
+}
+
+/**
+ * @brief 27-point kernel with the coefficients held at a chosen storage precision
+ *
+ * @details Same arithmetic as the production kernel above, accumulated in double. Only the width of
+ *          `values` differs, which is what the bandwidth measurement isolates.
+ */
+template <typename ValueT>
+__global__ void stencil27_mixed_precision_kernel_3d(
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const ValueT* __restrict__ values, const double* __restrict__ x_local,
+    const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
+    double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size) {
+    (void)N_total;
+
+    int local_row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (local_row >= n_local)
+        return;
+
+    y[local_row] = stencil27_row_3d<ValueT>(row_ptr, col_idx, values, x_local, x_halo_prev,
+                                            x_halo_next, local_row, n_local, row_offset, grid_size);
+}
+
+template __global__ void
+stencil27_mixed_precision_kernel_3d<double>(const long long* __restrict__, const int* __restrict__,
+                                            const double* __restrict__, const double* __restrict__,
+                                            const double* __restrict__, const double* __restrict__,
+                                            double* __restrict__, int, int, int, int);
+
+template __global__ void
+stencil27_mixed_precision_kernel_3d<float>(const long long* __restrict__, const int* __restrict__,
+                                           const float* __restrict__, const double* __restrict__,
+                                           const double* __restrict__, const double* __restrict__,
+                                           double* __restrict__, int, int, int, int);

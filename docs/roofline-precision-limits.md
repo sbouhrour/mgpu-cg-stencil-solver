@@ -93,12 +93,43 @@ Storing `values[]` in FP32 while accumulating in FP64 halves the dominant term.
 | `values` FP32 | 36 | 132 | 1.56× / 1.82× |
 | `values`, `x`, `y` FP32 | 28 | 124 | 2.00× / 1.94× |
 
-Ceiling after FP32 coefficients: AI 0.5 (2D) — still an order of magnitude below the ridge. Reduced
-precision buys **bandwidth**, not a change of regime.
-
 It leaves the comparison intact: storing the same operator at lower precision is a precision choice, not
-knowledge of the operator's values, and AmgX offers mixed-precision modes of its own. The 3D case is
-where it pays — coefficients are 90 % of 3D traffic against 71 % in 2D.
+knowledge of the operator's values, and AmgX offers mixed-precision modes of its own.
+
+#### Measured: the traffic halves and the time does not
+
+The 27-point kernel was templated on coefficient storage width and both variants run on the same matrix
+(`bench_27pt_precision`, 192³, RTX 4060 Laptop, alternating A/B timing):
+
+| | `values` double | `values` float |
+|---|---:|---:|
+| DRAM traffic (`dram__bytes.sum`) | 1.70 GB | **942 MB** (÷1.80) |
+| L2 sectors (`lts__t_sectors.sum`) | 104 756 049 | 51 791 212 (÷2.02) |
+| **L1 load sectors** | **246 976 440** | **246 976 440** — identical |
+| DRAM throughput | 70.9 % of peak | 38.4 % of peak |
+| Kernel time | 9.10 ms | 9.47 ms |
+| **Speedup** | — | **0.96×** |
+
+The predicted 1.82× does not appear. DRAM traffic drops exactly as modelled, but **the number of 32-byte
+sectors the L1 must serve does not change at all**, and that is the binding constraint.
+
+The reason is the layout, not the precision. In row-major CSR a thread reads its own 27 contiguous
+coefficients, so within one load instruction warp-adjacent threads are 27 × 8 = 216 B apart in double and
+27 × 4 = **108 B** apart in float. Both strides exceed the 32 B sector, so every thread lands in its own
+sector either way: 32 sectors per warp-level load, at both widths. Narrowing the element narrows the DRAM
+footprint and the L2 traffic, but not the sector count — so the kernel simply moves from 71 % of DRAM peak
+to 38 %, at the same speed.
+
+Reduced precision therefore pays only once the coefficient loads are **coalesced**, which requires a
+coefficient-major (SoA) layout where each of the 27 coefficient streams is contiguous across rows. That
+layout is analysed separately in the SoA integration notes; the point here is that a bandwidth model
+predicts the traffic correctly and the runtime not at all, whenever the access is uncoalesced.
+
+**Accuracy on this matrix is exactly zero error**, and that measures nothing: the coefficients are `26.0`
+and `-1.0`, both exactly representable in binary32, so float storage is lossless here. `y` is
+bitwise-identical across 7 077 888 rows. Quantifying the numerical cost of reduced precision requires an
+operator whose coefficients binary32 cannot represent — a variable-coefficient discretisation, or a
+non-dyadic scaling.
 
 ### Lever 2 — specialise the operator, and why this benchmark does not
 
