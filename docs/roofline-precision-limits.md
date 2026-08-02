@@ -96,33 +96,37 @@ Storing `values[]` in FP32 while accumulating in FP64 halves the dominant term.
 Ceiling after FP32 coefficients: AI 0.5 (2D) — still an order of magnitude below the ridge. Reduced
 precision buys **bandwidth**, not a change of regime.
 
-### Lever 2 — do not store the coefficients at all
+It leaves the comparison intact: storing the same operator at lower precision is a precision choice, not
+knowledge of the operator's values, and AmgX offers mixed-precision modes of its own. The 3D case is
+where it pays — coefficients are 90 % of 3D traffic against 71 % in 2D.
 
-Both matrices are **constant-coefficient**: the 5-point operator emits `5.0` on the diagonal and `-1.0`
-on all four neighbours for every row; the 27-point operator emits `26.0` and `-1.0`. The kernel currently
-loads 40 B (resp. 216 B) per row from DRAM to retrieve the same two numbers, 25 million times.
+### Lever 2 — specialise the operator, and why this benchmark does not
 
-A matrix-free operator with the coefficients as compile-time constants moves only `x` and `y`:
+The test matrices are constant-coefficient: the 5-point operator emits `5.0` on the diagonal and `-1.0`
+on all four neighbours for every row; the 27-point operator emits `26.0` and `-1.0`. A specialised
+operator could therefore carry those coefficients as compile-time constants and move only `x` and `y` —
+16 B/row, giving AI 0.625 in 2D and 3.28 in 3D, the latter above the RTX 4060's FP64 ridge.
 
-| | Current | Matrix-free | |
-|---|---:|---:|---:|
-| Bytes/row, 2D | 56 | **16** | 3.5× less traffic |
-| Bytes/row, 3D | 240 | **16** | 15× less traffic |
-| AI, 2D | 0.179 | **0.625 FLOP/B** | |
-| AI, 3D | 0.218 | **3.28 FLOP/B** | |
+**This solver deliberately does not do that**, and the reason is the point of the comparison rather than
+a missed optimisation. The solver is benchmarked against cuSPARSE and AmgX, which consume a general
+sparse matrix; the comparison is only meaningful while every implementation reads the same operator from
+memory. A kernel that knows its coefficients is no longer solving the same problem — it is answering a
+question the others were not asked. The measured 2.08× against cuSPARSE and 1.44× against AmgX rest on
+that equal footing, and it is worth more than a bandwidth factor.
 
-**The 3D case crosses over.** At AI 3.28 the 27-point operator sits within 1.45× of the A100 FP64 ridge
-(4.76), and *above* the RTX 4060's FP64 ridge (≈ 1.17) — it becomes compute-bound on consumer hardware.
-Projected on the 4060 at 192³: the memory floor drops to 0.63 ms while the FP64 compute floor is
-1.25–1.9 ms, so compute becomes the binding constraint and the realistic gain is ≈ 5–7× rather than the
-15× that traffic alone would suggest.
+The distinction is worth stating precisely, because the two are easy to conflate:
 
-That crossover is the honest answer to "where could tensor cores ever matter in this solver": only after
-the coefficient traffic is eliminated, and even then an A100 would still be at 69 % of the ridge in FP64.
+| | What it removes | Effect on DRAM traffic |
+|---|---|---|
+| Generating the matrix in memory instead of reading a `.mtx` | file I/O and host memory (a 5000² grid is a 2.7 GB text file) | **none** — the assembled CSR still lives in device memory and is still read |
+| Hard-coding the coefficients in the kernel | the coefficient array itself | 3.5× in 2D, 15× in 3D — at the cost of value-agnosticism |
 
-**Scope note.** A matrix-free operator is specialised to one discretisation, whereas cuSPARSE and AmgX
-consume a general sparse matrix. Comparing them requires saying so explicitly: it is a data-structure
-result, not a faster SpMV.
+The first is a scalability measure and is already used for the larger 3D cases. The second is what
+geometric multigrid and specialised PDE codes do, and it is the right choice *for those codes*; it is the
+wrong choice for a benchmark whose claim is a like-for-like comparison.
+
+So the ceiling of this solver, by construction, is the 0.25 FLOP/B of § 2 — and reduced precision is the
+lever that operates within it.
 
 ---
 
