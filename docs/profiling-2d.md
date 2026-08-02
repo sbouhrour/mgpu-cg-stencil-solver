@@ -112,11 +112,21 @@ Both kernels are memory-bound, but the stencil kernel achieves higher effective 
 
 | Metric | CSR | Stencil |
 |--------|----:|--------:|
-| Bytes per row | 88 B | 48 B |
+| Bytes per row | 88 B | **56 B** |
 | (5 values + 5 indices + 1 x + 1 y) | | (5 values + 1 x + 1 y, no indices) |
-| Arithmetic intensity | 0.11 FLOP/B | 0.21 FLOP/B |
+| Arithmetic intensity | 0.11 FLOP/B | **0.179 FLOP/B** |
 
-The stencil kernel moves **45% less data** per row by eliminating index storage and lookups.
+The stencil kernel moves **36% less data** per row by eliminating index storage and lookups.
+
+The stencil figures are measured at the DRAM boundary with Nsight Compute (5000 × 5000 grid, RTX 4060
+Laptop): 1.40 GB moved for 25.0 M rows = 56.0 B/row, of which 48 B read (40 B coefficients + 8 B
+amortised `x`) and 7.9 B written (`y`). An earlier revision of this table listed 48 B/row and
+0.21 FLOP/B; that count omitted the `y` write. The corrected value is consistent with the 96 % DRAM
+throughput reported above — 48 B/row would imply 82 %.
+
+A full roofline treatment, including the 3D 27-point kernel, the distance to the A100 ridge point, and
+what reduced precision or a matrix-free operator would change, is in
+[Roofline Limits and the Precision Question](roofline-precision-limits.md).
 
 ---
 

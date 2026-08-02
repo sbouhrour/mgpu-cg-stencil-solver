@@ -1,26 +1,28 @@
 /**
  * @file cg_solver_mgpu.h
- * @brief Multi-GPU Conjugate Gradient solver with MPI+NCCL
+ * @brief Shared configuration and timing types for the multi-GPU CG solvers
  *
  * @details
- * Architecture: 1 MPI rank per GPU (standard HPC pattern)
- * - MPI: Process management and bootstrapping
- * - NCCL: GPU-GPU communication (AllReduce, AllGather)
- * - CUDA: Local computation on each GPU
+ * Architecture: 1 MPI rank per GPU.
+ * - MPI: process management, dot-product reductions, halo exchange
+ * - CUDA: local computation on each GPU
  *
- * Phase 1: Full vector replication
- * - Each rank/GPU maintains complete vectors (x, r, p, Ap)
- * - Matrix rows partitioned across ranks (1D row-band decomposition)
- * - NCCL AllReduce for dot products
- * - NCCL AllGather for vector synchronization after updates
+ * The solver built on these types is in `cg_solver_mgpu_partitioned.h`: rows are partitioned across
+ * ranks in a 1D band decomposition, each rank owns its slice of the vectors, and neighbours
+ * exchange one boundary row through explicit D2H -> MPI_Isend/Irecv -> H2D staging.
  *
  * Communication pattern:
- *   Local SpMV: y_local = A_local * x_full (no communication)
- *   Local BLAS1: operates on local row segments
- *   Dot products: local sum + NCCL AllReduce
- *   Vector sync: NCCL AllGather (200 MB for stencil 5000×5000)
+ *   Local SpMV:   y_local = A_local * [x_local | halo]
+ *   Local BLAS1:  operates on local row segments
+ *   Dot products: local sum + MPI_Allreduce
+ *   Halo:         one boundary row per neighbour, staged through pinned host buffers
  *
- * Launch: mpirun -np <num_gpus> ./cg_mgpu matrix.mtx
+ * An earlier design replicated the full vector on every rank and synchronised it with NCCL
+ * AllGather, which is what `time_allgather_ms` below was originally named for; that field now
+ * records halo exchange time. The NCCL implementations and the measurements that led to MPI staging
+ * are on their branches — see "Approaches tried and set aside" in `docs/development.md`.
+ *
+ * Launch: mpirun -np <num_gpus> ./cg_solver_mgpu_stencil matrix.mtx
  *
  * Author: Bouhrour Stephane
  * Date: 2025-11-06
@@ -54,8 +56,8 @@ typedef struct {
     double time_spmv_ms;        ///< SpMV time
     double time_blas1_ms;       ///< BLAS1 operations time (total)
     double time_reductions_ms;  ///< Dot products time (total)
-    double time_allreduce_ms;   ///< NCCL AllReduce time
-    double time_allgather_ms;   ///< NCCL AllGather time (or halo exchange)
+    double time_allreduce_ms;   ///< MPI_Allreduce time (dot-product reductions)
+    double time_allgather_ms;   ///< Halo exchange time (name predates the switch from AllGather)
     int converged;              ///< 1 if converged
 
     // Granular BLAS1 timings (per-iteration averages)
@@ -79,23 +81,5 @@ typedef struct {
     double time_comm_exposed_ms;   ///< Exposed communication (not hidden)
     double overlap_efficiency;     ///< Fraction of comm hidden (0.0 to 1.0)
 } CGStatsMultiGPU;
-
-/**
- * @brief Multi-GPU CG solver with full vector replication (Phase 1)
- *
- * Configuration: 2-4 GPUs, NCCL communication
- * Memory: Full vectors replicated on each GPU
- * Communication: AllReduce (dot products) + AllGather (vector sync)
- *
- * @param spmv_op SpMV operator (must support multi-GPU)
- * @param mat Matrix data (for partitioning)
- * @param b Right-hand side vector
- * @param x Solution vector (output)
- * @param config Multi-GPU CG configuration
- * @param stats Output statistics
- * @return 0 on success
- */
-int cg_solve_mgpu(SpmvOperator* spmv_op, MatrixData* mat, const double* b, double* x,
-                  CGConfigMultiGPU config, CGStatsMultiGPU* stats);
 
 #endif  // CG_SOLVER_MGPU_H

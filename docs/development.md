@@ -39,3 +39,31 @@ cmake .. && make && ./test_runner
 # Specific test suite
 ./test_runner --gtest_filter="PartitionedSolver*"
 ```
+
+## Approaches tried and set aside
+
+`main` carries the retained implementation only. Several alternatives were built, measured, and dropped;
+they live on their branches, which is where to look before concluding a technique was never tried.
+
+### GPU-to-GPU communication
+
+Three NCCL designs preceded the current MPI staging:
+
+| Branch | What it contains |
+|---|---|
+| `feature/multi-gpu-cg-nccl` | NCCL `AllGather` with full vector replication (~800 MB per iteration at 10000×10000), then batched `ncclGroupStart/End` |
+| `feature/csr-partition` | local CSR partitions, ending the full replication |
+| `feature/halo-exchange` | NCCL P2P `ncclSend/Recv` on the boundary only — 160 KB instead of 800 MB |
+| `feature/halo-cuda-aware-mpi` | the switch to MPI staging that produced the current solver |
+| `archive/experimental` | the archived NCCL AllGather solver |
+
+The decisive comparison was NCCL P2P against MPI staging at an identical 160 KB halo, on 2× RTX 3090
+(PCIe, no NVLink): 56.78 ms of halo time for NCCL against 31.93 ms for MPI staging. On NVLink hardware
+the ranking may well invert — the result is specific to small, repeated messages over PCIe.
+
+### Other branches
+
+Communication and halo variants (`feature/cuda-aware-mpi`, `feature/halo-cudamemcpypeer`,
+`feature/overlap-cudaipc`, `feature/overlap-streams`), kernel work (`feature/kernel-opt-3d`,
+`feature/stencil-27pt`, `feature/spmv-27pt-soa`), AmgX integration (`feature/amgx-*`), and profiling-only
+explorations (`exploration/*`).
