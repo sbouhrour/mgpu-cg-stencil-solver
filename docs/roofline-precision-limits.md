@@ -125,11 +125,44 @@ coefficient-major (SoA) layout where each of the 27 coefficient streams is conti
 layout is analysed separately in the SoA integration notes; the point here is that a bandwidth model
 predicts the traffic correctly and the runtime not at all, whenever the access is uncoalesced.
 
-**Accuracy on this matrix is exactly zero error**, and that measures nothing: the coefficients are `26.0`
-and `-1.0`, both exactly representable in binary32, so float storage is lossless here. `y` is
-bitwise-identical across 7 077 888 rows. Quantifying the numerical cost of reduced precision requires an
-operator whose coefficients binary32 cannot represent — a variable-coefficient discretisation, or a
-non-dyadic scaling.
+#### The full precision ladder, in sectors
+
+The sector argument generalises, and it is what decides whether a narrower format is worth anything:
+
+| Coefficient format | Bytes/row | Sectors per warp load, **row-major CSR** | Sectors per warp load, **SoA** |
+|---|---:|---:|---:|
+| FP64 | 216 | 32 (stride 216 B) | 8 |
+| FP32 | 108 | **32** (stride 108 B) — measured | 4 |
+| FP16 / BF16 | 54 | **32** (stride 54 B) | 2 |
+| FP8 | 27 | 27 B < 32 B, sharing begins | 1 |
+
+In row-major CSR the per-thread stride only falls below a 32 B sector at FP8; in SoA every step down pays
+immediately. Total traffic per row, SoA: 232 B at FP64 → 124 → **70** at FP16 → 43 at FP8, against 240 B
+for the current CSR kernel.
+
+These are the formats the tensor-core generation made native. Note what is and is not being claimed:
+storing coefficients in FP16 or FP8 and accumulating in FP64 uses **conversion instructions on the CUDA
+cores**, not the MMA pipeline — a stencil has no matmul shape to feed it. The value of those formats here
+is bandwidth, not throughput. They are worth using for exactly that reason, and it is worth saying which
+reason.
+
+#### Where the numerical cost actually is
+
+Zero error is reported above, and it measures nothing about precision. Checked against hardware
+conversion on sm_89:
+
+| | FP32 | FP16 | BF16 | FP8 E4M3 |
+|---|---|---|---|---|
+| Coefficients `26.0`, `-1.0` (3D) and `5.0` (2D) | exact | exact | exact | **exact** |
+| Vector `x`, 100 000 samples | 99 999 inexact | 99 999 inexact, max rel. err. **4.9e-4** | 99 999 inexact, **3.9e-3** | — |
+
+`26.0` is `1.101` × 2⁴ — four significand bits, and FP8 E4M3 carries three plus the implicit one. **Reducing
+the precision of the operator costs nothing here, down to eight bits.** The entire numerical cost of mixed
+precision in this solver lives in the **vector**.
+
+That inverts the usual design instinct: be aggressive on the coefficients, which are 90 % of the traffic
+and are free to narrow, and conservative on `x`, which is 3 % of the traffic and carries all the error. A
+variable-coefficient discretisation would change the first half of that statement; this one does not.
 
 ### Lever 2 — specialise the operator, and why this benchmark does not
 
