@@ -29,8 +29,26 @@
 #include "spmv_csr.h"
 #include "spmv.h"
 #include "spmv_stencil_3d_27pt.h"
+#include "spmv_stencil_3d_27pt_soa.h"
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 extern struct CSRMatrix csr_mat;
+
+/** @brief Narrows a double to the storage type under test */
+template <typename T> static T narrow(double v);
+template <> double narrow<double>(double v) {
+    return v;
+}
+template <> float narrow<float>(double v) {
+    return (float)v;
+}
+template <> __half narrow<__half>(double v) {
+    return __double2half(v);
+}
+template <> __nv_bfloat16 narrow<__nv_bfloat16>(double v) {
+    return __double2bfloat16(v);
+}
 
 /** @brief Median of a small array of timings, sorted in place */
 static double median_ms(double* v, int n) {
@@ -65,6 +83,73 @@ static double time_one_launch(cudaEvent_t start, cudaEvent_t stop, const long lo
     float ms = 0.0f;
     cudaEventElapsedTime(&ms, start, stop);
     return (double)ms;
+}
+
+/** @brief Result of one SoA variant: median time and error against the double-storage SoA run */
+struct SoaResult {
+    const char* name;
+    double bytes_per_row;
+    double t_ms;
+    double rel_fro;
+};
+
+/**
+ * @brief Builds the narrowed coefficient array, times the SoA kernel, and compares against a
+ * reference
+ *
+ * @param ref If non-null, y is compared to it; if null, this run's y is copied into out_ref.
+ */
+template <typename ValueT>
+static void run_soa(const char* name, const double* h_soa64, long long n_soa, const double* d_x_ext,
+                    double* d_y, int n, int grid_size, int blocks, int threads, int reps,
+                    double* h_y, double* ref, SoaResult* out) {
+    ValueT* h_narrow = (ValueT*)malloc((size_t)n_soa * sizeof(ValueT));
+    for (long long e = 0; e < n_soa; e++)
+        h_narrow[e] = narrow<ValueT>(h_soa64[e]);
+    ValueT* d_v;
+    CUDA_CHECK(cudaMalloc(&d_v, (size_t)n_soa * sizeof(ValueT)));
+    CUDA_CHECK(cudaMemcpy(d_v, h_narrow, (size_t)n_soa * sizeof(ValueT), cudaMemcpyHostToDevice));
+    free(h_narrow);
+
+    cudaEvent_t a, b;
+    cudaEventCreate(&a);
+    cudaEventCreate(&b);
+    for (int w = 0; w < 3; w++)
+        stencil27_soa_halo_kernel_3d_t<ValueT>
+            <<<blocks, threads>>>(d_v, d_x_ext, d_y, n, grid_size);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    double* s = (double*)malloc((size_t)reps * sizeof(double));
+    for (int w = 0; w < reps; w++) {
+        cudaEventRecord(a);
+        stencil27_soa_halo_kernel_3d_t<ValueT>
+            <<<blocks, threads>>>(d_v, d_x_ext, d_y, n, grid_size);
+        cudaEventRecord(b);
+        CUDA_CHECK(cudaEventSynchronize(b));
+        float ms = 0.0f;
+        cudaEventElapsedTime(&ms, a, b);
+        s[w] = (double)ms;
+    }
+    out->name = name;
+    out->bytes_per_row = 27.0 * sizeof(ValueT) + 2.0 * sizeof(double);
+    out->t_ms = median_ms(s, reps);
+    free(s);
+    cudaEventDestroy(a);
+    cudaEventDestroy(b);
+
+    CUDA_CHECK(cudaMemcpy(h_y, d_y, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost));
+    if (ref == NULL) {
+        out->rel_fro = 0.0;
+    } else {
+        double nu = 0.0, de = 0.0;
+        for (int q = 0; q < n; q++) {
+            double d2 = h_y[q] - ref[q];
+            nu += d2 * d2;
+            de += ref[q] * ref[q];
+        }
+        out->rel_fro = (de > 0.0) ? sqrt(nu) / sqrt(de) : 0.0;
+    }
+    CUDA_CHECK(cudaFree(d_v));
 }
 
 int main(int argc, char** argv) {
@@ -173,6 +258,37 @@ int main(int argc, char** argv) {
     cudaEventDestroy(ev_start);
     cudaEventDestroy(ev_stop);
 
+    // ---- SoA path: same operator, coefficient-major layout, four storage widths ----
+    // x_ext = [ N^2 halo | n_local rows | N^2 halo ]; single rank, so both halo planes are zero.
+    const long long NN = (long long)grid_size * grid_size;
+    const long long ext_n = (long long)n + 2 * NN;
+    const long long n_soa = 27LL * n;
+
+    double* h_soa64 = (double*)calloc((size_t)n_soa, sizeof(double));
+    build_values_soa_27pt_3d(csr_mat.row_ptr, csr_mat.col_indices, csr_mat.values, n, 0, grid_size,
+                             h_soa64);
+
+    double *d_x_ext, *d_y_soa;
+    CUDA_CHECK(cudaMalloc(&d_x_ext, (size_t)ext_n * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_y_soa, (size_t)n * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_x_ext, 0, (size_t)ext_n * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(d_x_ext + NN, d_x, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice));
+
+    double* h_y_soa = (double*)malloc((size_t)n * sizeof(double));
+    double* h_soa_ref = (double*)malloc((size_t)n * sizeof(double));
+    SoaResult soa[4];
+
+    run_soa<double>("SoA double", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks, threads,
+                    reps, h_y_soa, NULL, &soa[0]);
+    memcpy(h_soa_ref, h_y_soa, (size_t)n * sizeof(double));
+    run_soa<float>("SoA float", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks, threads,
+                   reps, h_y_soa, h_soa_ref, &soa[1]);
+    run_soa<__half>("SoA half", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks, threads,
+                    reps, h_y_soa, h_soa_ref, &soa[2]);
+    run_soa<__nv_bfloat16>("SoA bfloat16", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks,
+                           threads, reps, h_y_soa, h_soa_ref, &soa[3]);
+    free(h_soa64);
+
     // ---- Accuracy: relative Frobenius norm against the double-storage result ----
     double* h_y64 = (double*)malloc((size_t)n * sizeof(double));
     double* h_y32 = (double*)malloc((size_t)n * sizeof(double));
@@ -208,6 +324,23 @@ int main(int argc, char** argv) {
            bytes32 / (t32 / 1e3) / 1e9);
     printf("%-22s %10.3fx\n", "speedup", t64 / t32);
     printf("%-22s %10.3fx\n", "traffic ratio (model)", bytes64 / bytes32);
+
+    // SoA double must reproduce the CSR double result exactly
+    long long soa_vs_csr_diff = 0;
+    for (int idx = 0; idx < n; idx++)
+        if (h_soa_ref[idx] != h_y64[idx])
+            soa_vs_csr_diff++;
+
+    printf("\n--- Coefficient-major (SoA) layout, same operator ---\n");
+    printf("%-16s %10s %12s %12s %12s %14s\n", "layout/storage", "time(ms)", "B/row", "GB/s",
+           "vs CSR fp64", "rel Frobenius");
+    for (int k = 0; k < 4; k++) {
+        double gb = soa[k].bytes_per_row * (double)n / 1e9;
+        printf("%-16s %10.3f %12.1f %12.1f %11.3fx %14.3e\n", soa[k].name, soa[k].t_ms,
+               soa[k].bytes_per_row, gb / (soa[k].t_ms / 1e3), t64 / soa[k].t_ms, soa[k].rel_fro);
+    }
+    printf("SoA double vs CSR double: %lld / %d entries differ%s\n", soa_vs_csr_diff, n,
+           soa_vs_csr_diff == 0 ? " (bitwise identical)" : "");
 
     printf("\n--- Accuracy vs double-storage reference ---\n");
     printf("Relative Frobenius norm: %.6e\n", rel_fro);

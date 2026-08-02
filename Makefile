@@ -76,7 +76,7 @@ CU_SINGLE_GPU_3D_SRCS := $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/s
 CU_SINGLE_GPU_3D_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_SINGLE_GPU_3D_SRCS))
 
 # 27-point coefficient-precision benchmark (single GPU, no MPI)
-CU_27PT_PREC_SRCS := $(SRC_DIR)/main/bench_27pt_precision.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/io/io.cu $(SRC_DIR)/spmv/spmv_cusparse_csr.cu
+CU_27PT_PREC_SRCS := $(SRC_DIR)/main/bench_27pt_precision.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/io/io.cu $(SRC_DIR)/spmv/spmv_cusparse_csr.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_soa_halo_kernel.cu
 CU_27PT_PREC_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_27PT_PREC_SRCS))
 
 # PHONY targets

@@ -34,10 +34,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include "spmv_stencil_3d_27pt_soa.h"
 
 __device__ __forceinline__ int clamp_ext(int v, int ext_n) {
     v = v < 0 ? 0 : v;
     return v >= ext_n ? ext_n - 1 : v;
+}
+
+/**
+ * @brief Reads one coefficient at its storage width and widens it to double
+ *
+ * @details Accumulation is double for every width, so the only thing the storage type changes is
+ * the number of bytes and cache sectors the load costs. Narrow types are converted here, on the
+ *          CUDA cores — no tensor-core pipeline is involved, and none could be: a stencil has no
+ * matmul shape to feed one.
+ */
+__device__ __forceinline__ double ld_val(double v) {
+    return v;
+}
+__device__ __forceinline__ double ld_val(float v) {
+    return (double)v;
+}
+__device__ __forceinline__ double ld_val(__half v) {
+    return (double)__half2float(v);
+}
+__device__ __forceinline__ double ld_val(__nv_bfloat16 v) {
+    return (double)__bfloat162float(v);
 }
 
 /**
@@ -49,13 +73,10 @@ __device__ __forceinline__ int clamp_ext(int v, int ext_n) {
  * @param[in] n_local Number of local rows (multiple of N²)
  * @param[in] grid_size N (grid is N×N×N)
  */
-__global__ void stencil27_soa_halo_kernel_3d(const double* __restrict__ values_soa,
-                                             const double* __restrict__ x_ext,
-                                             double* __restrict__ y, int n_local, int grid_size) {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= n_local)
-        return;
-
+template <typename ValueT>
+__device__ __forceinline__ double stencil27_soa_row(const ValueT* __restrict__ values_soa,
+                                                    const double* __restrict__ x_ext, int row,
+                                                    int n_local, int grid_size) {
     const int N = grid_size;
     const int NN = N * N;
     const int ext_n = n_local + 2 * NN;
@@ -64,38 +85,71 @@ __global__ void stencil27_soa_halo_kernel_3d(const double* __restrict__ values_s
 
     double sum = 0.0;
     // Z-plane i-1
-    sum = values_soa[0 * ln + row] * x_ext[clamp_ext(base - NN - N - 1, ext_n)];
-    sum += values_soa[1 * ln + row] * x_ext[clamp_ext(base - NN - N, ext_n)];
-    sum += values_soa[2 * ln + row] * x_ext[clamp_ext(base - NN - N + 1, ext_n)];
-    sum += values_soa[3 * ln + row] * x_ext[clamp_ext(base - NN - 1, ext_n)];
-    sum += values_soa[4 * ln + row] * x_ext[clamp_ext(base - NN, ext_n)];
-    sum += values_soa[5 * ln + row] * x_ext[clamp_ext(base - NN + 1, ext_n)];
-    sum += values_soa[6 * ln + row] * x_ext[clamp_ext(base - NN + N - 1, ext_n)];
-    sum += values_soa[7 * ln + row] * x_ext[clamp_ext(base - NN + N, ext_n)];
-    sum += values_soa[8 * ln + row] * x_ext[clamp_ext(base - NN + N + 1, ext_n)];
+    sum = ld_val(values_soa[0 * ln + row]) * x_ext[clamp_ext(base - NN - N - 1, ext_n)];
+    sum += ld_val(values_soa[1 * ln + row]) * x_ext[clamp_ext(base - NN - N, ext_n)];
+    sum += ld_val(values_soa[2 * ln + row]) * x_ext[clamp_ext(base - NN - N + 1, ext_n)];
+    sum += ld_val(values_soa[3 * ln + row]) * x_ext[clamp_ext(base - NN - 1, ext_n)];
+    sum += ld_val(values_soa[4 * ln + row]) * x_ext[clamp_ext(base - NN, ext_n)];
+    sum += ld_val(values_soa[5 * ln + row]) * x_ext[clamp_ext(base - NN + 1, ext_n)];
+    sum += ld_val(values_soa[6 * ln + row]) * x_ext[clamp_ext(base - NN + N - 1, ext_n)];
+    sum += ld_val(values_soa[7 * ln + row]) * x_ext[clamp_ext(base - NN + N, ext_n)];
+    sum += ld_val(values_soa[8 * ln + row]) * x_ext[clamp_ext(base - NN + N + 1, ext_n)];
     // Z-plane i
-    sum += values_soa[9 * ln + row] * x_ext[clamp_ext(base - N - 1, ext_n)];
-    sum += values_soa[10 * ln + row] * x_ext[clamp_ext(base - N, ext_n)];
-    sum += values_soa[11 * ln + row] * x_ext[clamp_ext(base - N + 1, ext_n)];
-    sum += values_soa[12 * ln + row] * x_ext[clamp_ext(base - 1, ext_n)];
-    sum += values_soa[13 * ln + row] * x_ext[base];  // center, always in range
-    sum += values_soa[14 * ln + row] * x_ext[clamp_ext(base + 1, ext_n)];
-    sum += values_soa[15 * ln + row] * x_ext[clamp_ext(base + N - 1, ext_n)];
-    sum += values_soa[16 * ln + row] * x_ext[clamp_ext(base + N, ext_n)];
-    sum += values_soa[17 * ln + row] * x_ext[clamp_ext(base + N + 1, ext_n)];
+    sum += ld_val(values_soa[9 * ln + row]) * x_ext[clamp_ext(base - N - 1, ext_n)];
+    sum += ld_val(values_soa[10 * ln + row]) * x_ext[clamp_ext(base - N, ext_n)];
+    sum += ld_val(values_soa[11 * ln + row]) * x_ext[clamp_ext(base - N + 1, ext_n)];
+    sum += ld_val(values_soa[12 * ln + row]) * x_ext[clamp_ext(base - 1, ext_n)];
+    sum += ld_val(values_soa[13 * ln + row]) * x_ext[base];  // center, always in range
+    sum += ld_val(values_soa[14 * ln + row]) * x_ext[clamp_ext(base + 1, ext_n)];
+    sum += ld_val(values_soa[15 * ln + row]) * x_ext[clamp_ext(base + N - 1, ext_n)];
+    sum += ld_val(values_soa[16 * ln + row]) * x_ext[clamp_ext(base + N, ext_n)];
+    sum += ld_val(values_soa[17 * ln + row]) * x_ext[clamp_ext(base + N + 1, ext_n)];
     // Z-plane i+1
-    sum += values_soa[18 * ln + row] * x_ext[clamp_ext(base + NN - N - 1, ext_n)];
-    sum += values_soa[19 * ln + row] * x_ext[clamp_ext(base + NN - N, ext_n)];
-    sum += values_soa[20 * ln + row] * x_ext[clamp_ext(base + NN - N + 1, ext_n)];
-    sum += values_soa[21 * ln + row] * x_ext[clamp_ext(base + NN - 1, ext_n)];
-    sum += values_soa[22 * ln + row] * x_ext[clamp_ext(base + NN, ext_n)];
-    sum += values_soa[23 * ln + row] * x_ext[clamp_ext(base + NN + 1, ext_n)];
-    sum += values_soa[24 * ln + row] * x_ext[clamp_ext(base + NN + N - 1, ext_n)];
-    sum += values_soa[25 * ln + row] * x_ext[clamp_ext(base + NN + N, ext_n)];
-    sum += values_soa[26 * ln + row] * x_ext[clamp_ext(base + NN + N + 1, ext_n)];
+    sum += ld_val(values_soa[18 * ln + row]) * x_ext[clamp_ext(base + NN - N - 1, ext_n)];
+    sum += ld_val(values_soa[19 * ln + row]) * x_ext[clamp_ext(base + NN - N, ext_n)];
+    sum += ld_val(values_soa[20 * ln + row]) * x_ext[clamp_ext(base + NN - N + 1, ext_n)];
+    sum += ld_val(values_soa[21 * ln + row]) * x_ext[clamp_ext(base + NN - 1, ext_n)];
+    sum += ld_val(values_soa[22 * ln + row]) * x_ext[clamp_ext(base + NN, ext_n)];
+    sum += ld_val(values_soa[23 * ln + row]) * x_ext[clamp_ext(base + NN + 1, ext_n)];
+    sum += ld_val(values_soa[24 * ln + row]) * x_ext[clamp_ext(base + NN + N - 1, ext_n)];
+    sum += ld_val(values_soa[25 * ln + row]) * x_ext[clamp_ext(base + NN + N, ext_n)];
+    sum += ld_val(values_soa[26 * ln + row]) * x_ext[clamp_ext(base + NN + N + 1, ext_n)];
 
-    y[row] = sum;
+    return sum;
 }
+
+/** @brief Production entry point: unchanged signature, double coefficients */
+__global__ void stencil27_soa_halo_kernel_3d(const double* __restrict__ values_soa,
+                                             const double* __restrict__ x_ext,
+                                             double* __restrict__ y, int n_local, int grid_size) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_local)
+        return;
+    y[row] = stencil27_soa_row<double>(values_soa, x_ext, row, n_local, grid_size);
+}
+
+/** @brief Same operator with the coefficients held at storage width ValueT */
+template <typename ValueT>
+__global__ void stencil27_soa_halo_kernel_3d_t(const ValueT* __restrict__ values_soa,
+                                               const double* __restrict__ x_ext,
+                                               double* __restrict__ y, int n_local, int grid_size) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_local)
+        return;
+    y[row] = stencil27_soa_row<ValueT>(values_soa, x_ext, row, n_local, grid_size);
+}
+
+template __global__ void stencil27_soa_halo_kernel_3d_t<double>(const double* __restrict__,
+                                                                const double* __restrict__,
+                                                                double* __restrict__, int, int);
+template __global__ void stencil27_soa_halo_kernel_3d_t<float>(const float* __restrict__,
+                                                               const double* __restrict__,
+                                                               double* __restrict__, int, int);
+template __global__ void stencil27_soa_halo_kernel_3d_t<__half>(const __half* __restrict__,
+                                                                const double* __restrict__,
+                                                                double* __restrict__, int, int);
+template __global__ void stencil27_soa_halo_kernel_3d_t<__nv_bfloat16>(
+    const __nv_bfloat16* __restrict__, const double* __restrict__, double* __restrict__, int, int);
 
 /**
  * @brief Host transform: local CSR slice -> coefficient-major (SoA) values
