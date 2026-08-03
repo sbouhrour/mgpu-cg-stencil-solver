@@ -110,8 +110,9 @@ The 27-point kernel was templated on coefficient storage width and both variants
 | Kernel time | 9.10 ms | 9.47 ms |
 | **Speedup** | — | **0.96×** |
 
-The predicted 1.82× does not appear. DRAM traffic drops exactly as modelled, but **the number of 32-byte
-sectors the L1 must serve does not change at all**, and that is the binding constraint.
+The predicted 1.82× does not appear **in this layout**. DRAM traffic drops exactly as modelled, but **the
+number of 32-byte sectors the L1 must serve does not change at all**, and that is the binding constraint.
+It does appear once the layout is changed — see [§ 3, coefficient-major layout](#measured-again-on-a-coalesced-layout).
 
 The reason is the layout, not the precision. In row-major CSR a thread reads its own 27 contiguous
 coefficients, so within one load instruction warp-adjacent threads are 27 × 8 = 216 B apart in double and
@@ -121,9 +122,31 @@ footprint and the L2 traffic, but not the sector count — so the kernel simply 
 to 38 %, at the same speed.
 
 Reduced precision therefore pays only once the coefficient loads are **coalesced**, which requires a
-coefficient-major (SoA) layout where each of the 27 coefficient streams is contiguous across rows. That
-layout is analysed separately in the SoA integration notes; the point here is that a bandwidth model
-predicts the traffic correctly and the runtime not at all, whenever the access is uncoalesced.
+coefficient-major (SoA) layout where each of the 27 coefficient streams is contiguous across rows. The
+point here is that a bandwidth model predicts the traffic correctly and the runtime not at all, whenever
+the access is uncoalesced.
+
+#### Measured again, on a coalesced layout
+
+Same operator, coefficient-major storage, all six variants timed round-robin (192³, RTX 4060 Laptop,
+median of the four cleanest runs):
+
+| Variant | Time | vs CSR double |
+|---|---:|---:|
+| CSR double (production kernel) | 8.83 ms | 1.00× |
+| SoA double | 7.65 ms | 1.15× |
+| **SoA float** | **6.59 ms** | **1.34×** |
+| SoA half / bfloat16 | 6.6 ms | 1.34× — no further gain |
+
+Narrowing the coefficients is worth **1.16×** on top of the layout change, and the two compose to 1.34×
+against the production kernel. Below float nothing more is gained: once the coefficient stream is 4 bytes
+wide, the 27 vector loads dominate the sector count and further narrowing has nothing left to remove.
+That is what the sector model predicted, and it is why the narrowest format is not the optimum.
+
+The layout change alone is reproducible to 0.03 % across runs; the precision gain measures between 1.11×
+and 1.21× depending on the run, because this is a laptop part whose SM clock swings between 26 MHz and
+2025 MHz under power management. The direction is solid, the magnitude is not — it wants a card with
+stable clocks.
 
 #### The full precision ladder, in sectors
 
