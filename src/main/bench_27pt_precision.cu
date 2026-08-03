@@ -1,23 +1,29 @@
 /**
  * @file bench_27pt_precision.cu
- * @brief Bandwidth and accuracy of the 27-point stencil SpMV at reduced coefficient precision
+ * @brief Layout and coefficient-precision sweep for the 3D 27-point stencil SpMV
  *
  * @details
- * Coefficients are 90% of this kernel's DRAM traffic (216 B of 240 B per row, measured with Nsight
- * Compute on an RTX 4060 Laptop). Storing them in float halves that term while accumulation stays
- * in double. This benchmark runs both storage widths on the same matrix and reports the time, the
- * modelled traffic, and the difference between the two results.
+ * Runs the same operator through six variants — row-major CSR and coefficient-major SoA, each with
+ * the coefficients held in double, float, and (SoA only) half and bfloat16 — and reports time,
+ * modelled traffic, and accuracy against the double-storage result of the same layout.
  *
- * The kernel reads every coefficient from memory in both cases: precision here is a storage choice,
- * not knowledge of the operator's values.
+ * Accumulation is double everywhere. Only the storage width of the coefficients changes, so the
+ * measurement isolates what a narrower element costs and buys. The kernel reads every coefficient
+ * from memory in all variants: precision is a storage choice, not knowledge of the operator's
+ * values.
  *
- * Accuracy is reported as a relative Frobenius norm, ||y_low - y_ref||_2 / ||y_ref||_2, computed in
- * double on the host. A normwise measure is used rather than a maximum element-wise ratio, which
- * reports the cancellation of small reference entries instead of the error of the kernel.
+ * **Timing method.** All variants are timed round-robin, one launch each per repetition, rather
+ * than one variant to completion and then the next. Timing them in blocks lets the die heat up
+ * under the early variants and clock down under the late ones; on a laptop part that ordering was
+ * worth 27%, more than the effect being measured. The median over repetitions is reported.
  *
- * Single GPU, one rank: x_halo_prev = x_halo_next = NULL, row_offset = 0.
+ * Accuracy is a relative Frobenius norm, ||y_low - y_ref||_2 / ||y_ref||_2, computed in double on
+ * the host. A normwise measure is used rather than a maximum element-wise ratio, which reports the
+ * cancellation of small reference entries instead of the error of the kernel.
  *
- * Usage: ./bin/bench_27pt_precision [matrix.mtx] [--reps=N]
+ * Single GPU, one rank: no halo, row_offset = 0.
+ *
+ * Usage: ./bin/bench_27pt_precision [matrix.mtx] [--reps=N] [--csv=file]
  */
 
 #include <stdio.h>
@@ -25,29 +31,91 @@
 #include <string.h>
 #include <math.h>
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include "io.h"
 #include "spmv_csr.h"
 #include "spmv.h"
 #include "spmv_stencil_3d_27pt.h"
 #include "spmv_stencil_3d_27pt_soa.h"
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
 
 extern struct CSRMatrix csr_mat;
 
-/** @brief Narrows a double to the storage type under test */
-template <typename T> static T narrow(double v);
-template <> double narrow<double>(double v) {
-    return v;
+/** @brief The six layout/precision combinations under test */
+enum Variant { CSR_F64 = 0, CSR_F32, SOA_F64, SOA_F32, SOA_F16, SOA_BF16, N_VARIANTS };
+
+static const char* variant_name(int v) {
+    static const char* names[N_VARIANTS] = {"CSR double", "CSR float", "SoA double",
+                                            "SoA float",  "SoA half",  "SoA bfloat16"};
+    return names[v];
 }
-template <> float narrow<float>(double v) {
-    return (float)v;
+
+/** @brief Modelled DRAM bytes per row: coefficients, one amortised x read, one y write */
+static double variant_bytes_per_row(int v) {
+    const double vec = 2.0 * sizeof(double);  // x amortised + y
+    switch (v) {
+        case CSR_F64:
+            return 27.0 * sizeof(double) + sizeof(long long) + vec;
+        case CSR_F32:
+            return 27.0 * sizeof(float) + sizeof(long long) + vec;
+        case SOA_F64:
+            return 27.0 * sizeof(double) + vec;  // no row_ptr, no col_idx
+        case SOA_F32:
+            return 27.0 * sizeof(float) + vec;
+        case SOA_F16:
+            return 27.0 * sizeof(__half) + vec;
+        case SOA_BF16:
+            return 27.0 * sizeof(__nv_bfloat16) + vec;
+        default:
+            return 0.0;
+    }
 }
-template <> __half narrow<__half>(double v) {
-    return __double2half(v);
-}
-template <> __nv_bfloat16 narrow<__nv_bfloat16>(double v) {
-    return __double2bfloat16(v);
+
+/** @brief Device-side inputs shared by the variants */
+struct Buffers {
+    long long* row_ptr;
+    int* col_idx;
+    double* csr_v64;
+    float* csr_v32;
+    double* x;      // n entries, CSR layout
+    double* x_ext;  // n + 2*N^2 entries, SoA ghost-layer layout
+    double* soa_v64;
+    float* soa_v32;
+    __half* soa_v16;
+    __nv_bfloat16* soa_vbf;
+};
+
+/** @brief Launches one variant into d_y */
+static void launch_variant(int v, const Buffers& b, double* d_y, int n, int grid_size, int blocks,
+                           int threads) {
+    switch (v) {
+        case CSR_F64:
+            stencil27_mixed_precision_kernel_3d<double><<<blocks, threads>>>(
+                b.row_ptr, b.col_idx, b.csr_v64, b.x, NULL, NULL, d_y, n, 0, n, grid_size);
+            break;
+        case CSR_F32:
+            stencil27_mixed_precision_kernel_3d<float><<<blocks, threads>>>(
+                b.row_ptr, b.col_idx, b.csr_v32, b.x, NULL, NULL, d_y, n, 0, n, grid_size);
+            break;
+        case SOA_F64:
+            stencil27_soa_halo_kernel_3d_t<double>
+                <<<blocks, threads>>>(b.soa_v64, b.x_ext, d_y, n, grid_size);
+            break;
+        case SOA_F32:
+            stencil27_soa_halo_kernel_3d_t<float>
+                <<<blocks, threads>>>(b.soa_v32, b.x_ext, d_y, n, grid_size);
+            break;
+        case SOA_F16:
+            stencil27_soa_halo_kernel_3d_t<__half>
+                <<<blocks, threads>>>(b.soa_v16, b.x_ext, d_y, n, grid_size);
+            break;
+        case SOA_BF16:
+            stencil27_soa_halo_kernel_3d_t<__nv_bfloat16>
+                <<<blocks, threads>>>(b.soa_vbf, b.x_ext, d_y, n, grid_size);
+            break;
+        default:
+            break;
+    }
 }
 
 /** @brief Median of a small array of timings, sorted in place */
@@ -64,100 +132,31 @@ static double median_ms(double* v, int n) {
     return (n % 2) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
 }
 
-/**
- * @brief Times one launch of the kernel at storage precision ValueT
- *
- * @details The two precisions are timed alternately rather than in two blocks. Running all
- * repetitions of one variant and then all of the other lets the die heat up under the first and
- * clock down under the second, which on a laptop part is worth more than the effect being measured.
- */
-template <typename ValueT>
-static double time_one_launch(cudaEvent_t start, cudaEvent_t stop, const long long* d_row_ptr,
-                              const int* d_col_idx, const ValueT* d_values, const double* d_x,
-                              double* d_y, int n, int grid_size, int blocks, int threads) {
-    cudaEventRecord(start);
-    stencil27_mixed_precision_kernel_3d<ValueT><<<blocks, threads>>>(
-        d_row_ptr, d_col_idx, d_values, d_x, NULL, NULL, d_y, n, 0, n, grid_size);
-    cudaEventRecord(stop);
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    float ms = 0.0f;
-    cudaEventElapsedTime(&ms, start, stop);
-    return (double)ms;
-}
-
-/** @brief Result of one SoA variant: median time and error against the double-storage SoA run */
-struct SoaResult {
-    const char* name;
-    double bytes_per_row;
-    double t_ms;
-    double rel_fro;
-};
-
-/**
- * @brief Builds the narrowed coefficient array, times the SoA kernel, and compares against a
- * reference
- *
- * @param ref If non-null, y is compared to it; if null, this run's y is copied into out_ref.
- */
-template <typename ValueT>
-static void run_soa(const char* name, const double* h_soa64, long long n_soa, const double* d_x_ext,
-                    double* d_y, int n, int grid_size, int blocks, int threads, int reps,
-                    double* h_y, double* ref, SoaResult* out) {
-    ValueT* h_narrow = (ValueT*)malloc((size_t)n_soa * sizeof(ValueT));
-    for (long long e = 0; e < n_soa; e++)
-        h_narrow[e] = narrow<ValueT>(h_soa64[e]);
-    ValueT* d_v;
-    CUDA_CHECK(cudaMalloc(&d_v, (size_t)n_soa * sizeof(ValueT)));
-    CUDA_CHECK(cudaMemcpy(d_v, h_narrow, (size_t)n_soa * sizeof(ValueT), cudaMemcpyHostToDevice));
-    free(h_narrow);
-
-    cudaEvent_t a, b;
-    cudaEventCreate(&a);
-    cudaEventCreate(&b);
-    for (int w = 0; w < 3; w++)
-        stencil27_soa_halo_kernel_3d_t<ValueT>
-            <<<blocks, threads>>>(d_v, d_x_ext, d_y, n, grid_size);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    double* s = (double*)malloc((size_t)reps * sizeof(double));
-    for (int w = 0; w < reps; w++) {
-        cudaEventRecord(a);
-        stencil27_soa_halo_kernel_3d_t<ValueT>
-            <<<blocks, threads>>>(d_v, d_x_ext, d_y, n, grid_size);
-        cudaEventRecord(b);
-        CUDA_CHECK(cudaEventSynchronize(b));
-        float ms = 0.0f;
-        cudaEventElapsedTime(&ms, a, b);
-        s[w] = (double)ms;
+/** @brief ||a - ref||_2 / ||ref||_2, accumulated in double */
+static double rel_frobenius(const double* a, const double* ref, int n, long long* n_diff) {
+    double num = 0.0, den = 0.0;
+    long long d = 0;
+    for (int i = 0; i < n; i++) {
+        double e = a[i] - ref[i];
+        num += e * e;
+        den += ref[i] * ref[i];
+        if (a[i] != ref[i])
+            d++;
     }
-    out->name = name;
-    out->bytes_per_row = 27.0 * sizeof(ValueT) + 2.0 * sizeof(double);
-    out->t_ms = median_ms(s, reps);
-    free(s);
-    cudaEventDestroy(a);
-    cudaEventDestroy(b);
-
-    CUDA_CHECK(cudaMemcpy(h_y, d_y, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost));
-    if (ref == NULL) {
-        out->rel_fro = 0.0;
-    } else {
-        double nu = 0.0, de = 0.0;
-        for (int q = 0; q < n; q++) {
-            double d2 = h_y[q] - ref[q];
-            nu += d2 * d2;
-            de += ref[q] * ref[q];
-        }
-        out->rel_fro = (de > 0.0) ? sqrt(nu) / sqrt(de) : 0.0;
-    }
-    CUDA_CHECK(cudaFree(d_v));
+    if (n_diff)
+        *n_diff = d;
+    return (den > 0.0) ? sqrt(num) / sqrt(den) : 0.0;
 }
 
 int main(int argc, char** argv) {
     const char* matrix_file = "matrix/stencil3d_27pt_192.mtx";
+    const char* csv_path = NULL;
     int reps = 10;
     for (int a = 1; a < argc; a++) {
         if (strncmp(argv[a], "--reps=", 7) == 0)
             reps = atoi(argv[a] + 7);
+        else if (strncmp(argv[a], "--csv=", 6) == 0)
+            csv_path = argv[a] + 6;
         else if (argv[a][0] != '-')
             matrix_file = argv[a];
     }
@@ -175,9 +174,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "build_csr_struct failed\n");
         return 1;
     }
-    int n = csr_mat.nb_rows;
-    long long nnz = csr_mat.nb_nonzeros;
-    int grid_size = mat.grid_size;
+    const int n = csr_mat.nb_rows;
+    const long long nnz = csr_mat.nb_nonzeros;
+    const int grid_size = mat.grid_size;
     if (mat.entries) {
         free(mat.entries);
         mat.entries = NULL;
@@ -185,183 +184,188 @@ int main(int argc, char** argv) {
 
     cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-    double peak_gbs = 2.0 * prop.memoryClockRate * (prop.memoryBusWidth / 8) / 1.0e6;
+    const double peak_gbs = 2.0 * prop.memoryClockRate * (prop.memoryBusWidth / 8) / 1.0e6;
     printf("GPU: %s (CC %d.%d, %d SMs, peak DRAM %.1f GB/s)\n", prop.name, prop.major, prop.minor,
            prop.multiProcessorCount, peak_gbs);
     printf("Matrix: %d rows, %lld nnz, grid_size=%d\n", n, nnz, grid_size);
 
-    // ---- Device allocations: one coefficient array per storage width ----
-    long long* d_row_ptr;
-    int* d_col_idx;
-    double *d_values64, *d_x, *d_y64, *d_y32;
-    float* d_values32;
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (size_t)(n + 1) * sizeof(long long)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values64, (size_t)nnz * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_values32, (size_t)nnz * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_x, (size_t)n * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_y64, (size_t)n * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_y32, (size_t)n * sizeof(double)));
-
-    CUDA_CHECK(cudaMemcpy(d_row_ptr, csr_mat.row_ptr, (size_t)(n + 1) * sizeof(long long),
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_col_idx, csr_mat.col_indices, (size_t)nnz * sizeof(int),
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_values64, csr_mat.values, (size_t)nnz * sizeof(double),
-                          cudaMemcpyHostToDevice));
-
-    float* h_values32 = (float*)malloc((size_t)nnz * sizeof(float));
-    long long n_inexact = 0;
-    for (long long e = 0; e < nnz; e++) {
-        h_values32[e] = (float)csr_mat.values[e];
-        if ((double)h_values32[e] != csr_mat.values[e])
-            n_inexact++;
-    }
-    CUDA_CHECK(
-        cudaMemcpy(d_values32, h_values32, (size_t)nnz * sizeof(float), cudaMemcpyHostToDevice));
-    free(h_values32);
-
-    // A right-hand side that is not uniform, so that a wrong column index shows up in the result
-    double* h_x = (double*)malloc((size_t)n * sizeof(double));
-    for (int idx = 0; idx < n; idx++)
-        h_x[idx] = 1.0 + 0.5 * sin(0.001 * (double)idx);
-    CUDA_CHECK(cudaMemcpy(d_x, h_x, (size_t)n * sizeof(double), cudaMemcpyHostToDevice));
-    free(h_x);
-
-    int threads = 256;
-    int blocks = (n + threads - 1) / threads;
-
-    cudaEvent_t ev_start, ev_stop;
-    cudaEventCreate(&ev_start);
-    cudaEventCreate(&ev_stop);
-
-    for (int r = 0; r < 3; r++) {
-        stencil27_mixed_precision_kernel_3d<double><<<blocks, threads>>>(
-            d_row_ptr, d_col_idx, d_values64, d_x, NULL, NULL, d_y64, n, 0, n, grid_size);
-        stencil27_mixed_precision_kernel_3d<float><<<blocks, threads>>>(
-            d_row_ptr, d_col_idx, d_values32, d_x, NULL, NULL, d_y32, n, 0, n, grid_size);
-    }
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    double* s64 = (double*)malloc((size_t)reps * sizeof(double));
-    double* s32 = (double*)malloc((size_t)reps * sizeof(double));
-    for (int r = 0; r < reps; r++) {
-        s64[r] = time_one_launch<double>(ev_start, ev_stop, d_row_ptr, d_col_idx, d_values64, d_x,
-                                         d_y64, n, grid_size, blocks, threads);
-        s32[r] = time_one_launch<float>(ev_start, ev_stop, d_row_ptr, d_col_idx, d_values32, d_x,
-                                        d_y32, n, grid_size, blocks, threads);
-    }
-    double t64 = median_ms(s64, reps);
-    double t32 = median_ms(s32, reps);
-    free(s64);
-    free(s32);
-    cudaEventDestroy(ev_start);
-    cudaEventDestroy(ev_stop);
-
-    // ---- SoA path: same operator, coefficient-major layout, four storage widths ----
-    // x_ext = [ N^2 halo | n_local rows | N^2 halo ]; single rank, so both halo planes are zero.
     const long long NN = (long long)grid_size * grid_size;
     const long long ext_n = (long long)n + 2 * NN;
     const long long n_soa = 27LL * n;
 
+    // ---- Host-side coefficient arrays ----
     double* h_soa64 = (double*)calloc((size_t)n_soa, sizeof(double));
+    if (!h_soa64) {
+        fprintf(stderr, "host allocation failed for SoA coefficients\n");
+        return 1;
+    }
     build_values_soa_27pt_3d(csr_mat.row_ptr, csr_mat.col_indices, csr_mat.values, n, 0, grid_size,
                              h_soa64);
 
-    double *d_x_ext, *d_y_soa;
-    CUDA_CHECK(cudaMalloc(&d_x_ext, (size_t)ext_n * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_y_soa, (size_t)n * sizeof(double)));
-    CUDA_CHECK(cudaMemset(d_x_ext, 0, (size_t)ext_n * sizeof(double)));
-    CUDA_CHECK(cudaMemcpy(d_x_ext + NN, d_x, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice));
+    long long n_inexact = 0;
+    for (long long e = 0; e < nnz; e++)
+        if ((double)(float)csr_mat.values[e] != csr_mat.values[e])
+            n_inexact++;
 
-    double* h_y_soa = (double*)malloc((size_t)n * sizeof(double));
-    double* h_soa_ref = (double*)malloc((size_t)n * sizeof(double));
-    SoaResult soa[4];
+    // ---- Device allocations ----
+    Buffers b;
+    memset(&b, 0, sizeof(b));
+    double* d_y;
+    CUDA_CHECK(cudaMalloc(&b.row_ptr, (size_t)(n + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&b.col_idx, (size_t)nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&b.csr_v64, (size_t)nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&b.csr_v32, (size_t)nnz * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&b.x, (size_t)n * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&b.x_ext, (size_t)ext_n * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&b.soa_v64, (size_t)n_soa * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&b.soa_v32, (size_t)n_soa * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&b.soa_v16, (size_t)n_soa * sizeof(__half)));
+    CUDA_CHECK(cudaMalloc(&b.soa_vbf, (size_t)n_soa * sizeof(__nv_bfloat16)));
+    CUDA_CHECK(cudaMalloc(&d_y, (size_t)n * sizeof(double)));
 
-    run_soa<double>("SoA double", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks, threads,
-                    reps, h_y_soa, NULL, &soa[0]);
-    memcpy(h_soa_ref, h_y_soa, (size_t)n * sizeof(double));
-    run_soa<float>("SoA float", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks, threads,
-                   reps, h_y_soa, h_soa_ref, &soa[1]);
-    run_soa<__half>("SoA half", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks, threads,
-                    reps, h_y_soa, h_soa_ref, &soa[2]);
-    run_soa<__nv_bfloat16>("SoA bfloat16", h_soa64, n_soa, d_x_ext, d_y_soa, n, grid_size, blocks,
-                           threads, reps, h_y_soa, h_soa_ref, &soa[3]);
+    CUDA_CHECK(cudaMemcpy(b.row_ptr, csr_mat.row_ptr, (size_t)(n + 1) * sizeof(long long),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(b.col_idx, csr_mat.col_indices, (size_t)nnz * sizeof(int),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(b.csr_v64, csr_mat.values, (size_t)nnz * sizeof(double),
+                          cudaMemcpyHostToDevice));
+    {
+        float* t = (float*)malloc((size_t)nnz * sizeof(float));
+        for (long long e = 0; e < nnz; e++)
+            t[e] = (float)csr_mat.values[e];
+        CUDA_CHECK(cudaMemcpy(b.csr_v32, t, (size_t)nnz * sizeof(float), cudaMemcpyHostToDevice));
+        free(t);
+    }
+    CUDA_CHECK(
+        cudaMemcpy(b.soa_v64, h_soa64, (size_t)n_soa * sizeof(double), cudaMemcpyHostToDevice));
+    {
+        float* t32 = (float*)malloc((size_t)n_soa * sizeof(float));
+        __half* t16 = (__half*)malloc((size_t)n_soa * sizeof(__half));
+        __nv_bfloat16* tbf = (__nv_bfloat16*)malloc((size_t)n_soa * sizeof(__nv_bfloat16));
+        for (long long e = 0; e < n_soa; e++) {
+            t32[e] = (float)h_soa64[e];
+            t16[e] = __double2half(h_soa64[e]);
+            tbf[e] = __double2bfloat16(h_soa64[e]);
+        }
+        CUDA_CHECK(
+            cudaMemcpy(b.soa_v32, t32, (size_t)n_soa * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(
+            cudaMemcpy(b.soa_v16, t16, (size_t)n_soa * sizeof(__half), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(b.soa_vbf, tbf, (size_t)n_soa * sizeof(__nv_bfloat16),
+                              cudaMemcpyHostToDevice));
+        free(t32);
+        free(t16);
+        free(tbf);
+    }
     free(h_soa64);
 
-    // ---- Accuracy: relative Frobenius norm against the double-storage result ----
-    double* h_y64 = (double*)malloc((size_t)n * sizeof(double));
-    double* h_y32 = (double*)malloc((size_t)n * sizeof(double));
-    CUDA_CHECK(cudaMemcpy(h_y64, d_y64, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_y32, d_y32, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost));
+    // A non-uniform right-hand side, so that a wrong column index shows up in the result
+    double* h_x = (double*)malloc((size_t)n * sizeof(double));
+    for (int i = 0; i < n; i++)
+        h_x[i] = 1.0 + 0.5 * sin(0.001 * (double)i);
+    CUDA_CHECK(cudaMemcpy(b.x, h_x, (size_t)n * sizeof(double), cudaMemcpyHostToDevice));
+    free(h_x);
+    CUDA_CHECK(cudaMemset(b.x_ext, 0, (size_t)ext_n * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(b.x_ext + NN, b.x, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice));
 
-    double num = 0.0, den = 0.0;
-    long long n_bitdiff = 0;
-    for (int idx = 0; idx < n; idx++) {
-        double d = h_y32[idx] - h_y64[idx];
-        num += d * d;
-        den += h_y64[idx] * h_y64[idx];
-        if (h_y32[idx] != h_y64[idx])
-            n_bitdiff++;
-    }
-    double rel_fro = (den > 0.0) ? sqrt(num) / sqrt(den) : 0.0;
+    const int threads = 256;
+    const int blocks = (n + threads - 1) / threads;
 
-    // ---- Modelled traffic: coefficients + one amortised x read + one y write, per row ----
-    double bytes64 =
-        (double)nnz * sizeof(double) + (double)n * (sizeof(long long) + 2 * sizeof(double));
-    double bytes32 =
-        (double)nnz * sizeof(float) + (double)n * (sizeof(long long) + 2 * sizeof(double));
-
-    printf("\n--- Coefficient storage ---\n");
-    printf("Coefficients not representable in float: %lld / %lld\n", n_inexact, nnz);
-    printf("\n--- Performance (alternating A/B, median of %d, 3 warmup pairs discarded) ---\n",
-           reps);
-    printf("%-22s %10s %12s %12s %12s\n", "values storage", "time(ms)", "B/row", "GB moved",
-           "GB/s");
-    printf("%-22s %10.3f %12.1f %12.3f %12.1f\n", "double", t64, bytes64 / n, bytes64 / 1e9,
-           bytes64 / (t64 / 1e3) / 1e9);
-    printf("%-22s %10.3f %12.1f %12.3f %12.1f\n", "float", t32, bytes32 / n, bytes32 / 1e9,
-           bytes32 / (t32 / 1e3) / 1e9);
-    printf("%-22s %10.3fx\n", "speedup", t64 / t32);
-    printf("%-22s %10.3fx\n", "traffic ratio (model)", bytes64 / bytes32);
-
-    // SoA double must reproduce the CSR double result exactly
-    long long soa_vs_csr_diff = 0;
-    for (int idx = 0; idx < n; idx++)
-        if (h_soa_ref[idx] != h_y64[idx])
-            soa_vs_csr_diff++;
-
-    printf("\n--- Coefficient-major (SoA) layout, same operator ---\n");
-    printf("%-16s %10s %12s %12s %12s %14s\n", "layout/storage", "time(ms)", "B/row", "GB/s",
-           "vs CSR fp64", "rel Frobenius");
-    for (int k = 0; k < 4; k++) {
-        double gb = soa[k].bytes_per_row * (double)n / 1e9;
-        printf("%-16s %10.3f %12.1f %12.1f %11.3fx %14.3e\n", soa[k].name, soa[k].t_ms,
-               soa[k].bytes_per_row, gb / (soa[k].t_ms / 1e3), t64 / soa[k].t_ms, soa[k].rel_fro);
-    }
-    printf("SoA double vs CSR double: %lld / %d entries differ%s\n", soa_vs_csr_diff, n,
-           soa_vs_csr_diff == 0 ? " (bitwise identical)" : "");
-
-    printf("\n--- Accuracy vs double-storage reference ---\n");
-    printf("Relative Frobenius norm: %.6e\n", rel_fro);
-    printf("Entries differing at all: %lld / %d\n", n_bitdiff, n);
-    if (n_inexact == 0) {
-        printf(
-            "NOTE: every coefficient of this matrix is exactly representable in float, so float\n");
-        printf(
-            "      storage is lossless here and a zero error measures nothing about precision.\n");
-        printf(
-            "      Measuring the numerical cost needs coefficients that float cannot represent.\n");
+    // ---- Correctness pass, before timing ----
+    double* h_ref[N_VARIANTS];
+    for (int v = 0; v < N_VARIANTS; v++) {
+        h_ref[v] = (double*)malloc((size_t)n * sizeof(double));
+        launch_variant(v, b, d_y, n, grid_size, blocks, threads);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(h_ref[v], d_y, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost));
     }
 
-    free(h_y64);
-    free(h_y32);
-    CUDA_CHECK(cudaFree(d_row_ptr));
-    CUDA_CHECK(cudaFree(d_col_idx));
-    CUDA_CHECK(cudaFree(d_values64));
-    CUDA_CHECK(cudaFree(d_values32));
-    CUDA_CHECK(cudaFree(d_x));
-    CUDA_CHECK(cudaFree(d_y64));
-    CUDA_CHECK(cudaFree(d_y32));
+    // ---- Round-robin timing ----
+    cudaEvent_t ev0, ev1;
+    cudaEventCreate(&ev0);
+    cudaEventCreate(&ev1);
+    for (int w = 0; w < 3; w++)
+        for (int v = 0; v < N_VARIANTS; v++)
+            launch_variant(v, b, d_y, n, grid_size, blocks, threads);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    double* samples = (double*)malloc((size_t)N_VARIANTS * reps * sizeof(double));
+    for (int r = 0; r < reps; r++) {
+        for (int v = 0; v < N_VARIANTS; v++) {
+            cudaEventRecord(ev0);
+            launch_variant(v, b, d_y, n, grid_size, blocks, threads);
+            cudaEventRecord(ev1);
+            CUDA_CHECK(cudaEventSynchronize(ev1));
+            float ms = 0.0f;
+            cudaEventElapsedTime(&ms, ev0, ev1);
+            samples[(size_t)v * reps + r] = (double)ms;
+        }
+    }
+    double t[N_VARIANTS];
+    for (int v = 0; v < N_VARIANTS; v++)
+        t[v] = median_ms(samples + (size_t)v * reps, reps);
+    free(samples);
+    cudaEventDestroy(ev0);
+    cudaEventDestroy(ev1);
+
+    // ---- Report ----
+    printf("\n--- Layout and coefficient precision, round-robin timing, median of %d ---\n", reps);
+    printf("%-14s %9s %9s %9s %9s %10s %14s\n", "variant", "time(ms)", "B/row", "GB/s", "%peak",
+           "vs CSR f64", "rel Frobenius");
+    long long n_diff_soa_csr = 0;
+    for (int v = 0; v < N_VARIANTS; v++) {
+        const double bpr = variant_bytes_per_row(v);
+        const double gb = bpr * (double)n / 1e9;
+        const double gbs = gb / (t[v] / 1e3);
+        const int base = (v <= CSR_F32) ? CSR_F64 : SOA_F64;
+        long long nd = 0;
+        const double err = rel_frobenius(h_ref[v], h_ref[base], n, &nd);
+        printf("%-14s %9.3f %9.1f %9.1f %8.1f%% %9.3fx %14.3e\n", variant_name(v), t[v], bpr, gbs,
+               100.0 * gbs / peak_gbs, t[CSR_F64] / t[v], err);
+    }
+    rel_frobenius(h_ref[SOA_F64], h_ref[CSR_F64], n, &n_diff_soa_csr);
+    printf("\nSoA double vs CSR double: %lld / %d entries differ%s\n", n_diff_soa_csr, n,
+           n_diff_soa_csr == 0 ? " (bitwise identical)" : " -- LAYOUTS DISAGREE");
+
+    printf("\nCoefficients not representable in float: %lld / %lld\n", n_inexact, nnz);
+    if (n_inexact == 0)
+        printf(
+            "NOTE: every coefficient of this matrix is exact in float, so narrowing is lossless\n"
+            "      here and the zero errors above measure nothing about precision. Quantifying\n"
+            "      that cost needs a variable-coefficient operator.\n");
+
+    if (csv_path) {
+        FILE* f = fopen(csv_path, "w");
+        if (f) {
+            fprintf(f, "gpu,grid,rows,nnz,variant,time_ms,bytes_per_row,gbs,pct_peak,rel_fro\n");
+            for (int v = 0; v < N_VARIANTS; v++) {
+                const double bpr = variant_bytes_per_row(v);
+                const double gbs = (bpr * (double)n / 1e9) / (t[v] / 1e3);
+                const int base = (v <= CSR_F32) ? CSR_F64 : SOA_F64;
+                fprintf(f, "\"%s\",%d,%d,%lld,\"%s\",%.4f,%.1f,%.2f,%.2f,%.6e\n", prop.name,
+                        grid_size, n, nnz, variant_name(v), t[v], bpr, gbs, 100.0 * gbs / peak_gbs,
+                        rel_frobenius(h_ref[v], h_ref[base], n, NULL));
+            }
+            fclose(f);
+            printf("\nCSV written to %s\n", csv_path);
+        } else {
+            fprintf(stderr, "could not open %s for writing\n", csv_path);
+        }
+    }
+
+    for (int v = 0; v < N_VARIANTS; v++)
+        free(h_ref[v]);
+    CUDA_CHECK(cudaFree(b.row_ptr));
+    CUDA_CHECK(cudaFree(b.col_idx));
+    CUDA_CHECK(cudaFree(b.csr_v64));
+    CUDA_CHECK(cudaFree(b.csr_v32));
+    CUDA_CHECK(cudaFree(b.x));
+    CUDA_CHECK(cudaFree(b.x_ext));
+    CUDA_CHECK(cudaFree(b.soa_v64));
+    CUDA_CHECK(cudaFree(b.soa_v32));
+    CUDA_CHECK(cudaFree(b.soa_v16));
+    CUDA_CHECK(cudaFree(b.soa_vbf));
+    CUDA_CHECK(cudaFree(d_y));
     return 0;
 }
