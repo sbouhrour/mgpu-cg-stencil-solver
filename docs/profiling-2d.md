@@ -120,13 +120,13 @@ The stencil kernel moves **36% less data** per row by eliminating index storage 
 
 The stencil figures are measured at the DRAM boundary with Nsight Compute (5000 × 5000 grid, RTX 4060
 Laptop): 1.40 GB moved for 25.0 M rows = 56.0 B/row, of which 48 B read (40 B coefficients + 8 B
-amortised `x`) and 7.9 B written (`y`). An earlier revision of this table listed 48 B/row and
-0.21 FLOP/B; that count omitted the `y` write. The corrected value is consistent with the 96 % DRAM
-throughput reported above — 48 B/row would imply 82 %.
+amortised `x`) and 7.9 B written (`y`). Note that the output write belongs in the count: dropping it would
+give 48 B/row and 0.21 FLOP/B, which contradicts the 96 % DRAM throughput measured in the same run —
+48 B/row at that time would imply 82 %.
 
-A full roofline treatment, including the 3D 27-point kernel, the distance to the A100 ridge point, and
-what reduced precision or a matrix-free operator would change, is in
-[Roofline Limits and the Precision Question](roofline-precision-limits.md).
+A full roofline treatment — the 3D 27-point kernel, the distance to the A100 ridge point, what reduced
+precision changes and what it costs numerically — is in
+[Roofline limits and the precision question](roofline-precision-limits.md).
 
 ---
 
