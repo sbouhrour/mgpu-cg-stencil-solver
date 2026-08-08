@@ -95,7 +95,80 @@ template __global__ void probe_soa_single_x<float>(const float* __restrict__,
                                                    const double* __restrict__, double* __restrict__,
                                                    int, int);
 
-/** @brief The six real variants, then two probes that bound what vector staging could gain */
+/**
+ * @brief Probe A: identical work, but the dot product accumulates in float instead of double
+ *
+ * @details A performance probe, not a shippable variant — it changes the numerics. Consumer Ada
+ * carries two FP64 units per streaming multiprocessor against 128 FP32 ones, so this removes
+ * roughly 64x of the arithmetic cost while leaving every memory access identical. If it is much
+ * faster, the double-precision accumulation is what limits the kernel.
+ */
+__global__ void probe_soa_acc_float(const float* __restrict__ values_soa,
+                                    const double* __restrict__ x_ext, double* __restrict__ y,
+                                    int n_local, int grid_size) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_local)
+        return;
+    const int N = grid_size, NN = N * N;
+    const int ext_n = n_local + 2 * NN, base = NN + row;
+    const long long ln = n_local;
+    float sum = 0.0f;
+    int c = 0;
+    for (int di = -1; di <= 1; di++)
+        for (int dj = -1; dj <= 1; dj++)
+            for (int dk = -1; dk <= 1; dk++, c++) {
+                int idx = base + di * NN + dj * N + dk;
+                idx = idx < 0 ? 0 : (idx >= ext_n ? ext_n - 1 : idx);
+                sum += values_soa[(long long)c * ln + row] * (float)x_ext[idx];
+            }
+    y[row] = (double)sum;
+}
+
+/**
+ * @brief Probe B: double accumulation kept, but split across four independent partial sums
+ *
+ * @details Same arithmetic in the same precision; only the dependency chain changes. The production
+ * kernel chains 27 dependent multiply-adds, so at most one is in flight per thread. Four partial
+ * sums allow four. If this is faster, the kernel is limited by the latency of that chain rather
+ * than by floating-point throughput — and unlike probe A this is a legitimate optimisation, at the
+ * cost of a different summation order and therefore a different last bit.
+ */
+__global__ void probe_soa_acc_split4(const float* __restrict__ values_soa,
+                                     const double* __restrict__ x_ext, double* __restrict__ y,
+                                     int n_local, int grid_size) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_local)
+        return;
+    const int N = grid_size, NN = N * N;
+    const int ext_n = n_local + 2 * NN, base = NN + row;
+    const long long ln = n_local;
+    double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+    int c = 0;
+    for (int di = -1; di <= 1; di++)
+        for (int dj = -1; dj <= 1; dj++)
+            for (int dk = -1; dk <= 1; dk++, c++) {
+                int idx = base + di * NN + dj * N + dk;
+                idx = idx < 0 ? 0 : (idx >= ext_n ? ext_n - 1 : idx);
+                const double t = (double)values_soa[(long long)c * ln + row] * x_ext[idx];
+                switch (c & 3) {
+                    case 0:
+                        s0 += t;
+                        break;
+                    case 1:
+                        s1 += t;
+                        break;
+                    case 2:
+                        s2 += t;
+                        break;
+                    default:
+                        s3 += t;
+                        break;
+                }
+            }
+    y[row] = (s0 + s1) + (s2 + s3);
+}
+
+/** @brief The six real variants, then four probes */
 enum Variant {
     CSR_F64 = 0,
     CSR_F32,
@@ -105,13 +178,15 @@ enum Variant {
     SOA_BF16,
     PROBE_CSR_F64,
     PROBE_SOA_F32,
+    PROBE_ACC_F32,
+    PROBE_SPLIT4,
     N_VARIANTS
 };
 
 static const char* variant_name(int v) {
-    static const char* names[N_VARIANTS] = {"CSR double", "CSR float",     "SoA double",
-                                            "SoA float",  "SoA half",      "SoA bfloat16",
-                                            "~probe CSR", "~probe SoA f32"};
+    static const char* names[N_VARIANTS] = {
+        "CSR double",   "CSR float",  "SoA double",     "SoA float",     "SoA half",
+        "SoA bfloat16", "~probe CSR", "~probe SoA f32", "~probe accF32", "~probe split4"};
     return names[v];
 }
 
@@ -134,6 +209,8 @@ static double variant_bytes_per_row(int v) {
         case PROBE_CSR_F64:
             return 27.0 * sizeof(double) + sizeof(long long) + vec;
         case PROBE_SOA_F32:
+        case PROBE_ACC_F32:
+        case PROBE_SPLIT4:
             return 27.0 * sizeof(float) + vec;
         default:
             return 0.0;
@@ -187,6 +264,12 @@ static void launch_variant(int v, const Buffers& b, double* d_y, int n, int grid
             break;
         case PROBE_SOA_F32:
             probe_soa_single_x<float><<<blocks, threads>>>(b.soa_v32, b.x_ext, d_y, n, grid_size);
+            break;
+        case PROBE_ACC_F32:
+            probe_soa_acc_float<<<blocks, threads>>>(b.soa_v32, b.x_ext, d_y, n, grid_size);
+            break;
+        case PROBE_SPLIT4:
+            probe_soa_acc_split4<<<blocks, threads>>>(b.soa_v32, b.x_ext, d_y, n, grid_size);
             break;
         default:
             break;
