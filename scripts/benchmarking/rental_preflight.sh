@@ -50,14 +50,29 @@ EOS
 fi
 
 hr "4. Matrix headers (operator is built in memory, nnz = (3N-2)^3)"
+# One header line carries the grid size, an optional second one the coefficient contrast. A single
+# leading '%' marks a Matrix Market comment; two would not be recognised by the loader.
+write_header() {                      # $1 = path, $2 = N, $3 = contrast ("" for constant)
+    local rows=$(( $2 * $2 * $2 )) k=$(( 3 * $2 - 2 ))
+    {
+        printf '%%%%MatrixMarket matrix coordinate real general\n'
+        printf '%% STENCIL_GRID_SIZE %d\n' "$2"
+        [ -n "$3" ] && printf '%% STENCIL_CONTRAST %s\n' "$3"
+        printf '%d %d %d\n' "$rows" "$rows" $(( k * k * k ))
+    } > "$1"
+}
 for N in 128 192 256 320; do
-    ROWS=$((N*N*N)); K=$((3*N-2)); NNZ=$((K*K*K))
-    F="matrix/stencil3d_27pt_${N}.mtx"
-    if [ ! -s "$F" ]; then
-        printf '%%%%MatrixMarket matrix coordinate real general\n%%%% STENCIL_GRID_SIZE %d\n%d %d %d\n' \
-            "$N" "$ROWS" "$ROWS" "$NNZ" > "$F"
-    fi
-    printf '  N=%-4s rows=%-12s nnz=%s\n' "$N" "$ROWS" "$NNZ"
+    ROWS=$((N*N*N)); K=$((3*N-2))
+    write_header "matrix/stencil3d_27pt_${N}.mtx" "$N" ""
+    printf '  N=%-4s rows=%-12s nnz=%-12s constant\n' "$N" "$ROWS" "$((K*K*K))"
+done
+# Variable-coefficient variants: the only ones that can measure what reduced precision costs, since the
+# constant operator's coefficients are exact in every format down to eight bits.
+for N in 128 192; do
+    for C in 0.1 0.7 3.0; do
+        write_header "matrix/stencil3d_27pt_${N}_var${C}.mtx" "$N" "$C"
+        printf '  N=%-4s contrast=%-5s variable\n' "$N" "$C"
+    done
 done
 
 hr "5. Build"

@@ -195,6 +195,51 @@ diffusion field, which is also the problem class where the question actually ari
 coefficient Poisson matrix remains the right benchmark for bandwidth and scaling, and the wrong one for
 precision.
 
+#### Measured on a variable-coefficient operator
+
+A `% STENCIL_CONTRAST <c>` line in the matrix header selects a discretisation of ∇·(a(**x**)∇u) with
+`a` in [1, 1+c]. The field is a polynomial evaluated in a fixed order — no `libm` call, so the matrix is
+bit-identical on every platform — scaled by a non-dyadic constant so that every coefficient occupies a
+full 53-bit significand. The assembly is symmetric by construction and remains an M-matrix, so conjugate
+gradient still applies, and contrast 0 reproduces the constant-coefficient operator bit for bit.
+
+At 128³, contrast 0.7, with an input vector smooth over the three grid coordinates:
+
+| Coefficient storage | Rounding of one coefficient | Error in `y`, normwise | Error in `y`, worst interior element |
+|---|---:|---:|---:|
+| float | 5.96e-8 | 5.04e-7 | **2.46e+02** |
+| half | 4.88e-4 | 4.13e-3 | **3.05e+06** |
+| bfloat16 | 3.91e-3 | 3.39e-2 | **8.71e+07** |
+
+⭐ **The choice of metric changes the answer by nine orders of magnitude, and both metrics are correct.**
+
+On an interior row the coefficients of a Laplacian sum to exactly zero, so applied to a smooth field the
+result is a near-total cancellation: `y` is tiny while the individual terms are of order 26. Any
+perturbation of the coefficients therefore produces a relative error of order one or worse *at that
+element*. The normwise figure does not show this because it is dominated by boundary rows, which have
+fewer neighbours, do not cancel, and carry a numerically large result.
+
+Both readings are needed, because they answer different questions:
+
+- **Normwise** answers *does the solver still work?* Conjugate gradient operates on norms, so 5e-7 for
+  float storage is the relevant figure, and the answer is yes.
+- **Worst interior element** answers *can I trust an individual value of `y`?* No. A reduced-precision
+  SpMV result cannot be used as a pointwise-accurate Laplacian — not for an error estimator, not for
+  adaptivity, not for a residual read element by element.
+
+**The error also depends on the input, not only on the operator.** With a vector smooth in the *linear
+row index* rather than over the grid, the normwise amplification falls from 8.5× to 1.05×: the stencil
+reaches neighbours at index offsets of N and N², so such a vector jumps between neighbours in two of the
+three directions and never cancels. Reporting an accuracy number without stating which vector produced
+it reports half a result, which is why the benchmark prints the choice it used.
+
+**One caveat on the layout comparison.** With constant coefficients the coefficient-major kernel
+reproduces the row-major one bit for bit. With variable coefficients 1995 boundary rows out of 2 097 152
+differ, at a normwise 4.4e-17. The cause is floating-point contraction, not a difference of operator: the
+row-major boundary path is a loop and the coefficient-major path is unrolled, so the compiler contracts
+multiply-adds differently. Building with `-fmad=false` makes the two bitwise identical again. The earlier
+bitwise claim held only because `26.0 × x` and `−1.0 × x` are exact products.
+
 ### Lever 2 — specialise the operator, and why this benchmark does not
 
 The test matrices are constant-coefficient: the 5-point operator emits `5.0` on the diagonal and `-1.0`

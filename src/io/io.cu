@@ -74,6 +74,42 @@ int read_matrix_type(const char* filename) {
  * @param world_size Total number of MPI ranks
  * @return 0 on success, non-zero on error
  */
+/**
+ * @brief Spatially varying diffusion coefficient of the variable-coefficient operator
+ *
+ * @details
+ * The default operator has the same coefficient everywhere, which makes it useless for measuring
+ * what reduced precision costs: 26.0 and -1.0 are exactly representable in every format down to
+ * eight bits, so narrowing the storage produces exactly zero error and measures nothing.
+ *
+ * This field turns the same stencil into a discretisation of div(a(x) grad u) with a varying a.
+ * Three properties are deliberate:
+ *
+ *  - **No libm call.** The field is a polynomial evaluated in a fixed order, so it is bit-identical
+ * on every platform. `sin()` would not be: library implementations differ, and a benchmark whose
+ * matrix depends on the host's libm is not reproducible.
+ *  - **A non-dyadic scale factor.** `bump` is built from quotients that may be exactly
+ * representable, so a dyadic contrast could leave the coefficients exact in float and defeat the
+ * purpose. Multiplying by a non-dyadic value gives every coefficient a full 53-bit significand.
+ *  - **Contrast 0 reproduces the constant-coefficient operator exactly**, so this is a strict
+ *    generalisation and the existing matrices are unaffected.
+ *
+ * @param i,j,k Grid coordinates
+ * @param N Grid dimension (grid is N x N x N)
+ * @param contrast Amplitude of the variation; a lies in [1, 1 + contrast]
+ * @return The diffusion coefficient at that grid point
+ */
+static double stencil_coeff_field(int i, int j, int k, int N, double contrast) {
+    if (contrast == 0.0)
+        return 1.0;
+    const double x = (double)(2 * i + 1) / (double)(2 * N);
+    const double y = (double)(2 * j + 1) / (double)(2 * N);
+    const double z = (double)(2 * k + 1) / (double)(2 * N);
+    // x(1-x) peaks at 1/4, so the triple product peaks at 1/64: scaling by 64 puts bump in [0, 1].
+    const double bump = 64.0 * (x * (1.0 - x)) * (y * (1.0 - y)) * (z * (1.0 - z));
+    return 1.0 + contrast * bump;
+}
+
 int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
                                        int world_size) {
     // Read only the header to extract grid_size N
@@ -84,11 +120,17 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat,
     }
 
     int N = -1;
+    // Optional: "% STENCIL_CONTRAST <value>" selects the variable-coefficient operator. Absent or
+    // zero gives the constant-coefficient one, bit for bit. Carrying it in the header keeps the
+    // parameter with the matrix that it defines, and needs no change to any caller's signature.
+    double contrast = 0.0;
     char buffer[MAX_LINE_LENGTH];
     while (fgets(buffer, MAX_LINE_LENGTH, f) != NULL) {
         if (buffer[0] == '%') {
             if (strstr(buffer, "STENCIL_GRID_SIZE") != NULL)
                 sscanf(buffer, "%% STENCIL_GRID_SIZE %d", &N);
+            else if (strstr(buffer, "STENCIL_CONTRAST") != NULL)
+                sscanf(buffer, "%% STENCIL_CONTRAST %lf", &contrast);
         } else {
             break;  // reached dimension line, stop
         }
@@ -115,6 +157,11 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat,
     if (rank == 0) {
         printf("Generating 27pt stencil in memory for N=%d, partition [rank %d/%d, i=%d..%d]...\n",
                N, rank, world_size, i_start, i_end - 1);
+        if (contrast != 0.0)
+            printf("  variable coefficients: a in [1, %g] (contrast %g)\n", 1.0 + contrast,
+                   contrast);
+        else
+            printf("  constant coefficients: a = 1 everywhere\n");
         fflush(stdout);
     }
 
@@ -212,14 +259,52 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat,
                     fflush(stdout);
                 }
 
-                // Center
-                entries[idx++] = (Entry){row, row, 26.0};
+                // Diffusion coefficient at this point and at each of the 27 stencil positions.
+                // Cached once per row: both the diagonal sum and every off-diagonal read from here.
+                double a_nb[3][3][3];
+                for (int di = -1; di <= 1; di++)
+                    for (int dj = -1; dj <= 1; dj++)
+                        for (int dk = -1; dk <= 1; dk++) {
+                            const int ii = i + di, jj2 = j + dj, kk = k + dk;
+                            // Outside the domain, mirror the centre's coefficient. In the
+                            // constant-coefficient case this reproduces a diagonal of exactly 26 on
+                            // every row, boundary rows included, as the original generator emitted.
+                            const int inside =
+                                (ii >= 0 && ii < N && jj2 >= 0 && jj2 < N && kk >= 0 && kk < N);
+                            a_nb[di + 1][dj + 1][dk + 1] =
+                                inside ? stencil_coeff_field(ii, jj2, kk, N, contrast)
+                                       : stencil_coeff_field(i, j, k, N, contrast);
+                        }
+                const double a_c = a_nb[1][1][1];
 
-// 6 face neighbors
-#define ADD(ni)                  \
-    entries[idx++] = (Entry) {   \
-        row, (int)((ni)-1), -1.0 \
-    }
+                // Symmetric finite-volume assembly: the coupling between two points is the average
+                // of their coefficients, so entry (r,c) equals entry (c,r) by construction and the
+                // matrix is an M-matrix — weakly diagonally dominant with a positive diagonal —
+                // hence SPD, so conjugate gradient still applies. The diagonal is the sum of all 26
+                // couplings.
+                double diag = 0.0;
+                for (int di = -1; di <= 1; di++)
+                    for (int dj = -1; dj <= 1; dj++)
+                        for (int dk = -1; dk <= 1; dk++) {
+                            if (di == 0 && dj == 0 && dk == 0)
+                                continue;
+                            diag += 0.5 * (a_c + a_nb[di + 1][dj + 1][dk + 1]);
+                        }
+
+                // Center
+                entries[idx++] = (Entry){row, row, diag};
+
+// 6 face neighbors. The 1-based global column index carries the neighbour's coordinates, so the
+// offset is recovered from it rather than passed separately — this keeps the 26 call sites
+// unchanged.
+#define ADD(ni)                                                                                 \
+    do {                                                                                        \
+        const long long g_ = (ni)-1;                                                            \
+        const int di_ = (int)(g_ / ((long long)N * N)) - i;                                     \
+        const int dj_ = (int)((g_ / N) % N) - j;                                                \
+        const int dk_ = (int)(g_ % N) - k;                                                      \
+        entries[idx++] = (Entry){row, (int)g_, -0.5 * (a_c + a_nb[di_ + 1][dj_ + 1][dk_ + 1])}; \
+    } while (0)
                 if (i > 0)
                     ADD((long long)(i - 1) * N * N + j * N + k + 1);
                 if (i < N - 1)

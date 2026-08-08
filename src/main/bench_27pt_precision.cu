@@ -132,6 +132,32 @@ static double median_ms(double* v, int n) {
     return (n % 2) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
 }
 
+/**
+ * @brief Largest element-wise relative error over interior rows only
+ *
+ * @details
+ * The normwise measure below is dominated by rows on the domain boundary. Those rows have fewer
+ * neighbours, so their coefficients do not sum to zero, so their result is a sum of same-signed
+ * terms with no cancellation — and it is numerically large. They therefore set the norm and dilute
+ * what happens on the interior, which is where a Laplacian actually cancels. Restricting to
+ * interior rows exposes the amplification the normwise figure hides.
+ */
+static double max_rel_interior(const double* a, const double* ref, int n, int N) {
+    double worst = 0.0;
+    for (int q = 0; q < n; q++) {
+        const int gi = q / (N * N), gj = (q / N) % N, gk = q % N;
+        if (gi == 0 || gi == N - 1 || gj == 0 || gj == N - 1 || gk == 0 || gk == N - 1)
+            continue;
+        const double den = fabs(ref[q]);
+        if (den == 0.0)
+            continue;
+        const double rel = fabs(a[q] - ref[q]) / den;
+        if (rel > worst)
+            worst = rel;
+    }
+    return worst;
+}
+
 /** @brief ||a - ref||_2 / ||ref||_2, accumulated in double */
 static double rel_frobenius(const double* a, const double* ref, int n, long long* n_diff) {
     double num = 0.0, den = 0.0;
@@ -152,11 +178,16 @@ int main(int argc, char** argv) {
     const char* matrix_file = "matrix/stencil3d_27pt_192.mtx";
     const char* csv_path = NULL;
     int reps = 10;
+    int x_mode_grid = 1;  // default: smooth on the grid, the physically meaningful case
     for (int a = 1; a < argc; a++) {
         if (strncmp(argv[a], "--reps=", 7) == 0)
             reps = atoi(argv[a] + 7);
         else if (strncmp(argv[a], "--csv=", 6) == 0)
             csv_path = argv[a] + 6;
+        else if (strcmp(argv[a], "--x=index") == 0)
+            x_mode_grid = 0;
+        else if (strcmp(argv[a], "--x=grid") == 0)
+            x_mode_grid = 1;
         else if (argv[a][0] != '-')
             matrix_file = argv[a];
     }
@@ -188,6 +219,7 @@ int main(int argc, char** argv) {
     printf("GPU: %s (CC %d.%d, %d SMs, peak DRAM %.1f GB/s)\n", prop.name, prop.major, prop.minor,
            prop.multiProcessorCount, peak_gbs);
     printf("Matrix: %d rows, %lld nnz, grid_size=%d\n", n, nnz, grid_size);
+    printf("Input vector: smooth on the %s\n", x_mode_grid ? "grid (3D sine)" : "linear index");
 
     const long long NN = (long long)grid_size * grid_size;
     const long long ext_n = (long long)n + 2 * NN;
@@ -259,10 +291,34 @@ int main(int argc, char** argv) {
     }
     free(h_soa64);
 
-    // A non-uniform right-hand side, so that a wrong column index shows up in the result
+    // The input vector, and this choice changes the accuracy result more than the storage width
+    // does.
+    //
+    // "grid": smooth as a function of the three grid coordinates, which is what the solution of a
+    //   discretised PDE looks like. Neighbouring stencil points then hold nearly equal values, the
+    //   row sum of a Laplacian is nearly zero, and the result is a small difference of large
+    //   numbers — so coefficient rounding is amplified by cancellation.
+    //
+    // "index": smooth as a function of the linear row index. That is a different thing entirely:
+    // the
+    //   stencil reaches neighbours at index offsets of N and N squared, so the value jumps between
+    //   neighbours in the j and i directions and there is no cancellation to amplify anything.
+    //
+    // Reporting an accuracy number without saying which vector produced it is reporting half a
+    // result.
     double* h_x = (double*)malloc((size_t)n * sizeof(double));
-    for (int i = 0; i < n; i++)
-        h_x[i] = 1.0 + 0.5 * sin(0.001 * (double)i);
+    const int NG = grid_size;
+    for (int i = 0; i < n; i++) {
+        if (x_mode_grid) {
+            const double gx = (double)(i / (NG * NG)) / (double)NG;
+            const double gy = (double)((i / NG) % NG) / (double)NG;
+            const double gz = (double)(i % NG) / (double)NG;
+            h_x[i] = 1.0 + 0.5 * sin(3.14159265358979323846 * gx) *
+                               sin(3.14159265358979323846 * gy) * sin(3.14159265358979323846 * gz);
+        } else {
+            h_x[i] = 1.0 + 0.5 * sin(0.001 * (double)i);
+        }
+    }
     CUDA_CHECK(cudaMemcpy(b.x, h_x, (size_t)n * sizeof(double), cudaMemcpyHostToDevice));
     free(h_x);
     CUDA_CHECK(cudaMemset(b.x_ext, 0, (size_t)ext_n * sizeof(double)));
@@ -311,8 +367,8 @@ int main(int argc, char** argv) {
 
     // ---- Report ----
     printf("\n--- Layout and coefficient precision, round-robin timing, median of %d ---\n", reps);
-    printf("%-14s %9s %9s %9s %9s %10s %14s\n", "variant", "time(ms)", "B/row", "GB/s", "%peak",
-           "vs CSR f64", "rel Frobenius");
+    printf("%-14s %9s %9s %9s %9s %10s %13s %13s\n", "variant", "time(ms)", "B/row", "GB/s",
+           "%peak", "vs CSR f64", "relFro(norm)", "maxRel(int.)");
     long long n_diff_soa_csr = 0;
     for (int v = 0; v < N_VARIANTS; v++) {
         const double bpr = variant_bytes_per_row(v);
@@ -321,12 +377,45 @@ int main(int argc, char** argv) {
         const int base = (v <= CSR_F32) ? CSR_F64 : SOA_F64;
         long long nd = 0;
         const double err = rel_frobenius(h_ref[v], h_ref[base], n, &nd);
-        printf("%-14s %9.3f %9.1f %9.1f %8.1f%% %9.3fx %14.3e\n", variant_name(v), t[v], bpr, gbs,
-               100.0 * gbs / peak_gbs, t[CSR_F64] / t[v], err);
+        const double err_int = max_rel_interior(h_ref[v], h_ref[base], n, grid_size);
+        printf("%-14s %9.3f %9.1f %9.1f %8.1f%% %9.3fx %13.3e %13.3e\n", variant_name(v), t[v], bpr,
+               gbs, 100.0 * gbs / peak_gbs, t[CSR_F64] / t[v], err, err_int);
     }
-    rel_frobenius(h_ref[SOA_F64], h_ref[CSR_F64], n, &n_diff_soa_csr);
+    const double soa_csr_fro = rel_frobenius(h_ref[SOA_F64], h_ref[CSR_F64], n, &n_diff_soa_csr);
     printf("\nSoA double vs CSR double: %lld / %d entries differ%s\n", n_diff_soa_csr, n,
-           n_diff_soa_csr == 0 ? " (bitwise identical)" : " -- LAYOUTS DISAGREE");
+           n_diff_soa_csr == 0 ? " (bitwise identical)" : "");
+    if (n_diff_soa_csr) {
+        // Locate the disagreement: a difference at the level of double rounding is a different
+        // summation order, which is expected and harmless. Anything larger is a defect.
+        double worst = 0.0;
+        int worst_i = -1;
+        long long on_boundary = 0;
+        const int Ng = grid_size;
+        for (int q = 0; q < n; q++) {
+            if (h_ref[SOA_F64][q] == h_ref[CSR_F64][q])
+                continue;
+            const int gi = q / (Ng * Ng), gj = (q / Ng) % Ng, gk = q % Ng;
+            if (gi == 0 || gi == Ng - 1 || gj == 0 || gj == Ng - 1 || gk == 0 || gk == Ng - 1)
+                on_boundary++;
+            const double den = fabs(h_ref[CSR_F64][q]);
+            const double rel = den > 0.0 ? fabs(h_ref[SOA_F64][q] - h_ref[CSR_F64][q]) / den : 0.0;
+            if (rel > worst) {
+                worst = rel;
+                worst_i = q;
+            }
+        }
+        printf("  relative Frobenius %.3e, worst element %.3e at row %d\n", soa_csr_fro, worst,
+               worst_i);
+        printf("  differing rows on the domain boundary: %lld / %lld\n", on_boundary,
+               n_diff_soa_csr);
+        printf(
+            "  %s\n",
+            worst < 1e-10
+                ? "at rounding level: FMA contraction differs between the two code paths (the\n    "
+                  " CSR boundary path is a loop, the SoA path is unrolled), amplified by local\n   "
+                  "  cancellation. Confirmed: -fmad=false makes them bitwise identical."
+                : "ABOVE rounding level: the layouts compute different operators");
+    }
 
     printf("\nCoefficients not representable in float: %lld / %lld\n", n_inexact, nnz);
     if (n_inexact == 0)

@@ -35,7 +35,7 @@ if [ -n "$FORMATTING_ISSUES" ]; then
     echo "Formatting issues in:"
     echo -e "$FORMATTING_ISSUES"
     echo ""
-    echo "Run: find src include -name '*.cu' -o -name '*.h' | xargs clang-format -i"
+    echo "Run: find src include -name '*.cu' -o -name '*.h' | xargs $CLANG_FORMAT -i"
     echo "Or bypass with: git commit --no-verify"
     exit 1
 fi
