@@ -139,9 +139,20 @@ median of the four cleanest runs):
 | SoA half / bfloat16 | 6.6 ms | 1.34× — no further gain |
 
 Narrowing the coefficients is worth **1.16×** on top of the layout change, and the two compose to 1.34×
-against the production kernel. Below float nothing more is gained: once the coefficient stream is 4 bytes
-wide, the 27 vector loads dominate the sector count and further narrowing has nothing left to remove.
-That is what the sector model predicted, and it is why the narrowest format is not the optimum.
+against the production kernel. Below float nothing more is gained, and the narrowest format is not the
+optimum.
+
+The sector model explains the traffic but **not** why the gain stops. Once the coefficient stream is four
+bytes wide the 27 vector loads account for 63 % of the sector count, which suggests staging the vector in
+shared memory as the next step. An ablation says otherwise: a probe that keeps every coefficient load and
+every multiply-add but reads the input vector **once** instead of 27 times — and so bounds from above
+anything shared-memory staging could achieve — runs in 6.292 ms against 6.304 ms for the real kernel.
+**0.2 %.** The vector loads dominate the sector count and are not the constraint; at 54 % of DRAM peak
+this kernel is limited by something else, which is not yet identified.
+
+That distinction is worth keeping: a counter can be correct about *what the kernel does* and tell you
+nothing about *what limits it*. The cheap way to find out is to ablate the term and measure, before
+writing the optimisation that removes it.
 
 The layout change alone is reproducible to 0.03 % across runs; the precision gain measures between 1.11×
 and 1.21× depending on the run, because this is a laptop part whose SM clock swings between 26 MHz and

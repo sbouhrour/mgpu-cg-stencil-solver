@@ -41,12 +41,77 @@
 
 extern struct CSRMatrix csr_mat;
 
-/** @brief The six layout/precision combinations under test */
-enum Variant { CSR_F64 = 0, CSR_F32, SOA_F64, SOA_F32, SOA_F16, SOA_BF16, N_VARIANTS };
+/**
+ * @brief Performance probes: the same work, but reading the input vector once instead of 27 times
+ *
+ * @details
+ * These compute the wrong answer on purpose. Their only role is to bound what staging the input
+ * vector in shared memory could ever gain, before writing any tiling code. Every coefficient load
+ * and every multiply-add is kept; only the 27 distinct reads of `x` collapse to one. The runtime
+ * difference against the real kernel is therefore an upper bound on the payoff of removing the
+ * vector's cache traffic — shared-memory staging cannot beat reading it once.
+ *
+ * If a probe shows no gain, tiling the input vector cannot help either, and the idea dies for the
+ * cost of twenty lines rather than a kernel.
+ */
+__global__ void probe_csr_single_x(const long long* __restrict__ row_ptr,
+                                   const double* __restrict__ values, const double* __restrict__ x,
+                                   double* __restrict__ y, int n_local, int grid_size) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_local)
+        return;
+    const int N = grid_size, NN = N * N;
+    const int i = row / NN, j = (row / N) % N, k = row % N;
+    const int local_nz = n_local / NN, local_z = row / NN;
+    double sum = 0.0;
+    if (i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1 && local_z > 0 &&
+        local_z < local_nz - 1) {
+        const long long o = row_ptr[row];
+        const double xv = x[row];  // read once, not 27 times
+        for (int c = 0; c < 27; c++)
+            sum += values[o + c] * xv;
+    }
+    y[row] = sum;
+}
+
+template <typename ValueT>
+__global__ void probe_soa_single_x(const ValueT* __restrict__ values_soa,
+                                   const double* __restrict__ x_ext, double* __restrict__ y,
+                                   int n_local, int grid_size) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_local)
+        return;
+    const long long ln = n_local;
+    const double xv = x_ext[(long long)grid_size * grid_size + row];  // read once
+    double sum = 0.0;
+    for (int c = 0; c < 27; c++)
+        sum += (double)values_soa[(long long)c * ln + row] * xv;
+    y[row] = sum;
+}
+template __global__ void probe_soa_single_x<double>(const double* __restrict__,
+                                                    const double* __restrict__,
+                                                    double* __restrict__, int, int);
+template __global__ void probe_soa_single_x<float>(const float* __restrict__,
+                                                   const double* __restrict__, double* __restrict__,
+                                                   int, int);
+
+/** @brief The six real variants, then two probes that bound what vector staging could gain */
+enum Variant {
+    CSR_F64 = 0,
+    CSR_F32,
+    SOA_F64,
+    SOA_F32,
+    SOA_F16,
+    SOA_BF16,
+    PROBE_CSR_F64,
+    PROBE_SOA_F32,
+    N_VARIANTS
+};
 
 static const char* variant_name(int v) {
-    static const char* names[N_VARIANTS] = {"CSR double", "CSR float", "SoA double",
-                                            "SoA float",  "SoA half",  "SoA bfloat16"};
+    static const char* names[N_VARIANTS] = {"CSR double", "CSR float",     "SoA double",
+                                            "SoA float",  "SoA half",      "SoA bfloat16",
+                                            "~probe CSR", "~probe SoA f32"};
     return names[v];
 }
 
@@ -66,6 +131,10 @@ static double variant_bytes_per_row(int v) {
             return 27.0 * sizeof(__half) + vec;
         case SOA_BF16:
             return 27.0 * sizeof(__nv_bfloat16) + vec;
+        case PROBE_CSR_F64:
+            return 27.0 * sizeof(double) + sizeof(long long) + vec;
+        case PROBE_SOA_F32:
+            return 27.0 * sizeof(float) + vec;
         default:
             return 0.0;
     }
@@ -112,6 +181,12 @@ static void launch_variant(int v, const Buffers& b, double* d_y, int n, int grid
         case SOA_BF16:
             stencil27_soa_halo_kernel_3d_t<__nv_bfloat16>
                 <<<blocks, threads>>>(b.soa_vbf, b.x_ext, d_y, n, grid_size);
+            break;
+        case PROBE_CSR_F64:
+            probe_csr_single_x<<<blocks, threads>>>(b.row_ptr, b.csr_v64, b.x, d_y, n, grid_size);
+            break;
+        case PROBE_SOA_F32:
+            probe_soa_single_x<float><<<blocks, threads>>>(b.soa_v32, b.x_ext, d_y, n, grid_size);
             break;
         default:
             break;
@@ -374,7 +449,7 @@ int main(int argc, char** argv) {
         const double bpr = variant_bytes_per_row(v);
         const double gb = bpr * (double)n / 1e9;
         const double gbs = gb / (t[v] / 1e3);
-        const int base = (v <= CSR_F32) ? CSR_F64 : SOA_F64;
+        const int base = (v >= PROBE_CSR_F64) ? v : ((v <= CSR_F32) ? CSR_F64 : SOA_F64);
         long long nd = 0;
         const double err = rel_frobenius(h_ref[v], h_ref[base], n, &nd);
         const double err_int = max_rel_interior(h_ref[v], h_ref[base], n, grid_size);
@@ -431,7 +506,7 @@ int main(int argc, char** argv) {
             for (int v = 0; v < N_VARIANTS; v++) {
                 const double bpr = variant_bytes_per_row(v);
                 const double gbs = (bpr * (double)n / 1e9) / (t[v] / 1e3);
-                const int base = (v <= CSR_F32) ? CSR_F64 : SOA_F64;
+                const int base = (v >= PROBE_CSR_F64) ? v : ((v <= CSR_F32) ? CSR_F64 : SOA_F64);
                 fprintf(f, "\"%s\",%d,%d,%lld,\"%s\",%.4f,%.1f,%.2f,%.2f,%.6e\n", prop.name,
                         grid_size, n, nnz, variant_name(v), t[v], bpr, gbs, 100.0 * gbs / peak_gbs,
                         rel_frobenius(h_ref[v], h_ref[base], n, NULL));
