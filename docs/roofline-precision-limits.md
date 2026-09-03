@@ -232,9 +232,9 @@ for datacenter hardware, for three independent reasons:
    | coefficient-major double → float — precision alone | 232 / 124 = **1.87×** | 1.16 – 1.23× |
    | row-major double → coefficient-major float — the production kernel | 240 / 124 = **1.93×** | 1.31 – 1.41× |
 
-   Those are predictions, not measurements. Pairing the 1.87× ceiling with the 1.37× figure would
-   compare a coefficient-major base against a row-major one; the two differ by the eight bytes of
-   `row_ptr` that the coefficient-major layout does not read.
+   Pairing the 1.87× ceiling with the 1.37× figure would compare a coefficient-major base against a
+   row-major one; the two differ by the eight bytes of `row_ptr` that the coefficient-major layout does
+   not read. § 7bis measures both on a datacenter part.
 2. **The ridge points differ by a factor of four.** 1.17 FLOP/B here against 4.76 on an A100, so this
    card is the one *least* able to show a memory-side gain.
 3. **Local variance approaches the effect, and at small sizes it exceeds it.** The ranges above are
@@ -248,9 +248,66 @@ for datacenter hardware, for three independent reasons:
    from a single 128³ process means nothing, which is why the measurements here start at 192³. The
    direction is solid, the magnitude is not.
 
-Still pending, on hardware with stable clocks: the precision ladder on a datacenter GPU, the layout
-comparison at solver level across several ranks, and a rebuild at `-O3` — the published figures are built
-at `-O2` while AmgX is built at `-O3`, so they are conservative.
+Still pending: the layout comparison at solver level across several ranks, and a rebuild at `-O3` — the
+published figures are built at `-O2` while AmgX is built at `-O3`, so they are conservative.
+
+---
+
+## 7bis. What the datacenter part settles
+
+H100 PCIe 80 GB, sm_90, CUDA 12.8, 2 039 GB/s of peak DRAM. Four grid sizes from 192³ to 384³, five
+separate processes each, eleven timed repetitions per process, variants timed round-robin. `-O2`,
+compiled offline for sm_90.
+
+| | RTX 4060, 192³ | **H100 PCIe**, 192³ → 384³ | traffic ratio |
+|---|---:|---:|---:|
+| coefficient-major double → float | 1.16 – 1.23× | **1.78 → 1.81×** | 1.87 |
+| coefficient-major double → half | 1.10 – 1.16× | **2.95 → 3.00×** | 3.31 |
+| coefficient-major float, % of peak DRAM | 54 % | **86.5 → 87.6 %** | — |
+
+The prediction of § 7.1 holds: narrowing the coefficients now returns 96 % of the ratio of bytes it
+removes, and the kernel is back against the memory wall.
+
+**The probe is the stronger evidence, and it is the one that could have failed.** Accumulating the dot
+product in float rather than double moves **not one byte** — same array, same addresses, same order, only
+the arithmetic unit changes. On the consumer part it was worth 1.53×, which is what identified FP64
+throughput as the limit. Here it is worth **1.002×**. The mechanism was established on one part and
+confirmed on another that played no role in establishing it.
+
+Dispersion across processes falls from 6 % to **0.1 – 0.3 %**, and the bimodality of § 7.3 does not
+appear at any size. That variance was a property of the laptop, not of the kernel. The ratio drifts by
+1.3 % across an eightfold range of problem size, so it is flat in the size the solver would use.
+
+### The production ratio exceeds its own byte ratio, and that is the result
+
+Row-major double → coefficient-major float measures **2.62 → 2.79×** against a byte ratio of 1.93. A
+ratio of times can only be bounded by a ratio of bytes when **both** kernels are at the memory wall.
+
+| % of peak DRAM | 192³ | 256³ | 320³ | 384³ |
+|---|---:|---:|---:|---:|
+| row-major, double | 64.1 | 63.2 | 62.6 | **60.7** |
+| coefficient-major, double | 90.9 | 91.3 | 91.1 | 90.8 |
+| coefficient-major, float | 86.5 | 87.1 | 87.6 | 87.6 |
+
+The row-major kernel is not at the wall. Its byte model counts the bytes it *uses*; reading a row of
+coefficients across a warp fetches 32-byte sectors to consume eight of them, so it moves more than the
+model states. 1.93 is a ceiling for a comparison between two coalesced kernels, and this is not one.
+
+**Where the row-major kernel actually loses.** An ablation — reading the input vector once per row
+instead of twenty-seven times, every coefficient load kept, the answer deliberately wrong — recovers it
+from 60.7 % to 88.0 % of peak, a factor of **1.45×**. The same ablation on the coefficient-major kernel
+is worth **1.04×**. The row-major deficit is dominated by its gather of the input vector, not by its
+coefficient stream. This bounds what a perfect cache of that vector could return; it prescribes nothing,
+and it says nothing about whether the coefficient stream is healthy.
+
+### What this does not establish
+
+- **These are not results for the solver.** The coefficient-major layout is not on `main`; the production
+  figure assumes an integration that has not been done and measured across ranks.
+- **No accuracy is measured here.** These grids carry constant coefficients, which are exact in every
+  format down to eight bits — § 6 is where that cost is quantified, and it needs no datacenter part.
+- **H100 PCIe is not H100 SXM and not A100.** Roughly 2.0 TB/s here against 3.35 on SXM HBM3. Figures
+  from different parts do not belong in one table.
 
 ---
 

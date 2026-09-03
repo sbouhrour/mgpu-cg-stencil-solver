@@ -176,19 +176,21 @@ b7_verdict() {                    # $1 = tag, $2 = N
             print "";
             printf "    --- B7 at %d^3, %d processes ---\n", N, p;
             printf "    %-34s %9s %9s %9s   %s\n", "ratio", "median", "min", "max", "traffic ceiling";
-            split("", r1); split("", r2); split("", r3); split("", r4); split("", pk);
+            split("", r1); split("", r2); split("", r3); split("", r4); split("", pk); split("", pkc); split("", pkd);
             for (i=1;i<=p;i++){
                 r1[i] = t[i,"SoA double"] / t[i,"SoA float"];
                 r2[i] = t[i,"CSR double"] / t[i,"SoA float"];
                 r3[i] = t[i,"SoA double"] / t[i,"SoA half"];
                 r4[i] = t[i,"SoA float"]  / t[i,"~probe accF32"];
-                pk[i] = peak[i,"SoA float"];
+                pk[i]  = peak[i,"SoA float"];
+                pkc[i] = peak[i,"CSR double"];
+                pkd[i] = peak[i,"SoA double"];
             }
             printf "    %-34s %9.3f %9.3f %9.3f   %.3f\n", "SoA f64 -> SoA f32  (precision)",  med(r1), mn(r1,p), mx(r1,p), 232.0/124.0;
-            printf "    %-34s %9.3f %9.3f %9.3f   %.3f\n", "CSR f64 -> SoA f32  (production)", med(r2), mn(r2,p), mx(r2,p), 240.0/124.0;
+            printf "    %-34s %9.3f %9.3f %9.3f   %s\n", "CSR f64 -> SoA f32  (production)", med(r2), mn(r2,p), mx(r2,p), "1.935 (see note)";
             printf "    %-34s %9.3f %9.3f %9.3f   %.3f\n", "SoA f64 -> SoA f16  (precision)",  med(r3), mn(r3,p), mx(r3,p), 232.0/70.0;
             printf "    %-34s %9.3f %9.3f %9.3f   %s\n",   "SoA f32 -> float accumulation",    med(r4), mn(r4,p), mx(r4,p), "1.000 (traffic identical)";
-            printf "\n    SoA f32 reaches %.1f%% of peak DRAM (median over processes)\n", med(pk);
+            printf "\n    %% of peak DRAM (median over processes):  CSR f64 %.1f%%   SoA f64 %.1f%%   SoA f32 %.1f%%\n", med(pkc), med(pkd), med(pk);
             print  "";
             print  "    Reading it: the last row is the discriminator. It moves no byte of traffic, so";
             print  "    anything above 1.0 is double-precision arithmetic emerging from behind the";
@@ -197,6 +199,15 @@ b7_verdict() {                    # $1 = tag, $2 = N
             print  "    1.0, and the two precision rows should rise towards their traffic ceilings.";
             print  "    Run this same script with --dry-run to get the local baseline it is read";
             print  "    against, rather than quoting a figure measured at another size.";
+            if (med(r2) > 240.0/124.0) {
+                print  "";
+                print  "    NOTE: the production row exceeds its 1.935 figure. That is not a measurement";
+                print  "    error and 1.935 is not a ceiling for it: a ratio of times can only be bounded";
+                print  "    by a ratio of bytes when both kernels are at the memory wall, and the";
+                print  "    row-major one is not. Its byte model counts USEFUL bytes; reading a row of";
+                print  "    coefficients across lanes fetches 32-byte sectors to use 8 of them, so it";
+                print  "    moves more than the model says. Compare the two % of peak below to see it.";
+            }
             spread = (mx(r1,p) - mn(r1,p)) / med(r1);
             if (spread > 0.15) {
                 print  "";
