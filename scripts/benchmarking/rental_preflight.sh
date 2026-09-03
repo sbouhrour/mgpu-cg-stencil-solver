@@ -76,12 +76,34 @@ for N in 128 192; do
 done
 
 hr "5. Build"
+# Built separately, and the single-GPU one first. The multi-GPU solver needs MPI; the precision
+# benchmark does not include mpi.h anywhere in its five sources. Building them together made a
+# missing mpirun look like a failure of the whole session, on an instance that bills by the hour
+# and where the single-GPU question was the only one on the programme.
+#
+# Compiled offline for the architecture actually present, rather than left to JIT the embedded PTX
+# of whatever target nvcc defaults to.
 make clean >/dev/null 2>&1
-if make -j"$(nproc)" bench_27pt_precision cg_solver_mgpu_stencil_3d > "$OUT/build.log" 2>&1; then
-    echo "  build OK  (log: $OUT/build.log)"
+BUILD_OK=0
+if make -j"$(nproc)" ARCH="$CC" bench_27pt_precision > "$OUT/build.log" 2>&1; then
+    echo "  bench_27pt_precision  OK  (sm_${CC})   -- single-GPU work can proceed"
+    BUILD_OK=1
 else
-    echo "  BUILD FAILED -- see $OUT/build.log"; tail -20 "$OUT/build.log"; exit 1
+    echo "  bench_27pt_precision  FAILED"
+    grep -iE 'error|No rule' "$OUT/build.log" | head -10
+    echo "  full log: $OUT/build.log"
 fi
+if command -v mpirun >/dev/null; then
+    if make -j"$(nproc)" ARCH="$CC" cg_solver_mgpu_stencil_3d >> "$OUT/build.log" 2>&1; then
+        echo "  cg_solver_mgpu_stencil_3d  OK       -- multi-GPU work can proceed"
+    else
+        echo "  cg_solver_mgpu_stencil_3d  FAILED   -- multi-GPU work only; see $OUT/build.log"
+    fi
+else
+    echo "  cg_solver_mgpu_stencil_3d  SKIPPED -- no mpirun. Single-GPU work is unaffected;"
+    echo "                                        install MPI only if this session covers B6."
+fi
+[ "$BUILD_OK" = 1 ] || exit 1
 
 hr "6. Smoke test"
 ./bin/bench_27pt_precision matrix/stencil3d_27pt_128.mtx --reps=2 2>&1 | tail -12 | tee "$OUT/smoke.txt"
