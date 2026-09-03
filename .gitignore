@@ -24,6 +24,11 @@ external/benchmarks/amgx/amgx_*
 # Scripts for results management (keep out of main)
 scripts/save_results_to_git.sh
 
+# Benchmark session output: logs, CSVs and the archive brought back from a rented instance
+out/
+out_*/
+results.tgz
+
 # Matrix files - ignore all except small example
 *.mtx
 !matrix/example81x81.mtx

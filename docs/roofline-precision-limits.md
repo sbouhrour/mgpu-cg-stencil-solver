@@ -224,12 +224,28 @@ for datacenter hardware, for three independent reasons:
 
 1. **The regime differs.** § 5 shows the kernel is limited by FP64 arithmetic throughput once the
    coefficients narrow. On a part whose FP64 rate is half of FP32 rather than a sixty-fourth, that term
-   is nine percent of the runtime instead of thirty-five, so the precision gain should approach its
-   traffic ratio of 1.87× rather than stopping at 1.34×. That is a prediction, not a measurement.
+   is nine percent of the runtime instead of thirty-five, so each ratio should approach the traffic
+   ceiling it is bounded by. **Each figure must be read against its own base**, and there are two:
+
+   | ratio | traffic ceiling | measured on the RTX 4060, 192³ |
+   |---|---:|---:|
+   | coefficient-major double → float — precision alone | 232 / 124 = **1.87×** | 1.16 – 1.23× |
+   | row-major double → coefficient-major float — the production kernel | 240 / 124 = **1.93×** | 1.31 – 1.41× |
+
+   Those are predictions, not measurements. Pairing the 1.87× ceiling with the 1.37× figure would
+   compare a coefficient-major base against a row-major one; the two differ by the eight bytes of
+   `row_ptr` that the coefficient-major layout does not read.
 2. **The ridge points differ by a factor of four.** 1.17 FLOP/B here against 4.76 on an A100, so this
    card is the one *least* able to show a memory-side gain.
-3. **Local variance approaches the effect.** This part's SM clock ranges from 26 MHz to 2025 MHz under
-   power management; the precision gain measures between 1.11× and 1.21× depending on the run. The
+3. **Local variance approaches the effect, and at small sizes it exceeds it.** The ranges above are
+   across five separate processes, not five repetitions inside one: the median over eleven timed
+   repetitions is reproducible to a thousandth *within* a process and moves by up to a tenth *between*
+   processes, so repeating inside one process measures the wrong dispersion. At 192³ that leaves a
+   6 % spread against an effect of 20 %. **At 128³ it does not**: the same ratio comes out either
+   ≈0.78 or ≈1.88 depending on the run — two sharp, stable states rather than a noisy one, and the
+   spread is then four times the effect. It is not thermal, and it is not the clock: the fastest
+   ratio was recorded at the *lowest* observed SM frequency. Whatever selects the state, a figure
+   from a single 128³ process means nothing, which is why the measurements here start at 192³. The
    direction is solid, the magnitude is not.
 
 Still pending, on hardware with stable clocks: the precision ladder on a datacenter GPU, the layout

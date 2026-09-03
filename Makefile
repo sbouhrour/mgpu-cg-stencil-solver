@@ -27,6 +27,21 @@ else
     NVCCFLAGS := -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true -std=c++11
 endif
 
+# Target architecture. Empty by default, which keeps every previously published figure reproducible
+# with the command that produced it: nvcc then compiles for its own default target and the driver
+# JITs the embedded PTX at load time.
+#
+# Set it (ARCH=90, ARCH=80, ARCH=89) to compile offline for the device actually present. Two reasons
+# to do so on hardware whose numbers are meant to be compared: JIT compiles PTX generated for a much
+# older target, so the two paths are not guaranteed to produce the same code; and recent toolkits
+# have dropped offline support for their old defaults, which turns a missing -arch into a binary
+# with no device code for the card in front of you -- a failure that reports itself as "no kernels
+# were profiled" rather than as a compilation error.
+ARCH ?=
+ifneq ($(ARCH),)
+    NVCCFLAGS += -arch=sm_$(ARCH)
+endif
+
 # Header dependency tracking. Without it, editing a header rebuilds no object file, and a struct
 # whose layout changed leaves stale objects disagreeing on field offsets — a silent, crashing binary.
 DEPFLAGS := -MMD -MP
