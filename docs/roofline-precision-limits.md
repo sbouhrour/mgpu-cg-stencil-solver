@@ -293,12 +293,27 @@ The row-major kernel is not at the wall. Its byte model counts the bytes it *use
 coefficients across a warp fetches 32-byte sectors to consume eight of them, so it moves more than the
 model states. 1.93 is a ceiling for a comparison between two coalesced kernels, and this is not one.
 
-**Where the row-major kernel actually loses.** An ablation — reading the input vector once per row
-instead of twenty-seven times, every coefficient load kept, the answer deliberately wrong — recovers it
-from 60.7 % to 88.0 % of peak, a factor of **1.45×**. The same ablation on the coefficient-major kernel
-is worth **1.04×**. The row-major deficit is dominated by its gather of the input vector, not by its
-coefficient stream. This bounds what a perfect cache of that vector could return; it prescribes nothing,
-and it says nothing about whether the coefficient stream is healthy.
+**The coefficient stream is charged twice.** An ablation — reading the input vector once per row instead
+of twenty-seven times, every coefficient load kept, the answer deliberately wrong — recovers the
+row-major kernel from 60.7 % to 88.0 % of peak, a factor of **1.45×**. The same ablation on the
+coefficient-major kernel is worth **1.04×**.
+
+That difference cannot come from the input vector, because **the two kernels read it identically**. On
+its interior fast path the row-major kernel does not touch `col_idx` at all: it computes the same
+`x[row + fixed offset]` addresses, in the same order, over the same twenty-seven offsets as the
+coefficient-major one. Same accesses, same reuse pattern, and yet one pays thirty percent of its runtime
+for them and the other four.
+
+The remaining difference between the two is the coefficient stream, and the natural reading is that its
+uncoalesced form evicts the input vector from cache: fetching a 32-byte sector to consume eight of them
+pushes four times the useful volume through the same cache, and what it displaces is the vector that
+neighbouring warps would otherwise have reused. The layout is then charged twice — once directly, and
+once by making the vector expensive.
+
+⚠️ **That last step is a reading, not a measurement.** Confirming it needs cache-sector counters, which
+the rented instance denied. What is established without it is narrower and still useful: the deficit
+cannot be attributed to how the input vector is addressed, since both kernels address it the same way.
+The ablation also bounds what a perfect cache of that vector could return — it prescribes nothing.
 
 ### What this does not establish
 
