@@ -173,7 +173,7 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 ## Technical Highlights
 
 ### Multi-GPU Architecture
-- **Communication**: non-blocking halo exchange via explicit D2H → MPI_Isend/Irecv → H2D staging over PCIe Gen4 — NCCL evaluated but MPI retained (43% faster on the small, repeated halo messages, profiled with Nsight Systems)
+- **Communication**: non-blocking halo exchange via explicit D2H → MPI_Isend/Irecv → H2D staging over PCIe Gen4
 - **Row-band partitioning**: 1D decomposition with CSR format and halo zone exchange
 - **Z-slab partitioning (3D)**: 3D grids split along the Z axis into contiguous slabs of XY-planes; each GPU exchanges one boundary XY-plane per neighbor
 - **Compute-communication overlap**: interior/boundary decomposition with dual-stream execution hides halo exchange behind SpMV computation (3D stencils)

@@ -278,7 +278,7 @@ int cg_solve_mgpu_partitioned(SpmvOperator* spmv_op, MatrixData* mat, const doub
                n_local);
     }
 
-    // Note: Using MPI with explicit staging (no NCCL required)
+    // Note: Using MPI with explicit staging
 
     // Create CUDA stream and cuBLAS handle
     cudaStream_t stream;

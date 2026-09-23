@@ -127,7 +127,7 @@ The stencil kernel moves **45% less data** per row by eliminating index storage 
 | Aspect | Custom CG | AmgX |
 |--------|-----------|------|
 | Halo exchange | One boundary row per neighbor (N × 8 bytes) | Generic CSR pattern |
-| Method | MPI explicit staging | Internal NCCL/MPI |
+| Method | MPI explicit staging | Internal MPI |
 | Overlap | None (synchronous) | Internal optimization |
 
 ### Halo volume in practice (10k×10k on 8 GPUs)
