@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
                 "                  3 adds exact (hex) residual trace for bit-level comparison\n");
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
             printf("  --spmv=MODE     SpMV kernel: csr (default) or soa\n");
-            printf("  --comm=MODE     Halo/reduction backend: staged (default) or gpuaware\n");
+            printf("  --comm=MODE     Halo backend: staged (default), gpuaware or nccl\n");
             printf(
                 "                  (soa: coefficient-major values; 27-point sync solver only)\n");
         }
@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
         } else if (strncmp(argv[i], "--comm=", 7) == 0) {
             if (comm_backend_parse(argv[i] + 7, &comm_kind_arg) != 0) {
                 if (rank == 0)
-                    fprintf(stderr, "Error: --comm must be staged or gpuaware\n");
+                    fprintf(stderr, "Error: --comm must be staged, gpuaware or nccl\n");
                 MPI_Finalize();
                 return 1;
             }
@@ -195,6 +195,13 @@ int main(int argc, char** argv) {
             b[i] = 1.0;
         }
     }
+
+    // Select the device before creating the communication context: a NCCL
+    // communicator binds to the device current at creation. The solvers make
+    // the same choice.
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
 
     // One communication context for every solve below (warmup included): library
     // setup happens here, once, and never inside a timed region.
@@ -379,7 +386,8 @@ int main(int argc, char** argv) {
                            ? "3d-stencil-27pt-overlap"
                            : (spmv_soa ? "3d-stencil-27pt-soa" : "3d-stencil-27pt"))
                     : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
-            export_cg_mgpu_json(json_file, mode_str, &mat, &bench_stats, &stats, world_size);
+            export_cg_mgpu_json(json_file, mode_str, comm_backend_name(comm_kind_arg), &mat,
+                                &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);
         }
     }

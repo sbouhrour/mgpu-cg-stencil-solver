@@ -12,6 +12,9 @@
 #endif
 #include <cuda_runtime.h>
 #include <nvtx3/nvToolsExt.h>
+#ifdef HAS_NCCL
+    #include <nccl.h>
+#endif
 
 #include "spmv.h"
 #include "solvers/comm_backend.h"
@@ -29,6 +32,10 @@ struct CommContext {
     double* h_recv_prev;
     double* h_recv_next;
 
+#ifdef HAS_NCCL
+    ncclComm_t nccl;
+#endif
+
     char halo_label[32];
     char allreduce_label[32];
 };
@@ -38,6 +45,8 @@ int comm_backend_parse(const char* name, CommBackendKind* kind) {
         *kind = COMM_STAGED;
     } else if (strcmp(name, "gpuaware") == 0) {
         *kind = COMM_GPUAWARE;
+    } else if (strcmp(name, "nccl") == 0) {
+        *kind = COMM_NCCL;
     } else {
         return 1;
     }
@@ -50,6 +59,8 @@ const char* comm_backend_name(CommBackendKind kind) {
             return "staged";
         case COMM_GPUAWARE:
             return "gpuaware";
+        case COMM_NCCL:
+            return "nccl";
     }
     return "unknown";
 }
@@ -74,6 +85,46 @@ static int mpi_cuda_support(void) {
 #endif
 }
 
+#ifdef HAS_NCCL
+static void halo_nccl(CommContext* ctx, const double* d_send_prev, const double* d_send_next,
+                      double* d_recv_prev, double* d_recv_next, int halo_elems,
+                      cudaStream_t stream);
+
+/**
+ * @brief Create the NCCL communicator and connect every neighbour pair
+ *
+ * NCCL connects a peer on the first operation that targets it (buffer
+ * allocation, memory mapping, proxy setup). One exchange at full halo size
+ * here keeps that cost out of every timed solve.
+ */
+static int nccl_init(CommContext* ctx) {
+    ncclUniqueId id;
+    if (ctx->rank == 0)
+        ncclGetUniqueId(&id);
+    MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, ctx->comm);
+
+    ncclResult_t res = ncclCommInitRank(&ctx->nccl, ctx->world_size, id, ctx->rank);
+    if (res != ncclSuccess) {
+        fprintf(stderr, "[Rank %d] ncclCommInitRank: %s (%s)\n", ctx->rank, ncclGetErrorString(res),
+                ncclGetLastError(NULL));
+        return 1;
+    }
+
+    size_t bytes = ctx->max_halo_elems * sizeof(double);
+    double *d_send, *d_recv_prev, *d_recv_next;
+    CUDA_CHECK(cudaMalloc(&d_send, bytes));
+    CUDA_CHECK(cudaMalloc(&d_recv_prev, bytes));
+    CUDA_CHECK(cudaMalloc(&d_recv_next, bytes));
+    CUDA_CHECK(cudaMemset(d_send, 0, bytes));
+    halo_nccl(ctx, d_send, d_send, d_recv_prev, d_recv_next, (int)ctx->max_halo_elems, 0);
+    CUDA_CHECK(cudaStreamSynchronize(0));
+    cudaFree(d_send);
+    cudaFree(d_recv_prev);
+    cudaFree(d_recv_next);
+    return 0;
+}
+#endif
+
 CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_halo_elems) {
     CommContext* ctx = (CommContext*)calloc(1, sizeof(CommContext));
     ctx->kind = kind;
@@ -82,8 +133,8 @@ CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_hal
     MPI_Comm_rank(mpi_comm, &ctx->rank);
     MPI_Comm_size(mpi_comm, &ctx->world_size);
     snprintf(ctx->halo_label, sizeof(ctx->halo_label), "Halo_%s", comm_backend_name(kind));
-    snprintf(ctx->allreduce_label, sizeof(ctx->allreduce_label), "Allreduce_%s",
-             comm_backend_name(kind));
+    // Dot products are reduced with MPI on the host whatever the halo backend.
+    snprintf(ctx->allreduce_label, sizeof(ctx->allreduce_label), "Allreduce_mpi_host");
 
     if (kind == COMM_GPUAWARE) {
         int support = mpi_cuda_support();
@@ -95,6 +146,21 @@ CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_hal
         }
         if (support < 0 && ctx->rank == 0)
             printf("Warning: cannot query CUDA support of this MPI, assuming CUDA-aware\n");
+    }
+
+    if (kind == COMM_NCCL) {
+#ifdef HAS_NCCL
+        if (nccl_init(ctx) != 0) {
+            free(ctx);
+            return NULL;
+        }
+#else
+        if (ctx->rank == 0)
+            fprintf(stderr,
+                    "Error: --comm=nccl requested but this binary was built without NCCL\n");
+        free(ctx);
+        return NULL;
+#endif
     }
 
     if (kind == COMM_STAGED) {
@@ -116,6 +182,10 @@ void comm_destroy(CommContext* ctx) {
         cudaFreeHost(ctx->h_recv_prev);
         cudaFreeHost(ctx->h_recv_next);
     }
+#ifdef HAS_NCCL
+    if (ctx->kind == COMM_NCCL)
+        ncclCommDestroy(ctx->nccl);
+#endif
     free(ctx);
 }
 
@@ -189,6 +259,39 @@ static void halo_gpuaware(CommContext* ctx, const double* d_send_prev, const dou
         MPI_Waitall(req_count, requests, MPI_STATUSES_IGNORE);
 }
 
+#ifdef HAS_NCCL
+    #define NCCL_CHECK(call)                                                                  \
+        do {                                                                                  \
+            ncclResult_t r_ = (call);                                                         \
+            if (r_ != ncclSuccess) {                                                          \
+                fprintf(stderr, "NCCL error %s at %s:%d\n", ncclGetErrorString(r_), __FILE__, \
+                        __LINE__);                                                            \
+                MPI_Abort(MPI_COMM_WORLD, 1);                                                 \
+            }                                                                                 \
+        } while (0)
+
+static void halo_nccl(CommContext* ctx, const double* d_send_prev, const double* d_send_next,
+                      double* d_recv_prev, double* d_recv_next, int halo_elems,
+                      cudaStream_t stream) {
+    const int has_prev = ctx->rank > 0;
+    const int has_next = ctx->rank < ctx->world_size - 1;
+
+    // Enqueued behind the kernel that wrote the send planes: no host
+    // synchronization, the stream orders it. The group lets the sends and
+    // receives to both neighbours progress together instead of deadlocking.
+    NCCL_CHECK(ncclGroupStart());
+    if (has_prev) {
+        NCCL_CHECK(ncclSend(d_send_prev, halo_elems, ncclDouble, ctx->rank - 1, ctx->nccl, stream));
+        NCCL_CHECK(ncclRecv(d_recv_prev, halo_elems, ncclDouble, ctx->rank - 1, ctx->nccl, stream));
+    }
+    if (has_next) {
+        NCCL_CHECK(ncclSend(d_send_next, halo_elems, ncclDouble, ctx->rank + 1, ctx->nccl, stream));
+        NCCL_CHECK(ncclRecv(d_recv_next, halo_elems, ncclDouble, ctx->rank + 1, ctx->nccl, stream));
+    }
+    NCCL_CHECK(ncclGroupEnd());
+}
+#endif
+
 void comm_halo_exchange(CommContext* ctx, const double* d_send_prev, const double* d_send_next,
                         double* d_recv_prev, double* d_recv_next, int halo_elems,
                         cudaStream_t stream) {
@@ -206,6 +309,11 @@ void comm_halo_exchange(CommContext* ctx, const double* d_send_prev, const doubl
         case COMM_GPUAWARE:
             halo_gpuaware(ctx, d_send_prev, d_send_next, d_recv_prev, d_recv_next, halo_elems,
                           stream);
+            break;
+        case COMM_NCCL:
+#ifdef HAS_NCCL
+            halo_nccl(ctx, d_send_prev, d_send_next, d_recv_prev, d_recv_next, halo_elems, stream);
+#endif
             break;
     }
     nvtxRangePop();
