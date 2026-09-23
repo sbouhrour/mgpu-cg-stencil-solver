@@ -25,20 +25,16 @@ struct BenchmarkResults {
 struct MatrixInfo {
     int rows;
     int cols;
-    int nnz;
+    long long nnz;  // a 512^3 27-point operator has 3.6e9 entries
     int grid_size;
 };
 
 /**
  * @brief Export AmgX benchmark results to JSON
  */
-inline void export_amgx_json(const char* filename,
-                              const char* mode,
-                              const MatrixInfo* mat_info,
-                              const BenchmarkResults* results,
-                              int num_gpus = 1,
-                              double max_rank_time = 0.0,
-                              double min_rank_time = 0.0) {
+inline void export_amgx_json(const char* filename, const char* mode, const MatrixInfo* mat_info,
+                             const BenchmarkResults* results, int num_gpus = 1,
+                             double max_rank_time = 0.0, double min_rank_time = 0.0) {
     FILE* fp = fopen(filename, "w");
     if (!fp) {
         fprintf(stderr, "Error: Could not open %s for writing\n", filename);
@@ -60,7 +56,7 @@ inline void export_amgx_json(const char* filename,
     fprintf(fp, "  \"matrix\": {\n");
     fprintf(fp, "    \"rows\": %d,\n", mat_info->rows);
     fprintf(fp, "    \"cols\": %d,\n", mat_info->cols);
-    fprintf(fp, "    \"nnz\": %d,\n", mat_info->nnz);
+    fprintf(fp, "    \"nnz\": %lld,\n", mat_info->nnz);
     fprintf(fp, "    \"grid_size\": %d\n", mat_info->grid_size);
     fprintf(fp, "  },\n");
 
@@ -103,14 +99,9 @@ inline void export_amgx_json(const char* filename,
 /**
  * @brief Export AmgX benchmark results to CSV
  */
-inline void export_amgx_csv(const char* filename,
-                             const char* mode,
-                             const MatrixInfo* mat_info,
-                             const BenchmarkResults* results,
-                             bool write_header,
-                             int num_gpus = 1,
-                             double max_rank_time = 0.0,
-                             double min_rank_time = 0.0) {
+inline void export_amgx_csv(const char* filename, const char* mode, const MatrixInfo* mat_info,
+                            const BenchmarkResults* results, bool write_header, int num_gpus = 1,
+                            double max_rank_time = 0.0, double min_rank_time = 0.0) {
     FILE* fp = fopen(filename, write_header ? "w" : "a");
     if (!fp) {
         fprintf(stderr, "Error: Could not open %s for writing\n", filename);
@@ -125,19 +116,16 @@ inline void export_amgx_csv(const char* filename,
     }
 
     double gflops = (2.0 * mat_info->nnz * results->iterations) / (results->median_ms * 1e6);
-    double imbalance = (num_gpus > 1 && max_rank_time > 0.0) ?
-                       100.0 * (max_rank_time - min_rank_time) / max_rank_time : 0.0;
+    double imbalance = (num_gpus > 1 && max_rank_time > 0.0)
+                           ? 100.0 * (max_rank_time - min_rank_time) / max_rank_time
+                           : 0.0;
 
-    fprintf(fp, "AmgX,%s,%d,%d,%d,%d,%d,%d,%d,",
-            mode, num_gpus, mat_info->rows, mat_info->cols, mat_info->nnz, mat_info->grid_size,
-            results->converged, results->iterations);
-    fprintf(fp, "%.3f,%.3f,%.3f,%.3f,%.3f,",
-            results->median_ms, results->mean_ms, results->min_ms,
+    fprintf(fp, "AmgX,%s,%d,%d,%d,%lld,%d,%d,%d,", mode, num_gpus, mat_info->rows, mat_info->cols,
+            mat_info->nnz, mat_info->grid_size, results->converged, results->iterations);
+    fprintf(fp, "%.3f,%.3f,%.3f,%.3f,%.3f,", results->median_ms, results->mean_ms, results->min_ms,
             results->max_ms, results->std_dev_ms);
-    fprintf(fp, "%.3f,%.3f,%.1f,",
-            max_rank_time, min_rank_time, imbalance);
-    fprintf(fp, "%d,%d,%.3f\n",
-            results->valid_runs, results->outliers_removed, gflops);
+    fprintf(fp, "%.3f,%.3f,%.1f,", max_rank_time, min_rank_time, imbalance);
+    fprintf(fp, "%d,%d,%.3f\n", results->valid_runs, results->outliers_removed, gflops);
 
     fclose(fp);
     if (write_header) {
@@ -145,4 +133,4 @@ inline void export_amgx_csv(const char* filename,
     }
 }
 
-#endif // AMGX_BENCHMARK_H
+#endif  // AMGX_BENCHMARK_H
