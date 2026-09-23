@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include <mpi.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -49,6 +50,158 @@ static double compute_local_dot_3d(cublasHandle_t cublas_handle, const double* d
         exit(EXIT_FAILURE);
     }
     return result;
+}
+
+/*
+ * Global CG scalars (p.Ap, r.r) and the alpha/beta derived from them.
+ *
+ * Host mode: cublasDdot returns a host double (the call waits for the stream),
+ * MPI sums it, alpha and beta are computed on the host and passed by value.
+ * Device mode: the scalars never leave the GPU. cublasDdot writes to device
+ * memory, the reduction is enqueued on the stream, and the BLAS1 kernels read
+ * alpha and beta from device memory. The host only reads r.r back when it has
+ * to test convergence.
+ */
+typedef struct {
+    int on_device;
+    cublasHandle_t cublas;
+    CommContext* comm;
+    cudaStream_t stream;
+    double* d_buf;  // device mode: [p.Ap, r.r (old), r.r (new)]
+    double* d_pAp;
+    double* d_rs_old;
+    double* d_rs_new;
+    double* h_read;  // pinned, device mode: [p.Ap, r.r (new)] read back
+    double pAp;      // host values: always valid in host mode, after
+    double rs_old;   // cg_scalars_read in device mode
+    double rs_new;
+} CgScalars;
+
+// y = (sign * num/den) * x + y: same expression as axpy_kernel, alpha read from the device
+static __global__ void axpy_ratio_kernel(const double* num, const double* den, double sign,
+                                         const double* x, double* y, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double alpha = sign * (*num / *den);
+        y[i] = alpha * x[i] + y[i];
+    }
+}
+
+// y = alpha * x + (num/den) * y: same expression as axpby_kernel, beta read from the device
+static __global__ void axpby_ratio_kernel(double alpha, const double* x, const double* num,
+                                          const double* den, double* y, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double beta = *num / *den;
+        y[i] = alpha * x[i] + beta * y[i];
+    }
+}
+
+static void cg_scalars_init(CgScalars* S, int on_device, cublasHandle_t cublas, CommContext* comm,
+                            cudaStream_t stream) {
+    memset(S, 0, sizeof(*S));
+    S->on_device = on_device;
+    S->cublas = cublas;
+    S->comm = comm;
+    S->stream = stream;
+    if (on_device) {
+        CUDA_CHECK(cudaMalloc(&S->d_buf, 3 * sizeof(double)));
+        CUDA_CHECK(cudaMallocHost(&S->h_read, 2 * sizeof(double)));
+        S->d_pAp = S->d_buf;
+        S->d_rs_old = S->d_buf + 1;
+        S->d_rs_new = S->d_buf + 2;
+        cublasSetPointerMode(cublas, CUBLAS_POINTER_MODE_DEVICE);
+    }
+}
+
+static void cg_scalars_free(CgScalars* S) {
+    if (S->on_device) {
+        cublasSetPointerMode(S->cublas, CUBLAS_POINTER_MODE_HOST);
+        cudaFree(S->d_buf);
+        cudaFreeHost(S->h_read);
+    }
+}
+
+static void dot_device(CgScalars* S, const double* x, const double* y, int n, double* d_out) {
+    if (cublasDdot(S->cublas, n, x, 1, y, 1, d_out) != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "cuBLAS ddot failed\n");
+        exit(EXIT_FAILURE);
+    }
+    comm_allreduce_sum_device(S->comm, d_out, S->stream);
+}
+
+/** rs_old = r.r, summed over ranks; host copy always valid afterwards (read once per solve). */
+static void cg_scalars_rs_init(CgScalars* S, const double* r, int n) {
+    if (S->on_device) {
+        dot_device(S, r, r, n, S->d_rs_old);
+        CUDA_CHECK(cudaMemcpyAsync(S->h_read, S->d_rs_old, sizeof(double), cudaMemcpyDeviceToHost,
+                                   S->stream));
+        CUDA_CHECK(cudaStreamSynchronize(S->stream));
+        S->rs_old = S->h_read[0];
+    } else {
+        S->rs_old = comm_allreduce_sum(S->comm, compute_local_dot_3d(S->cublas, r, r, n));
+    }
+}
+
+static void cg_scalars_pAp(CgScalars* S, const double* p, const double* Ap, int n) {
+    if (S->on_device)
+        dot_device(S, p, Ap, n, S->d_pAp);
+    else
+        S->pAp = comm_allreduce_sum(S->comm, compute_local_dot_3d(S->cublas, p, Ap, n));
+}
+
+/** x += alpha p ; r -= alpha Ap, with alpha = rs_old / p.Ap */
+static void cg_scalars_update_xr(CgScalars* S, const double* p, double* x, const double* Ap,
+                                 double* r, int n, int blocks, int threads) {
+    if (S->on_device) {
+        axpy_ratio_kernel<<<blocks, threads, 0, S->stream>>>(S->d_rs_old, S->d_pAp, 1.0, p, x, n);
+        axpy_ratio_kernel<<<blocks, threads, 0, S->stream>>>(S->d_rs_old, S->d_pAp, -1.0, Ap, r, n);
+    } else {
+        double alpha = S->rs_old / S->pAp;
+        axpy_kernel<<<blocks, threads, 0, S->stream>>>(alpha, p, x, n);
+        axpy_kernel<<<blocks, threads, 0, S->stream>>>(-alpha, Ap, r, n);
+    }
+}
+
+static void cg_scalars_rs_new(CgScalars* S, const double* r, int n) {
+    if (S->on_device)
+        dot_device(S, r, r, n, S->d_rs_new);
+    else
+        S->rs_new = comm_allreduce_sum(S->comm, compute_local_dot_3d(S->cublas, r, r, n));
+}
+
+/** Device mode: bring p.Ap and r.r back to the host (one stream synchronization). */
+static void cg_scalars_read(CgScalars* S) {
+    if (!S->on_device)
+        return;
+    CUDA_CHECK(cudaMemcpyAsync(&S->h_read[0], S->d_pAp, sizeof(double), cudaMemcpyDeviceToHost,
+                               S->stream));
+    CUDA_CHECK(cudaMemcpyAsync(&S->h_read[1], S->d_rs_new, sizeof(double), cudaMemcpyDeviceToHost,
+                               S->stream));
+    CUDA_CHECK(cudaStreamSynchronize(S->stream));
+    S->pAp = S->h_read[0];
+    S->rs_new = S->h_read[1];
+}
+
+/** p = r + beta p, with beta = rs_new / rs_old */
+static void cg_scalars_update_p(CgScalars* S, const double* r, double* p, int n, int blocks,
+                                int threads) {
+    if (S->on_device) {
+        axpby_ratio_kernel<<<blocks, threads, 0, S->stream>>>(1.0, r, S->d_rs_new, S->d_rs_old, p,
+                                                              n);
+    } else {
+        axpby_kernel<<<blocks, threads, 0, S->stream>>>(1.0, r, S->rs_new / S->rs_old, p, n);
+    }
+}
+
+/** rs_old = rs_new (device mode swaps the two slots, the host copy follows what was read). */
+static void cg_scalars_advance(CgScalars* S) {
+    if (S->on_device) {
+        double* t = S->d_rs_old;
+        S->d_rs_old = S->d_rs_new;
+        S->d_rs_new = t;
+    }
+    S->rs_old = S->rs_new;
 }
 
 /**
@@ -211,6 +364,9 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
                        d_p_halo_next, halo_size, stream);
 
+    CgScalars S;
+    cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
+
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Timing
@@ -257,16 +413,17 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
                               cudaMemcpyDeviceToDevice));
     }
 
-    // rs_old = dot(r, r) + AllReduce
-    double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-    double rs_old;
-    rs_old = comm_allreduce_sum(comm, rs_local_old);
-
-    double b_norm = sqrt(rs_old);
+    // rs_old = r.r, summed over ranks
+    cg_scalars_rs_init(&S, d_r_local, n_local);
+    double b_norm = sqrt(S.rs_old);
 
     if (rank == 0 && config.verbose >= 2) {
-        printf("[Iter   0] Residual: %.6e\n", sqrt(rs_old));
+        printf("[Iter   0] Residual: %.6e\n", sqrt(S.rs_old));
     }
+
+    // Device mode reads r.r back only to test convergence: every check_every
+    // iterations, at the last one, and at every iteration when tracing.
+    const int check_every = config.check_every > 0 ? config.check_every : 1;
 
     // CG iteration loop
     nvtxRangePush("CG_Solver_3D");
@@ -283,63 +440,56 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
         // alpha = rs_old / (p^T * Ap)
         nvtxRangePush("Dot_Product");
-        double pAp_local = compute_local_dot_3d(cublas_handle, d_p_local, d_Ap, n_local);
+        cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
         nvtxRangePop();
 
-        double pAp;
-        pAp = comm_allreduce_sum(comm, pAp_local);
-
-        double alpha = rs_old / pAp;
-
-        // x = x + alpha * p
+        // x = x + alpha * p ; r = r - alpha * Ap
         nvtxRangePush("BLAS_AXPY");
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(alpha, d_p_local, d_x_local, n_local);
-
-        // r = r - alpha * Ap
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(-alpha, d_Ap, d_r_local, n_local);
+        cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_local,
+                             threads);
         nvtxRangePop();
 
         // rs_new = dot(r, r)
         nvtxRangePush("Dot_Product");
-        double rs_local_new = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
+        cg_scalars_rs_new(&S, d_r_local, n_local);
         nvtxRangePop();
 
-        double rs_new;
-        rs_new = comm_allreduce_sum(comm, rs_local_new);
+        int check = !S.on_device || config.verbose >= 2 || (iter + 1) % check_every == 0 ||
+                    iter + 1 == config.max_iters;
+        if (check) {
+            cg_scalars_read(&S);
+            double residual_norm = sqrt(S.rs_new);
+            double rel_residual = residual_norm / b_norm;
+            double alpha = S.rs_old / S.pAp;
 
-        double residual_norm = sqrt(rs_new);
-        double rel_residual = residual_norm / b_norm;
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1,
+                       residual_norm, rel_residual, alpha);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, S.rs_new, alpha);
+            }
 
-        if (rank == 0 && config.verbose >= 2) {
-            printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
-                   rel_residual, alpha);
+            if (rel_residual < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                nvtxRangePop();
+                break;
+            }
         }
-        if (rank == 0 && config.verbose >= 3) {
-            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
-        }
 
-        if (rel_residual < config.tolerance) {
-            iter++;
-            stats->converged = 1;
-            stats->iterations = iter;
-            stats->residual_norm = residual_norm;
-            nvtxRangePop();
-            break;
-        }
-
-        double beta = rs_new / rs_old;
-
-        // p = r + beta * p
+        // p = r + beta * p, beta = rs_new / rs_old
         nvtxRangePush("BLAS_AXPBY");
-        axpby_kernel<<<blocks_local, threads, 0, stream>>>(1.0, d_r_local, beta, d_p_local,
-                                                           n_local);
+        cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
         nvtxRangePop();
 
         // Halo exchange for p (N² elements per direction)
         comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
                            d_p_halo_next, halo_size, stream);
 
-        rs_old = rs_new;
+        cg_scalars_advance(&S);
         nvtxRangePop();
     }
     nvtxRangePop();
@@ -348,7 +498,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         printf("\nMax iterations reached without convergence\n");
         stats->converged = 0;
         stats->iterations = iter;
-        stats->residual_norm = sqrt(rs_old);
+        stats->residual_norm = sqrt(S.rs_old);
     }
 
     // Stop timing
@@ -437,6 +587,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     if (own_comm)
         comm_destroy(comm);
 
+    cg_scalars_free(&S);
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);
     cudaEventDestroy(start);
@@ -657,6 +808,9 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
                        d_p_halo_next, halo_size, stream);
 
+    CgScalars S;
+    cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
+
     MPI_Barrier(MPI_COMM_WORLD);
 
     cudaEvent_t start, stop;
@@ -706,16 +860,17 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
                               cudaMemcpyDeviceToDevice));
     }
 
-    // rs_old
-    double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-    double rs_old;
-    rs_old = comm_allreduce_sum(comm, rs_local_old);
-
-    double b_norm = sqrt(rs_old);
+    // rs_old = r.r, summed over ranks
+    cg_scalars_rs_init(&S, d_r_local, n_local);
+    double b_norm = sqrt(S.rs_old);
 
     if (rank == 0 && config.verbose >= 2) {
-        printf("[Iter   0] Residual: %.6e\n", sqrt(rs_old));
+        printf("[Iter   0] Residual: %.6e\n", sqrt(S.rs_old));
     }
+
+    // Device mode reads r.r back only to test convergence: every check_every
+    // iterations, at the last one, and at every iteration when tracing.
+    const int check_every = config.check_every > 0 ? config.check_every : 1;
 
     // CG iteration loop
     nvtxRangePush("CG_Solver_27PT_3D");
@@ -737,59 +892,56 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
         // alpha = rs_old / (p^T * Ap)
         nvtxRangePush("Dot_Product");
-        double pAp_local = compute_local_dot_3d(cublas_handle, d_p_local, d_Ap, n_local);
+        cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
         nvtxRangePop();
 
-        double pAp;
-        pAp = comm_allreduce_sum(comm, pAp_local);
-
-        double alpha = rs_old / pAp;
-
+        // x = x + alpha * p ; r = r - alpha * Ap
         nvtxRangePush("BLAS_AXPY");
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(alpha, d_p_local, d_x_local, n_local);
-
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(-alpha, d_Ap, d_r_local, n_local);
+        cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_local,
+                             threads);
         nvtxRangePop();
 
+        // rs_new = dot(r, r)
         nvtxRangePush("Dot_Product");
-        double rs_local_new = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
+        cg_scalars_rs_new(&S, d_r_local, n_local);
         nvtxRangePop();
 
-        double rs_new;
-        rs_new = comm_allreduce_sum(comm, rs_local_new);
+        int check = !S.on_device || config.verbose >= 2 || (iter + 1) % check_every == 0 ||
+                    iter + 1 == config.max_iters;
+        if (check) {
+            cg_scalars_read(&S);
+            double residual_norm = sqrt(S.rs_new);
+            double rel_residual = residual_norm / b_norm;
+            double alpha = S.rs_old / S.pAp;
 
-        double residual_norm = sqrt(rs_new);
-        double rel_residual = residual_norm / b_norm;
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1,
+                       residual_norm, rel_residual, alpha);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, S.rs_new, alpha);
+            }
 
-        if (rank == 0 && config.verbose >= 2) {
-            printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
-                   rel_residual, alpha);
+            if (rel_residual < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                nvtxRangePop();
+                break;
+            }
         }
-        if (rank == 0 && config.verbose >= 3) {
-            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
-        }
 
-        if (rel_residual < config.tolerance) {
-            iter++;
-            stats->converged = 1;
-            stats->iterations = iter;
-            stats->residual_norm = residual_norm;
-            nvtxRangePop();
-            break;
-        }
-
-        double beta = rs_new / rs_old;
-
+        // p = r + beta * p, beta = rs_new / rs_old
         nvtxRangePush("BLAS_AXPBY");
-        axpby_kernel<<<blocks_local, threads, 0, stream>>>(1.0, d_r_local, beta, d_p_local,
-                                                           n_local);
+        cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
         nvtxRangePop();
 
-        // Halo exchange for p
+        // Halo exchange for p (N² elements per direction)
         comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
                            d_p_halo_next, halo_size, stream);
 
-        rs_old = rs_new;
+        cg_scalars_advance(&S);
         nvtxRangePop();
     }
     nvtxRangePop();
@@ -798,7 +950,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         printf("\nMax iterations reached without convergence\n");
         stats->converged = 0;
         stats->iterations = iter;
-        stats->residual_norm = sqrt(rs_old);
+        stats->residual_norm = sqrt(S.rs_old);
     }
 
     CUDA_CHECK(cudaEventRecord(stop, stream));
@@ -887,6 +1039,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     if (own_comm)
         comm_destroy(comm);
 
+    cg_scalars_free(&S);
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);
     cudaEventDestroy(start);

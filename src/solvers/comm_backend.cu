@@ -31,6 +31,7 @@ struct CommContext {
     double* h_send_next;
     double* h_recv_prev;
     double* h_recv_next;
+    double* h_scalar;
 
 #ifdef HAS_NCCL
     ncclComm_t nccl;
@@ -38,6 +39,7 @@ struct CommContext {
 
     char halo_label[32];
     char allreduce_label[32];
+    char allreduce_device_label[32];
 };
 
 int comm_backend_parse(const char* name, CommBackendKind* kind) {
@@ -133,8 +135,11 @@ CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_hal
     MPI_Comm_rank(mpi_comm, &ctx->rank);
     MPI_Comm_size(mpi_comm, &ctx->world_size);
     snprintf(ctx->halo_label, sizeof(ctx->halo_label), "Halo_%s", comm_backend_name(kind));
-    // Dot products are reduced with MPI on the host whatever the halo backend.
+    // Host scalars are reduced with MPI whatever the halo backend; device
+    // scalars (comm_allreduce_sum_device) use the backend itself.
     snprintf(ctx->allreduce_label, sizeof(ctx->allreduce_label), "Allreduce_mpi_host");
+    snprintf(ctx->allreduce_device_label, sizeof(ctx->allreduce_device_label), "Allreduce_%s",
+             comm_backend_name(kind));
 
     if (kind == COMM_GPUAWARE) {
         int support = mpi_cuda_support();
@@ -169,6 +174,7 @@ CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_hal
         CUDA_CHECK(cudaMallocHost(&ctx->h_send_next, bytes));
         CUDA_CHECK(cudaMallocHost(&ctx->h_recv_prev, bytes));
         CUDA_CHECK(cudaMallocHost(&ctx->h_recv_next, bytes));
+        CUDA_CHECK(cudaMallocHost(&ctx->h_scalar, sizeof(double)));
     }
     return ctx;
 }
@@ -181,6 +187,7 @@ void comm_destroy(CommContext* ctx) {
         cudaFreeHost(ctx->h_send_next);
         cudaFreeHost(ctx->h_recv_prev);
         cudaFreeHost(ctx->h_recv_next);
+        cudaFreeHost(ctx->h_scalar);
     }
 #ifdef HAS_NCCL
     if (ctx->kind == COMM_NCCL)
@@ -325,4 +332,30 @@ double comm_allreduce_sum(CommContext* ctx, double local) {
     MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, ctx->comm);
     nvtxRangePop();
     return global;
+}
+
+void comm_allreduce_sum_device(CommContext* ctx, double* d_value, cudaStream_t stream) {
+    nvtxRangePushA(ctx->allreduce_device_label);
+    switch (ctx->kind) {
+        case COMM_STAGED:
+            CUDA_CHECK(cudaMemcpyAsync(ctx->h_scalar, d_value, sizeof(double),
+                                       cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            MPI_Allreduce(MPI_IN_PLACE, ctx->h_scalar, 1, MPI_DOUBLE, MPI_SUM, ctx->comm);
+            // Ordered before any later kernel on stream; the pinned buffer is
+            // only rewritten after the next synchronization.
+            CUDA_CHECK(cudaMemcpyAsync(d_value, ctx->h_scalar, sizeof(double),
+                                       cudaMemcpyHostToDevice, stream));
+            break;
+        case COMM_GPUAWARE:
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            MPI_Allreduce(MPI_IN_PLACE, d_value, 1, MPI_DOUBLE, MPI_SUM, ctx->comm);
+            break;
+        case COMM_NCCL:
+#ifdef HAS_NCCL
+            NCCL_CHECK(ncclAllReduce(d_value, d_value, 1, ncclDouble, ncclSum, ctx->nccl, stream));
+#endif
+            break;
+    }
+    nvtxRangePop();
 }

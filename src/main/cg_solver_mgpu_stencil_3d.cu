@@ -48,6 +48,10 @@ int main(int argc, char** argv) {
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
             printf("  --spmv=MODE     SpMV kernel: csr (default) or soa\n");
             printf("  --comm=MODE     Halo backend: staged (default), gpuaware or nccl\n");
+            printf("  --dots=MODE     CG scalars: host (default) or device (never read back\n");
+            printf("                  except to test convergence)\n");
+            printf("  --check-every=K With --dots=device, test convergence every K iterations\n");
+            printf("                  (may run up to K-1 iterations past convergence)\n");
             printf(
                 "                  (soa: coefficient-major values; 27-point sync solver only)\n");
         }
@@ -71,6 +75,8 @@ int main(int argc, char** argv) {
     config.enable_overlap = 0;
     config.spmv_soa = 0;
     config.comm = NULL;
+    config.dots_device = 0;
+    config.check_every = 1;
     CommBackendKind comm_kind_arg = COMM_STAGED;
 
     // Parse arguments before using them
@@ -107,6 +113,26 @@ int main(int argc, char** argv) {
                 MPI_Finalize();
                 return 1;
             }
+        } else if (strncmp(argv[i], "--dots=", 7) == 0) {
+            const char* mode = argv[i] + 7;
+            if (strcmp(mode, "host") == 0) {
+                config.dots_device = 0;
+            } else if (strcmp(mode, "device") == 0) {
+                config.dots_device = 1;
+            } else {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --dots must be host or device\n");
+                MPI_Finalize();
+                return 1;
+            }
+        } else if (strncmp(argv[i], "--check-every=", 14) == 0) {
+            config.check_every = atoi(argv[i] + 14);
+            if (config.check_every < 1) {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --check-every must be >= 1\n");
+                MPI_Finalize();
+                return 1;
+            }
         } else if (strncmp(argv[i], "--spmv=", 7) == 0) {
             const char* mode = argv[i] + 7;
             if (strcmp(mode, "csr") == 0) {
@@ -125,6 +151,21 @@ int main(int argc, char** argv) {
     if (spmv_soa && stencil_points != 27) {
         if (rank == 0)
             fprintf(stderr, "Error: --spmv=soa requires --stencil=27\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if ((config.dots_device || config.check_every > 1) && config.enable_overlap) {
+        if (rank == 0)
+            fprintf(
+                stderr,
+                "Error: --dots=device and --check-every are not supported with --overlap yet\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (config.check_every > 1 && !config.dots_device) {
+        if (rank == 0)
+            fprintf(stderr,
+                    "Error: --check-every needs --dots=device (host dots test every iteration)\n");
         MPI_Finalize();
         return 1;
     }
@@ -209,8 +250,13 @@ int main(int argc, char** argv) {
         comm_create(comm_kind_arg, MPI_COMM_WORLD, (size_t)mat.grid_size * (size_t)mat.grid_size);
     if (config.comm == NULL)
         MPI_Abort(MPI_COMM_WORLD, 1);
-    if (rank == 0)
+    if (rank == 0) {
         printf("Communication backend: %s\n", comm_backend_name(comm_kind_arg));
+        printf("CG scalars: %s", config.dots_device ? "device" : "host");
+        if (config.dots_device)
+            printf(" (convergence test every %d iterations)", config.check_every);
+        printf("\n");
+    }
 
     // Select solver based on stencil type and overlap mode
     int (*solver_fn)(SpmvOperator*, MatrixData*, const double*, double*, CGConfigMultiGPU,
@@ -386,7 +432,8 @@ int main(int argc, char** argv) {
                            ? "3d-stencil-27pt-overlap"
                            : (spmv_soa ? "3d-stencil-27pt-soa" : "3d-stencil-27pt"))
                     : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
-            export_cg_mgpu_json(json_file, mode_str, comm_backend_name(comm_kind_arg), &mat,
+            export_cg_mgpu_json(json_file, mode_str, comm_backend_name(comm_kind_arg),
+                                config.dots_device ? "device" : "host", config.check_every, &mat,
                                 &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);
         }
