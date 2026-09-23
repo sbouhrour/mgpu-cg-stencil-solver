@@ -20,6 +20,7 @@
 #include <vector>
 #include <algorithm>
 #include "amgx_benchmark.h"
+#include "stencil_partition.h"
 
 static int g_rank = 0;  // Global rank for callbacks
 
@@ -272,6 +273,11 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "  --json=<file>      Export results to JSON\n");
             fprintf(stderr, "  --csv=<file>       Export results to CSV\n");
             fprintf(stderr,
+                    "  --stencil=7|27     Header-only 3D file: build this rank's rows in memory\n");
+            fprintf(stderr,
+                    "  --communicator=MPI|MPI_DIRECT  AmgX halo path: host-staged (default)\n");
+            fprintf(stderr, "                     or CUDA-aware MPI on device buffers\n");
+            fprintf(stderr,
                     "\nExample: mpirun -np 4 %s matrix/stencil_5000x5000.mtx --runs=10 --timers\n",
                     argv[0]);
         }
@@ -286,6 +292,8 @@ int main(int argc, char* argv[]) {
     bool enable_timers = false;
     const char* json_file = nullptr;
     const char* csv_file = nullptr;
+    int stencil = 0;
+    const char* communicator = "MPI";
 
     // Parse arguments
     for (int i = 2; i < argc; i++) {
@@ -301,6 +309,16 @@ int main(int argc, char* argv[]) {
             json_file = argv[i] + 7;
         } else if (strncmp(argv[i], "--csv=", 6) == 0) {
             csv_file = argv[i] + 6;
+        } else if (strncmp(argv[i], "--stencil=", 10) == 0) {
+            stencil = atoi(argv[i] + 10);
+        } else if (strncmp(argv[i], "--communicator=", 15) == 0) {
+            communicator = argv[i] + 15;
+            if (strcmp(communicator, "MPI") != 0 && strcmp(communicator, "MPI_DIRECT") != 0) {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --communicator must be MPI or MPI_DIRECT\n");
+                MPI_Finalize();
+                return 1;
+            }
         }
     }
 
@@ -312,7 +330,8 @@ int main(int argc, char* argv[]) {
         printf("MPI ranks: %d\n", world_size);
         printf("Tolerance: %.0e\n", tolerance);
         printf("Max iterations: %d\n", max_iters);
-        printf("Benchmark runs: %d\n\n", num_runs);
+        printf("Benchmark runs: %d\n", num_runs);
+        printf("Communicator: %s\n\n", communicator);
     }
 
     // Set GPU device (one GPU per MPI rank)
@@ -331,60 +350,94 @@ int main(int argc, char* argv[]) {
     if (rank == 0)
         printf("\n");
 
-    // Load full matrix (each rank independently)
-    MatrixMarket mat = read_matrix_market(matrix_file, rank);
-    int grid_size = (int)sqrt(mat.rows);
+    MatrixMarket mat = {};
+    int grid_size;
+    long long global_nnz;
+    int row_offset, n_local, local_nnz;
+    int* local_row_ptr;
+    int64_t* local_col_idx;
+    double* local_values;
 
-    if (rank == 0) {
-        printf("Matrix loaded: %dx%d, %d nonzeros\n", mat.rows, mat.cols, mat.nnz);
-        printf("Grid: %dx%d\n\n", grid_size, grid_size);
-    }
-
-    // Build consistent global partition vector FIRST (all ranks must agree)
-    int* partition_vector_tmp = (int*)malloc((world_size + 1) * sizeof(int));
-    partition_vector_tmp[0] = 0;
-    for (int i = 0; i < world_size; i++) {
-        int rows_for_rank = mat.rows / world_size;
-        if (i == world_size - 1) {
-            rows_for_rank = mat.rows - partition_vector_tmp[i];
+    if (matrix_file_is_stub(matrix_file) == 1) {
+        // Header-only 3D stencil file: generate this rank's rows, as the custom solver does
+        if (stencil != 7 && stencil != 27) {
+            if (rank == 0)
+                fprintf(stderr, "Error: %s has no entries; pass --stencil=7 or 27\n", matrix_file);
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        partition_vector_tmp[i + 1] = partition_vector_tmp[i] + rows_for_rank;
-    }
+        LocalCsr L;
+        if (build_stencil_local_csr(matrix_file, stencil, rank, world_size, &L) != 0)
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        long long nnz_l = L.nnz;
+        MPI_Allreduce(&nnz_l, &global_nnz, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        mat.rows = mat.cols = L.global_rows;
+        grid_size = (int)llround(cbrt((double)L.global_rows));
+        row_offset = L.row_offset;
+        n_local = L.n_local;
+        local_nnz = L.nnz;
+        local_row_ptr = L.row_ptr;
+        local_col_idx = L.col_idx;
+        local_values = L.values;
+        if (rank == 0)
+            printf("Matrix generated: %d-point, %dx%dx%d, %lld nonzeros\n\n", stencil, grid_size,
+                   grid_size, grid_size, global_nnz);
+    } else {
+        // Load full matrix (each rank independently)
+        mat = read_matrix_market(matrix_file, rank);
+        grid_size = (int)sqrt(mat.rows);
+        global_nnz = mat.nnz;
 
-    // Use partition vector to define local range
-    int row_offset = partition_vector_tmp[rank];
-    int n_local = partition_vector_tmp[rank + 1] - partition_vector_tmp[rank];
-
-    free(partition_vector_tmp);
-
-    // Create local partition (rows [row_offset : row_offset + n_local))
-    int* local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
-    local_row_ptr[0] = 0;
-
-    // Count nnz in local partition
-    int local_nnz = 0;
-    for (int i = 0; i < n_local; i++) {
-        int global_row = row_offset + i;
-        int row_nnz = mat.row_ptr[global_row + 1] - mat.row_ptr[global_row];
-        local_nnz += row_nnz;
-        local_row_ptr[i + 1] = local_nnz;
-    }
-
-    // Extract local CSR partition with GLOBAL column indices (int64_t as per NVIDIA example)
-    int64_t* local_col_idx = (int64_t*)malloc(local_nnz * sizeof(int64_t));
-    double* local_values = (double*)malloc(local_nnz * sizeof(double));
-
-    for (int i = 0; i < n_local; i++) {
-        int global_row = row_offset + i;
-        int src_start = mat.row_ptr[global_row];
-        int row_nnz = mat.row_ptr[global_row + 1] - src_start;
-        int dst_start = local_row_ptr[i];
-
-        // Copy with GLOBAL column indices (int64_t for AmgX upload_all_global)
-        for (int j = 0; j < row_nnz; j++) {
-            local_col_idx[dst_start + j] = (int64_t)mat.col_idx[src_start + j];
+        if (rank == 0) {
+            printf("Matrix loaded: %dx%d, %d nonzeros\n", mat.rows, mat.cols, mat.nnz);
+            printf("Grid: %dx%d\n\n", grid_size, grid_size);
         }
-        memcpy(&local_values[dst_start], &mat.values[src_start], row_nnz * sizeof(double));
+
+        // Build consistent global partition vector FIRST (all ranks must agree)
+        int* partition_vector_tmp = (int*)malloc((world_size + 1) * sizeof(int));
+        partition_vector_tmp[0] = 0;
+        for (int i = 0; i < world_size; i++) {
+            int rows_for_rank = mat.rows / world_size;
+            if (i == world_size - 1) {
+                rows_for_rank = mat.rows - partition_vector_tmp[i];
+            }
+            partition_vector_tmp[i + 1] = partition_vector_tmp[i] + rows_for_rank;
+        }
+
+        // Use partition vector to define local range
+        row_offset = partition_vector_tmp[rank];
+        n_local = partition_vector_tmp[rank + 1] - partition_vector_tmp[rank];
+
+        free(partition_vector_tmp);
+
+        // Create local partition (rows [row_offset : row_offset + n_local))
+        local_row_ptr = (int*)malloc((n_local + 1) * sizeof(int));
+        local_row_ptr[0] = 0;
+
+        // Count nnz in local partition
+        local_nnz = 0;
+        for (int i = 0; i < n_local; i++) {
+            int global_row = row_offset + i;
+            int row_nnz = mat.row_ptr[global_row + 1] - mat.row_ptr[global_row];
+            local_nnz += row_nnz;
+            local_row_ptr[i + 1] = local_nnz;
+        }
+
+        // Extract local CSR partition with GLOBAL column indices (int64_t as per NVIDIA example)
+        local_col_idx = (int64_t*)malloc(local_nnz * sizeof(int64_t));
+        local_values = (double*)malloc(local_nnz * sizeof(double));
+
+        for (int i = 0; i < n_local; i++) {
+            int global_row = row_offset + i;
+            int src_start = mat.row_ptr[global_row];
+            int row_nnz = mat.row_ptr[global_row + 1] - src_start;
+            int dst_start = local_row_ptr[i];
+
+            // Copy with GLOBAL column indices (int64_t for AmgX upload_all_global)
+            for (int j = 0; j < row_nnz; j++) {
+                local_col_idx[dst_start + j] = (int64_t)mat.col_idx[src_start + j];
+            }
+            memcpy(&local_values[dst_start], &mat.values[src_start], row_nnz * sizeof(double));
+        }
     }
 
     printf("[Rank %d] Partition: rows [%d:%d), %d nnz\n", rank, row_offset, row_offset + n_local,
@@ -449,6 +502,7 @@ int main(int argc, char* argv[]) {
     char config_string[512];
     snprintf(config_string, sizeof(config_string),
              "config_version=2, "
+             "communicator=%s, "
              "solver=CG, "
              "max_iters=%d, "
              "convergence=RELATIVE_INI, "
@@ -457,7 +511,7 @@ int main(int argc, char* argv[]) {
              "print_solve_stats=0, "
              "monitor_residual=1, "
              "obtain_timings=0",
-             max_iters, tolerance);
+             communicator, max_iters, tolerance);
 
     AMGX_config_handle cfg;
     AMGX_SAFE_CALL(AMGX_config_create(&cfg, config_string));
@@ -650,7 +704,7 @@ int main(int argc, char* argv[]) {
         printf("Time (median): %.3f ms\n", median);
         printf("Stats: min=%.3f ms, max=%.3f ms, std=%.3f ms\n", min_time, max_time, final_std);
 
-        double gflops = (2.0 * mat.nnz * results[0].iterations) / (median * 1e6);
+        double gflops = (2.0 * global_nnz * results[0].iterations) / (median * 1e6);
         printf("GFLOPS: %.3f\n", gflops);
 
         printf("\n=== Output Checksum ===\n");
@@ -688,7 +742,7 @@ int main(int argc, char* argv[]) {
             char mode_str[64];
             snprintf(mode_str, sizeof(mode_str), "multi-gpu-%d", world_size);
 
-            MatrixInfo mat_info = {mat.rows, mat.cols, mat.nnz, grid_size};
+            MatrixInfo mat_info = {mat.rows, mat.cols, global_nnz, grid_size};
             BenchmarkResults bench_results = {results[0].converged,
                                               results[0].iterations,
                                               median,
