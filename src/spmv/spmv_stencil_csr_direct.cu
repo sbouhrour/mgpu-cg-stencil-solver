@@ -129,7 +129,7 @@ __global__ void stencil5_csr_direct_kernel(const int* __restrict__ row_ptr,
  *  - Each GPU processes rows [row_offset : row_offset + local_rows)
  *  - Full input vector x replicated on all GPUs (required for stencil neighbors)
  *  - Output y_local contains only local partition results
- *  - Zero communication during kernel execution (NCCL used only for CG dot products)
+ *  - Zero communication during kernel execution (MPI_Allreduce used only for CG dot products)
  *
  * @param row_ptr CSR row pointers (full matrix, but only local rows accessed)
  * @param col_idx CSR column indices (full matrix)

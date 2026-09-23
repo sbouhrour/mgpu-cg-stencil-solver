@@ -14,7 +14,7 @@
  *
  * Communication pattern:
  * - SpMV: Halo exchange before multiplication (~80 KB, 1 row for 5-point stencil)
- * - Dot products: NCCL AllReduce (8 bytes scalar)
+ * - Dot products: MPI_Allreduce (8 bytes scalar)
  * - BLAS1: Local operations only (no communication)
  *
  * vs Full-replication:
@@ -35,7 +35,7 @@
 /**
  * @brief Multi-GPU CG solver with CSR partitioning (scalable version)
  *
- * Configuration: 2+ GPUs, NCCL P2P communication
+ * Configuration: 2+ GPUs, MPI halo exchange
  * Memory: Local CSR partition + minimal halo zones
  * Communication: Halo exchange (KB) instead of full AllGather (MB)
  *

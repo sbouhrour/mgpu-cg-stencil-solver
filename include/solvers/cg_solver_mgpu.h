@@ -17,10 +17,8 @@
  *   Dot products: local sum + MPI_Allreduce
  *   Halo:         one boundary row per neighbour, staged through pinned host buffers
  *
- * An earlier design replicated the full vector on every rank and synchronised it with NCCL
- * AllGather, which is what `time_allgather_ms` below was originally named for; that field now
- * records halo exchange time. The NCCL implementations and the measurements that led to MPI staging
- * are on their branches — see "Approaches tried and set aside" in `docs/development.md`.
+ * `time_allgather_ms` below is named after an earlier full-replication design; it now records
+ * halo exchange time.
  *
  * Launch: mpirun -np <num_gpus> ./cg_solver_mgpu_stencil matrix.mtx
  *
