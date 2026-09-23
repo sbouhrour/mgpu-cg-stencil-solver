@@ -1054,3 +1054,99 @@ int write_matrix_market_stencil27(int N, const char* filename) {
            matrix_size, nnz);
     return 0;
 }
+
+int matrix_file_is_stub(const char* matrix_path) {
+    FILE* f = fopen(matrix_path, "r");
+    if (!f)
+        return -1;
+    char buffer[MAX_LINE_LENGTH];
+    int seen_size_line = 0, has_entry = 0;
+    while (fgets(buffer, MAX_LINE_LENGTH, f) != NULL) {
+        if (buffer[0] == '%' || buffer[0] == '\n')
+            continue;
+        if (!seen_size_line) {
+            seen_size_line = 1;  // "rows cols nnz"
+            continue;
+        }
+        has_entry = 1;
+        break;
+    }
+    fclose(f);
+    return seen_size_line && !has_entry;
+}
+
+int load_matrix_stencil7_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
+                                      int world_size) {
+    FILE* f = fopen(matrix_path, "r");
+    if (!f) {
+        fprintf(stderr, "Error opening file: %s\n", matrix_path);
+        return 1;
+    }
+    int N = -1;
+    char buffer[MAX_LINE_LENGTH];
+    while (fgets(buffer, MAX_LINE_LENGTH, f) != NULL && buffer[0] == '%') {
+        if (strstr(buffer, "STENCIL_GRID_SIZE") != NULL)
+            sscanf(buffer, "%% STENCIL_GRID_SIZE %d", &N);
+    }
+    fclose(f);
+    if (N <= 0) {
+        fprintf(stderr, "Could not find STENCIL_GRID_SIZE in header of %s\n", matrix_path);
+        return 1;
+    }
+
+    // Same Z-slab partition as the solver: n_local = N^3 / world_size, the last rank takes the rest
+    const long long matrix_size = (long long)N * N * N;
+    const long long n_local_rows = matrix_size / world_size;
+    const long long row_start = (long long)rank * n_local_rows;
+    const long long row_end = (rank == world_size - 1) ? matrix_size : row_start + n_local_rows;
+    const int i_start = (int)(row_start / ((long long)N * N));
+    const int i_end = (int)(row_end / ((long long)N * N));
+
+    // Interior points have 7 entries; each domain face removes one per point on it
+    long long nnz = 0;
+    for (int i = i_start; i < i_end; i++)
+        for (int j = 0; j < N; j++)
+            for (int k = 0; k < N; k++)
+                nnz += 1 + (i > 0) + (i < N - 1) + (j > 0) + (j < N - 1) + (k > 0) + (k < N - 1);
+
+    if (rank == 0) {
+        printf("Generating 7pt stencil in memory for N=%d, partition [rank %d/%d, i=%d..%d]\n", N,
+               rank, world_size, i_start, i_end - 1);
+        fflush(stdout);
+    }
+
+    Entry* entries = (Entry*)malloc(nnz * sizeof(Entry));
+    if (!entries) {
+        fprintf(stderr, "[Rank %d] malloc failed for %lld entries (%.1f GB)\n", rank, nnz,
+                (double)nnz * sizeof(Entry) / 1e9);
+        return 1;
+    }
+
+    long long idx = 0;
+    const long long NN = (long long)N * N;
+    for (int i = i_start; i < i_end; i++)
+        for (int j = 0; j < N; j++)
+            for (int k = 0; k < N; k++) {
+                const int row = (int)(i * NN + (long long)j * N + k);
+                entries[idx++] = (Entry){row, row, 6.0};
+                if (i > 0)
+                    entries[idx++] = (Entry){row, (int)(row - NN), -1.0};
+                if (i < N - 1)
+                    entries[idx++] = (Entry){row, (int)(row + NN), -1.0};
+                if (j > 0)
+                    entries[idx++] = (Entry){row, row - N, -1.0};
+                if (j < N - 1)
+                    entries[idx++] = (Entry){row, row + N, -1.0};
+                if (k > 0)
+                    entries[idx++] = (Entry){row, row - 1, -1.0};
+                if (k < N - 1)
+                    entries[idx++] = (Entry){row, row + 1, -1.0};
+            }
+
+    mat->rows = (int)matrix_size;
+    mat->cols = (int)matrix_size;
+    mat->nnz = nnz;
+    mat->grid_size = N;
+    mat->entries = entries;
+    return 0;
+}
