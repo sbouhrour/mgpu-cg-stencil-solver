@@ -366,6 +366,9 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
         }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
+        }
 
         if (rel_residual < config.tolerance) {
             iter++;
@@ -818,6 +821,9 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         if (rank == 0 && config.verbose >= 2) {
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
+        }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
         }
 
         if (rel_residual < config.tolerance) {

@@ -41,6 +41,9 @@ int main(int argc, char** argv) {
             printf("  --verify        Use known solution (x=1) to verify correctness\n");
             printf("  --max-iters=N   Set maximum CG iterations (default: 5000)\n");
             printf("  --json=<file>   Export results to JSON file\n");
+            printf("  --verbose=N     0 silent, 1 summary (default), 2 per-iteration residual,\n");
+            printf(
+                "                  3 adds exact (hex) residual trace for bit-level comparison\n");
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
             printf("  --spmv=MODE     SpMV kernel: csr (default) or soa\n");
             printf(
@@ -81,6 +84,8 @@ int main(int argc, char** argv) {
             max_iters_value = atoi(argv[i] + 12);
         } else if (strncmp(argv[i], "--json=", 7) == 0) {
             json_file = argv[i] + 7;
+        } else if (strncmp(argv[i], "--verbose=", 10) == 0) {
+            config.verbose = atoi(argv[i] + 10);
         } else if (strncmp(argv[i], "--stencil=", 10) == 0) {
             stencil_points = atoi(argv[i] + 10);
             if (stencil_points != 7 && stencil_points != 27) {
