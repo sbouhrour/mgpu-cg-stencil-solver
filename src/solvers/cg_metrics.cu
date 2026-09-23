@@ -84,8 +84,8 @@ void export_cg_json(const char* filename, const char* mode, const MatrixData* ma
 /**
  * @brief Export CG multi-GPU benchmark results to JSON
  */
-void export_cg_mgpu_json(const char* filename, const char* mode, const char* comm,
-                         const MatrixData* mat, const BenchmarkStats* bench_stats,
+void export_cg_mgpu_json(const char* filename, const char* mode, const char* comm, const char* dots,
+                         int check_every, const MatrixData* mat, const BenchmarkStats* bench_stats,
                          const CGStatsMultiGPU* cg_stats, int num_gpus) {
     FILE* fp = fopen(filename, "w");
     if (!fp) {
@@ -102,6 +102,8 @@ void export_cg_mgpu_json(const char* filename, const char* mode, const char* com
     fprintf(fp, "  \"solver\": \"CG Multi-GPU\",\n");
     fprintf(fp, "  \"mode\": \"%s\",\n", mode);
     fprintf(fp, "  \"comm\": \"%s\",\n", comm);
+    fprintf(fp, "  \"dots\": \"%s\",\n", dots);
+    fprintf(fp, "  \"check_every\": %d,\n", check_every);
     fprintf(fp, "  \"num_gpus\": %d,\n", num_gpus);
 
     fprintf(fp, "  \"matrix\": {\n");

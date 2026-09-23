@@ -63,4 +63,13 @@ void comm_halo_exchange(CommContext* ctx, const double* d_send_prev, const doubl
 /** Sum a host scalar over all ranks (MPI_Allreduce on the host for every backend). */
 double comm_allreduce_sum(CommContext* ctx, double local);
 
+/**
+ * @brief Sum a device scalar over all ranks, in place, ordered on stream
+ *
+ * nccl enqueues an ncclAllReduce and returns without blocking. The MPI
+ * backends must wait for the stream first (MPI is not stream-aware): gpuaware
+ * then reduces the device value directly, staged goes through pinned memory.
+ */
+void comm_allreduce_sum_device(CommContext* ctx, double* d_value, cudaStream_t stream);
+
 #endif  // COMM_BACKEND_H

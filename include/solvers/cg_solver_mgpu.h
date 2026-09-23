@@ -43,6 +43,8 @@ typedef struct {
     int enable_overlap;          ///< Enable compute-communication overlap
     int spmv_soa;                ///< Use coefficient-major (SoA) SpMV (27-point 3D sync solver)
     struct CommContext* comm;    ///< Communication backend (3D sync solvers); NULL = staged MPI
+    int dots_device;             ///< Keep CG scalars on the device (3D sync solvers)
+    int check_every;             ///< Device dots: test convergence every k iterations (>= 1)
 } CGConfigMultiGPU;
 
 /**

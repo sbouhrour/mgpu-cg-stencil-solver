@@ -199,8 +199,8 @@ int main(int argc, char** argv) {
         // Export results if requested
         if (json_file || csv_file) {
             if (json_file) {
-                export_cg_mgpu_json(json_file, "partitioned-halo", "staged", &mat, &bench_stats,
-                                    &stats, world_size);
+                export_cg_mgpu_json(json_file, "partitioned-halo", "staged", "host", 1, &mat,
+                                    &bench_stats, &stats, world_size);
                 printf("\nResults exported to JSON: %s\n", json_file);
             }
             if (csv_file) {
