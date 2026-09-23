@@ -203,6 +203,10 @@ int main(int argc, char** argv) {
     int load_err;
     if (stencil_points == 27) {
         load_err = load_matrix_stencil27_3d_from_grid(matrix_file, &mat, rank, world_size);
+    } else if (matrix_file_is_stub(matrix_file) == 1) {
+        // Header-only file: build this rank's rows in memory (a 512^3 7-point file is ~16 GB of
+        // text)
+        load_err = load_matrix_stencil7_3d_from_grid(matrix_file, &mat, rank, world_size);
     } else {
         load_err = load_matrix_market(matrix_file, &mat);
     }
