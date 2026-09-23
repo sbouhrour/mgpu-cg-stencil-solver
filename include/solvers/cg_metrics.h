@@ -25,10 +25,11 @@ void export_cg_json(const char* filename, const char* mode, const MatrixData* ma
 
 /**
  * @brief Export CG multi-GPU benchmark results to JSON
+ * @param comm Halo communication backend ("staged", "gpuaware", "nccl")
  */
-void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixData* mat,
-                         const BenchmarkStats* bench_stats, const CGStatsMultiGPU* cg_stats,
-                         int num_gpus);
+void export_cg_mgpu_json(const char* filename, const char* mode, const char* comm,
+                         const MatrixData* mat, const BenchmarkStats* bench_stats,
+                         const CGStatsMultiGPU* cg_stats, int num_gpus);
 
 /**
  * @brief Export CG benchmark results to CSV format

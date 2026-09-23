@@ -46,6 +46,23 @@ endif
 # whose layout changed leaves stale objects disagreeing on field offsets — a silent, crashing binary.
 DEPFLAGS := -MMD -MP
 
+# Optional NCCL backend (--comm=nccl). Detected in NCCL_HOME, else in the
+# system include path; a build without NCCL keeps the other backends.
+comma := ,
+NCCL_HOME ?=
+ifneq ($(NCCL_HOME),)
+    NCCL_INC := $(NCCL_HOME)/include
+    NCCL_LIB := $(firstword $(wildcard $(NCCL_HOME)/lib/x86_64-linux-gnu $(NCCL_HOME)/lib))
+else
+    NCCL_INC := /usr/include
+    NCCL_LIB :=
+endif
+HAS_NCCL := $(if $(wildcard $(NCCL_INC)/nccl.h),1,0)
+ifeq ($(HAS_NCCL),1)
+    NCCL_CFLAGS := -DHAS_NCCL $(if $(NCCL_HOME),-I$(NCCL_INC))
+    NCCL_LDFLAGS := $(if $(NCCL_LIB),-L$(NCCL_LIB) -Wl$(comma)-rpath$(comma)$(NCCL_LIB)) -lnccl
+endif
+
 # Base includes and libraries
 INCLUDES := -I$(INC_DIR) -I$(INC_DIR)/solvers
 LDFLAGS := -lcusparse -lcublas
@@ -202,6 +219,10 @@ $(OBJ_DIR)/mgpu/%.o: $(SRC_DIR)/main/%.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
 	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
 
+$(OBJ_DIR)/mgpu/comm_backend.o: $(SRC_DIR)/solvers/comm_backend.cu
+	@mkdir -p $(OBJ_DIR)/mgpu
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) $(NCCL_CFLAGS) -c $< -o $@
+
 $(OBJ_DIR)/mgpu/%.o: $(SRC_DIR)/solvers/%.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
 	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
@@ -247,7 +268,7 @@ $(BIN_MGPU_STENCIL): $(OBJ_MGPU_STENCIL_MAIN) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_M
 # Link 3D stencil solver with MPI (synchronous + overlap, 7-point + 27-point)
 $(BIN_MGPU_STENCIL_3D): $(OBJ_MGPU_STENCIL_3D_MAIN) $(OBJ_MGPU_3D_SOLVER) $(OBJ_MGPU_COMM_BACKEND) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_MGPU_OVERLAP_SOLVER) $(OBJ_MGPU_3D_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_SOA_KERNEL) $(OBJ_MGPU_IO) $(OBJ_MGPU_CSR) $(OBJ_MGPU_STENCIL_SPMV) $(OBJ_MGPU_HALO_KERNEL) $(OBJ_MGPU_BENCH_STATS_PARTITIONED) $(OBJ_MGPU_CG_METRICS)
 	@mkdir -p $(BIN_DIR)
-	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS)
+	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS) $(NCCL_LDFLAGS)
 
 # Single-GPU 3D solver binary
 $(BIN_SINGLE_GPU_3D): $(CU_SINGLE_GPU_3D_OBJS)
