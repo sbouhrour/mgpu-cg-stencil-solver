@@ -367,6 +367,34 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     CgScalars S;
     cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
 
+    // --graph: record check_every iterations once, before the clock starts (instantiation is
+    // setup, like the communicator), then replay them. Every operation of the iteration is
+    // stream-ordered here (device scalars, NCCL), so capture sees no host synchronization. The
+    // rs_old/rs_new slot swap is frozen into the graph: an even count brings it back to the start.
+    cudaGraphExec_t graph_exec = NULL;
+    if (config.use_graph) {
+        const int threads_g = 256;
+        const int blocks_g = (n_local + threads_g - 1) / threads_g;
+        cudaGraph_t graph;
+        CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+        for (int it = 0; it < config.check_every; it++) {
+            stencil7_csr_partitioned_halo_kernel_3d<<<blocks_g, threads_g, 0, stream>>>(
+                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                n_local, row_offset, n, grid_size);
+            cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
+            cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_g,
+                                 threads_g);
+            cg_scalars_rs_new(&S, d_r_local, n_local);
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_g, threads_g);
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+            cg_scalars_advance(&S);
+        }
+        CUDA_CHECK(cudaStreamEndCapture(stream, &graph));
+        CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, 0));
+        CUDA_CHECK(cudaGraphDestroy(graph));
+    }
+
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Timing
@@ -430,6 +458,33 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     int iter;
     for (iter = 0; iter < config.max_iters; iter++) {
         nvtxRangePush("CG_Iteration_3D");
+
+        if (graph_exec) {
+            // One launch runs check_every iterations; the newest r.r sits in the rs_old slot
+            CUDA_CHECK(cudaGraphLaunch(graph_exec, stream));
+            iter += config.check_every - 1;
+            CUDA_CHECK(cudaMemcpyAsync(&S.h_read[1], S.d_rs_old, sizeof(double),
+                                       cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            S.rs_new = S.rs_old = S.h_read[1];
+            double residual_norm = sqrt(S.rs_new);
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, graph)\n", iter + 1, residual_norm,
+                       residual_norm / b_norm);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a\n", iter + 1, S.rs_new);
+            }
+            nvtxRangePop();
+            if (residual_norm / b_norm < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                break;
+            }
+            continue;
+        }
 
         // Ap = A * p
         nvtxRangePush("SpMV_3D");
@@ -587,6 +642,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     if (own_comm)
         comm_destroy(comm);
 
+    if (graph_exec)
+        cudaGraphExecDestroy(graph_exec);
     cg_scalars_free(&S);
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);
@@ -811,6 +868,39 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     CgScalars S;
     cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
 
+    // --graph: record check_every iterations once, before the clock starts (instantiation is
+    // setup, like the communicator), then replay them. Every operation of the iteration is
+    // stream-ordered here (device scalars, NCCL), so capture sees no host synchronization. The
+    // rs_old/rs_new slot swap is frozen into the graph: an even count brings it back to the start.
+    cudaGraphExec_t graph_exec = NULL;
+    if (config.use_graph) {
+        const int threads_g = 256;
+        const int blocks_g = (n_local + threads_g - 1) / threads_g;
+        cudaGraph_t graph;
+        CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+        for (int it = 0; it < config.check_every; it++) {
+            if (use_soa) {
+                stencil27_soa_halo_kernel_3d<<<blocks_g, threads_g, 0, stream>>>(
+                    d_values_soa, d_p_ext, d_Ap, n_local, grid_size);
+            } else {
+                stencil27_csr_partitioned_halo_kernel_3d<<<blocks_g, threads_g, 0, stream>>>(
+                    d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                    n_local, row_offset, n, grid_size);
+            }
+            cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
+            cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_g,
+                                 threads_g);
+            cg_scalars_rs_new(&S, d_r_local, n_local);
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_g, threads_g);
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+            cg_scalars_advance(&S);
+        }
+        CUDA_CHECK(cudaStreamEndCapture(stream, &graph));
+        CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, 0));
+        CUDA_CHECK(cudaGraphDestroy(graph));
+    }
+
     MPI_Barrier(MPI_COMM_WORLD);
 
     cudaEvent_t start, stop;
@@ -877,6 +967,33 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     int iter;
     for (iter = 0; iter < config.max_iters; iter++) {
         nvtxRangePush("CG_Iteration_27PT_3D");
+
+        if (graph_exec) {
+            // One launch runs check_every iterations; the newest r.r sits in the rs_old slot
+            CUDA_CHECK(cudaGraphLaunch(graph_exec, stream));
+            iter += config.check_every - 1;
+            CUDA_CHECK(cudaMemcpyAsync(&S.h_read[1], S.d_rs_old, sizeof(double),
+                                       cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            S.rs_new = S.rs_old = S.h_read[1];
+            double residual_norm = sqrt(S.rs_new);
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, graph)\n", iter + 1, residual_norm,
+                       residual_norm / b_norm);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a\n", iter + 1, S.rs_new);
+            }
+            nvtxRangePop();
+            if (residual_norm / b_norm < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                break;
+            }
+            continue;
+        }
 
         // Ap = A * p (27-point kernel, CSR or SoA)
         nvtxRangePush("SpMV_27PT_3D");
@@ -1039,6 +1156,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     if (own_comm)
         comm_destroy(comm);
 
+    if (graph_exec)
+        cudaGraphExecDestroy(graph_exec);
     cg_scalars_free(&S);
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);

@@ -45,6 +45,7 @@ typedef struct {
     struct CommContext* comm;    ///< Communication backend (3D sync solvers); NULL = staged MPI
     int dots_device;             ///< Keep CG scalars on the device (3D sync solvers)
     int check_every;             ///< Device dots: test convergence every k iterations (>= 1)
+    int use_graph;               ///< Replay check_every iterations as one CUDA graph (nccl, device)
 } CGConfigMultiGPU;
 
 /**

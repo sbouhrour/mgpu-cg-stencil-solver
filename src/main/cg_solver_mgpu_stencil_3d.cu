@@ -52,6 +52,8 @@ int main(int argc, char** argv) {
             printf("                  except to test convergence)\n");
             printf("  --check-every=K With --dots=device, test convergence every K iterations\n");
             printf("                  (may run up to K-1 iterations past convergence)\n");
+            printf("  --graph         Replay K iterations as one CUDA graph (needs --comm=nccl,\n");
+            printf("                  --dots=device, even --check-every=K)\n");
             printf(
                 "                  (soa: coefficient-major values; 27-point sync solver only)\n");
         }
@@ -77,6 +79,7 @@ int main(int argc, char** argv) {
     config.comm = NULL;
     config.dots_device = 0;
     config.check_every = 1;
+    config.use_graph = 0;
     CommBackendKind comm_kind_arg = COMM_STAGED;
 
     // Parse arguments before using them
@@ -125,6 +128,8 @@ int main(int argc, char** argv) {
                 MPI_Finalize();
                 return 1;
             }
+        } else if (strcmp(argv[i], "--graph") == 0) {
+            config.use_graph = 1;
         } else if (strncmp(argv[i], "--check-every=", 14) == 0) {
             config.check_every = atoi(argv[i] + 14);
             if (config.check_every < 1) {
@@ -159,6 +164,15 @@ int main(int argc, char** argv) {
             fprintf(
                 stderr,
                 "Error: --dots=device and --check-every are not supported with --overlap yet\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (config.use_graph &&
+        (comm_kind_arg != COMM_NCCL || !config.dots_device || config.check_every < 2 ||
+         config.check_every % 2 != 0 || config.enable_overlap)) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --graph needs --comm=nccl --dots=device and an even "
+                            "--check-every >= 2 (no host synchronization inside the graph)\n");
         MPI_Finalize();
         return 1;
     }
@@ -259,6 +273,8 @@ int main(int argc, char** argv) {
         printf("CG scalars: %s", config.dots_device ? "device" : "host");
         if (config.dots_device)
             printf(" (convergence test every %d iterations)", config.check_every);
+        if (config.use_graph)
+            printf(", CUDA graph");
         printf("\n");
     }
 
