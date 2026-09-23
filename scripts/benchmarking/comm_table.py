@@ -12,7 +12,7 @@ import sys
 
 NAME = re.compile(r"(\d+)pt_N(\d+)_np(\d+)_(\w+?)_(host|device)(?:_(\w+))?\.json$")
 COLUMNS = ["staged/host", "staged/device", "gpuaware/host", "gpuaware/device",
-           "nccl/host", "nccl/device", "nccl/device/p2poff"]
+           "nccl/host", "nccl/device", "nccl/device/p2poff", "amgx/host/mpi", "amgx/host/mpidirect"]
 
 
 def load(directory):
