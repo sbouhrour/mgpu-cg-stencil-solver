@@ -63,9 +63,12 @@ fi
 command -v ucx_info >/dev/null && ucx_info -d 2>/dev/null | grep -E 'Transport: (cuda|gdr)' | sort -u | sed 's/^#/ /'
 
 hr "3. Build"
-make -j"$(nproc)" ARCH="$CC" cg_solver_mgpu_stencil_3d > "$OUT/build.log" 2>&1 \
+# Always rebuilt: a binary left from another toolchain (non-CUDA-aware MPI, a NCCL the driver cannot
+# run) would make this check test the wrong thing. What the binary links is read from the binary.
+make -B -j"$(nproc)" ARCH="$CC" cg_solver_mgpu_stencil_3d > "$OUT/build.log" 2>&1 \
     || { echo "  build FAILED, see $OUT/build.log"; exit 1; }
-grep -q -- '-DHAS_NCCL' "$OUT/build.log" && echo "  built with NCCL" || echo "  built WITHOUT NCCL"
+ldd "$BIN" | grep -E 'libmpi\.so|libnccl' | sed 's/^\s*/  links /'
+ldd "$BIN" | grep -q libnccl || echo "  built WITHOUT NCCL"
 
 # 27-point operator built in memory from a header-only file
 ROWS=$((N * N * N)); K=$((3 * N - 2))
@@ -100,7 +103,7 @@ FAIL=0
 printf '  %-6s %-9s %-7s %s\n' ranks backend dots result
 for np in $RANKS; do
     run "$np" staged host || { echo "  $np ranks: reference run failed, see $OUT/r${np}_staged_host.log"; FAIL=1; continue; }
-    devs=$(grep -oE '^\[Rank [0-9]+\] GPU [0-9]+' "$OUT/r${np}_staged_host.log" | awk '{print $4}' | sort -u | wc -l)
+    devs=$(grep -aoE '^\[Rank [0-9]+\] GPU [0-9]+' "$OUT/r${np}_staged_host.log" | awk '{print $4}' | sort -u | wc -l)
     if [ "${SHARED_GPU:-0}" != 1 ] && [ "$devs" -ne "$np" ]; then
         echo "  $np ranks: only $devs distinct GPUs used -- rank placement is wrong, stop here"; FAIL=1
     fi
@@ -109,8 +112,9 @@ for np in $RANKS; do
             [ "$be/$dots" = staged/host ] && continue
             log="$OUT/r${np}_${be}_${dots}.log"
             if ! run "$np" "$be" "$dots"; then
-                if grep -qE 'built without NCCL|needs a CUDA-aware MPI' "$log"; then
-                    printf '  %-6s %-9s %-7s SKIP (%s)\n' "$np" "$be" "$dots" "$(grep -m1 -oE 'built without NCCL|needs a CUDA-aware MPI' "$log")"
+                # -a: progress lines end in carriage returns, which make grep call the log binary
+                if grep -aqE 'built without NCCL|needs a CUDA-aware MPI' "$log"; then
+                    printf '  %-6s %-9s %-7s SKIP (%s)\n' "$np" "$be" "$dots" "$(grep -a -m1 -oE 'built without NCCL|needs a CUDA-aware MPI' "$log")"
                 else
                     printf '  %-6s %-9s %-7s FAIL (run error, see %s)\n' "$np" "$be" "$dots" "$log"; FAIL=1
                 fi
