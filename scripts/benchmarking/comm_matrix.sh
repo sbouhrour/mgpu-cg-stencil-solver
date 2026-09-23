@@ -14,6 +14,8 @@
 # Usage:  ./scripts/benchmarking/comm_matrix.sh
 #         DRY_RUN=1 ./scripts/benchmarking/comm_matrix.sh       list the configurations only
 #         STENCILS="27" SIZES="256" RANKS="2 8" ITERS=300 CHECK_EVERY=10 ...
+#         SHARED_GPU=1 ...   several ranks per GPU: checks the script runs, times mean nothing
+# Uses the binary as built by comm_preflight.sh (same toolchain), and does not rebuild it.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 OUT="${OUT_DIR:-out}/comm_matrix"
@@ -32,6 +34,7 @@ if [ -z "${RANKS:-}" ]; then
 fi
 ROOT=()
 [ "$(id -u)" = 0 ] && ROOT=(--allow-run-as-root)
+[ "${SHARED_GPU:-0}" = 1 ] && ROOT+=(--oversubscribe -x NCCL_MULTI_RANK_GPU_ENABLE=1)
 
 # Header-only files: both loaders build this rank's rows in memory
 stub() {  # $1 stencil, $2 N -> path
