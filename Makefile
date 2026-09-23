@@ -56,7 +56,7 @@ CU_SRCS := $(shell find $(SRC_DIR) -name '*.cu')
 CU_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_SRCS))
 
 # SpMV benchmark: exclude generators, CG solver, and multi-GPU sources
-CU_SPMV_SRCS := $(filter-out $(SRC_DIR)/matrix/generate_matrix.cu $(SRC_DIR)/main/cg_solver.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil_3d.cu $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/main/generate_matrix_3d.cu $(SRC_DIR)/main/generate_matrix_3d_27pt.cu $(SRC_DIR)/main/bench_27pt_precision.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned_3d.cu $(SRC_DIR)/solvers/cg_solver_mgpu_overlap.cu $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_soa_halo_kernel.cu $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu, $(CU_SRCS))
+CU_SPMV_SRCS := $(filter-out $(SRC_DIR)/matrix/generate_matrix.cu $(SRC_DIR)/main/cg_solver.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil_3d.cu $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/main/generate_matrix_3d.cu $(SRC_DIR)/main/generate_matrix_3d_27pt.cu $(SRC_DIR)/main/bench_27pt_precision.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned_3d.cu $(SRC_DIR)/solvers/comm_backend.cu $(SRC_DIR)/solvers/cg_solver_mgpu_overlap.cu $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_soa_halo_kernel.cu $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu, $(CU_SRCS))
 CU_SPMV_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_SPMV_SRCS))
 
 # Matrix generator (2D 5-point stencil)
@@ -192,6 +192,7 @@ OBJ_MGPU_OVERLAP_SOLVER := $(OBJ_DIR)/mgpu/cg_solver_mgpu_overlap.o
 # 3D stencil solver objects
 OBJ_MGPU_STENCIL_3D_MAIN := $(OBJ_DIR)/mgpu/cg_solver_mgpu_stencil_3d.o
 OBJ_MGPU_3D_SOLVER := $(OBJ_DIR)/mgpu/cg_solver_mgpu_partitioned_3d.o
+OBJ_MGPU_COMM_BACKEND := $(OBJ_DIR)/mgpu/comm_backend.o
 OBJ_MGPU_3D_HALO_KERNEL := $(OBJ_DIR)/mgpu/spmv_stencil_3d_partitioned_halo_kernel.o
 OBJ_MGPU_3D_27PT_HALO_KERNEL := $(OBJ_DIR)/mgpu/spmv_stencil_3d_27pt_partitioned_halo_kernel.o
 OBJ_MGPU_3D_27PT_SOA_KERNEL := $(OBJ_DIR)/mgpu/spmv_stencil_3d_27pt_soa_halo_kernel.o
@@ -244,7 +245,7 @@ $(BIN_MGPU_STENCIL): $(OBJ_MGPU_STENCIL_MAIN) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_M
 	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS)
 
 # Link 3D stencil solver with MPI (synchronous + overlap, 7-point + 27-point)
-$(BIN_MGPU_STENCIL_3D): $(OBJ_MGPU_STENCIL_3D_MAIN) $(OBJ_MGPU_3D_SOLVER) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_MGPU_OVERLAP_SOLVER) $(OBJ_MGPU_3D_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_SOA_KERNEL) $(OBJ_MGPU_IO) $(OBJ_MGPU_CSR) $(OBJ_MGPU_STENCIL_SPMV) $(OBJ_MGPU_HALO_KERNEL) $(OBJ_MGPU_BENCH_STATS_PARTITIONED) $(OBJ_MGPU_CG_METRICS)
+$(BIN_MGPU_STENCIL_3D): $(OBJ_MGPU_STENCIL_3D_MAIN) $(OBJ_MGPU_3D_SOLVER) $(OBJ_MGPU_COMM_BACKEND) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_MGPU_OVERLAP_SOLVER) $(OBJ_MGPU_3D_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_SOA_KERNEL) $(OBJ_MGPU_IO) $(OBJ_MGPU_CSR) $(OBJ_MGPU_STENCIL_SPMV) $(OBJ_MGPU_HALO_KERNEL) $(OBJ_MGPU_BENCH_STATS_PARTITIONED) $(OBJ_MGPU_CG_METRICS)
 	@mkdir -p $(BIN_DIR)
 	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS)
 

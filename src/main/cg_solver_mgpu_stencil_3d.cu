@@ -16,6 +16,7 @@
 #include "io.h"
 #include "spmv.h"
 #include "solvers/cg_solver_mgpu_partitioned.h"
+#include "solvers/comm_backend.h"
 #include "solvers/cg_metrics.h"
 #include "benchmark_stats_mgpu.h"
 
@@ -46,6 +47,7 @@ int main(int argc, char** argv) {
                 "                  3 adds exact (hex) residual trace for bit-level comparison\n");
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
             printf("  --spmv=MODE     SpMV kernel: csr (default) or soa\n");
+            printf("  --comm=MODE     Halo/reduction backend: staged (default) or gpuaware\n");
             printf(
                 "                  (soa: coefficient-major values; 27-point sync solver only)\n");
         }
@@ -68,6 +70,8 @@ int main(int argc, char** argv) {
     config.verbose = 1;
     config.enable_overlap = 0;
     config.spmv_soa = 0;
+    config.comm = NULL;
+    CommBackendKind comm_kind_arg = COMM_STAGED;
 
     // Parse arguments before using them
     for (int i = 1; i < argc; i++) {
@@ -96,6 +100,13 @@ int main(int argc, char** argv) {
             }
             if (rank == 0)
                 printf("Stencil: %d-point\n", stencil_points);
+        } else if (strncmp(argv[i], "--comm=", 7) == 0) {
+            if (comm_backend_parse(argv[i] + 7, &comm_kind_arg) != 0) {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --comm must be staged or gpuaware\n");
+                MPI_Finalize();
+                return 1;
+            }
         } else if (strncmp(argv[i], "--spmv=", 7) == 0) {
             const char* mode = argv[i] + 7;
             if (strcmp(mode, "csr") == 0) {
@@ -114,6 +125,13 @@ int main(int argc, char** argv) {
     if (spmv_soa && stencil_points != 27) {
         if (rank == 0)
             fprintf(stderr, "Error: --spmv=soa requires --stencil=27\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (comm_kind_arg != COMM_STAGED && config.enable_overlap) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --comm=%s is not supported with --overlap yet\n",
+                    comm_backend_name(comm_kind_arg));
         MPI_Finalize();
         return 1;
     }
@@ -177,6 +195,15 @@ int main(int argc, char** argv) {
             b[i] = 1.0;
         }
     }
+
+    // One communication context for every solve below (warmup included): library
+    // setup happens here, once, and never inside a timed region.
+    config.comm =
+        comm_create(comm_kind_arg, MPI_COMM_WORLD, (size_t)mat.grid_size * (size_t)mat.grid_size);
+    if (config.comm == NULL)
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    if (rank == 0)
+        printf("Communication backend: %s\n", comm_backend_name(comm_kind_arg));
 
     // Select solver based on stencil type and overlap mode
     int (*solver_fn)(SpmvOperator*, MatrixData*, const double*, double*, CGConfigMultiGPU,
@@ -357,6 +384,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    comm_destroy(config.comm);
     free(b);
     free(x);
     if (mat.entries)
