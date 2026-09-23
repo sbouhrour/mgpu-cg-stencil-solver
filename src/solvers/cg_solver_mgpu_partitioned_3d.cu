@@ -26,6 +26,7 @@
 #include "spmv.h"
 #include "io.h"
 #include "solvers/cg_solver_mgpu_partitioned.h"
+#include "solvers/comm_backend.h"
 
 /* External kernels */
 extern __global__ void axpy_kernel(double alpha, const double* x, double* y, int n);
@@ -48,61 +49,6 @@ static double compute_local_dot_3d(cublasHandle_t cublas_handle, const double* d
         exit(EXIT_FAILURE);
     }
     return result;
-}
-
-/**
- * @brief Exchange halo zones with neighbors using MPI with explicit staging (3D version)
- *
- * For 3D 7-point stencil with Z-slab partitioning:
- * - Each halo is one full XY-plane = grid_size² elements
- * - Send first plane to prev, last plane to next
- */
-static void exchange_halo_mpi_3d(const double* d_local_send_prev, const double* d_local_send_next,
-                                 double* d_halo_recv_prev, double* d_halo_recv_next,
-                                 double* h_send_prev, double* h_send_next, double* h_recv_prev,
-                                 double* h_recv_next, int halo_size, int rank, int world_size,
-                                 cudaStream_t stream) {
-    MPI_Request requests[4];
-    int req_count = 0;
-
-    // D2H
-    if (rank > 0 && d_local_send_prev != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(h_send_prev, d_local_send_prev, halo_size * sizeof(double),
-                                   cudaMemcpyDeviceToHost, stream));
-    }
-    if (rank < world_size - 1 && d_local_send_next != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(h_send_next, d_local_send_next, halo_size * sizeof(double),
-                                   cudaMemcpyDeviceToHost, stream));
-    }
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    // MPI non-blocking
-    if (rank > 0) {
-        MPI_Isend(h_send_prev, halo_size, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
-        MPI_Irecv(h_recv_prev, halo_size, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
-    }
-    if (rank < world_size - 1) {
-        MPI_Isend(h_send_next, halo_size, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
-        MPI_Irecv(h_recv_next, halo_size, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
-    }
-    if (req_count > 0) {
-        MPI_Waitall(req_count, requests, MPI_STATUSES_IGNORE);
-    }
-
-    // H2D
-    if (rank > 0 && d_halo_recv_prev != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(d_halo_recv_prev, h_recv_prev, halo_size * sizeof(double),
-                                   cudaMemcpyHostToDevice, stream));
-    }
-    if (rank < world_size - 1 && d_halo_recv_next != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(d_halo_recv_next, h_recv_next, halo_size * sizeof(double),
-                                   cudaMemcpyHostToDevice, stream));
-    }
-    CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
 /**
@@ -162,6 +108,13 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         exit(EXIT_FAILURE);
     }
     cublasSetStream(cublas_handle, stream);
+
+    CommContext* comm = config.comm;
+    int own_comm = 0;
+    if (comm == NULL) {
+        comm = comm_create(COMM_STAGED, MPI_COMM_WORLD, (size_t)halo_size);
+        own_comm = 1;
+    }
 
     // Build local CSR partition
     if (rank == 0 && config.verbose >= 1) {
@@ -233,24 +186,30 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
                halo_mem / 1e3);
     }
 
-    // Pinned host buffers for MPI staging
-    double *h_send_prev = NULL, *h_send_next = NULL;
-    double *h_recv_prev = NULL, *h_recv_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMallocHost(&h_send_prev, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMallocHost(&h_send_next, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_next, halo_size * sizeof(double)));
-    }
-
     // Initialize vectors
     CUDA_CHECK(cudaMemcpy(d_b, &b[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(
         cudaMemcpy(d_x_local, &x[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_r_local, 0, n_local * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_p_local, 0, n_local * sizeof(double)));
+
+    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
+    if (rank > 0) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
+    }
+    if (rank < world_size - 1) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
+    }
+
+    // Exercise every send/receive buffer pair once before the clock starts, so
+    // that lazy connection setup or buffer registration by the communication
+    // library is never timed. The timed region rewrites every halo it reads.
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                       d_p_halo_next, halo_size, stream);
 
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -268,18 +227,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial x halo exchange
-    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
-    }
-
-    exchange_halo_mpi_3d(d_x_local,                          // First plane to prev
-                         d_x_local + (n_local - halo_size),  // Last plane to next
-                         d_x_halo_prev, d_x_halo_next, h_send_prev, h_send_next, h_recv_prev,
-                         h_recv_next, halo_size, rank, world_size, stream);
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
 
     // Initial SpMV: Ap = A*x
     stencil7_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
@@ -291,9 +240,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     CUDA_CHECK(cudaMemcpy(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice));
 
     // Exchange r halo
-    exchange_halo_mpi_3d(d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev, d_r_halo_next,
-                         h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
-                         world_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
 
     // p = r
     CUDA_CHECK(
@@ -312,7 +260,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     // rs_old = dot(r, r) + AllReduce
     double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
     double rs_old;
-    MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    rs_old = comm_allreduce_sum(comm, rs_local_old);
 
     double b_norm = sqrt(rs_old);
 
@@ -339,7 +287,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         nvtxRangePop();
 
         double pAp;
-        MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        pAp = comm_allreduce_sum(comm, pAp_local);
 
         double alpha = rs_old / pAp;
 
@@ -357,7 +305,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         nvtxRangePop();
 
         double rs_new;
-        MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        rs_new = comm_allreduce_sum(comm, rs_local_new);
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -388,11 +336,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         nvtxRangePop();
 
         // Halo exchange for p (N² elements per direction)
-        nvtxRangePush("Halo_Exchange_MPI_3D");
-        exchange_halo_mpi_3d(d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
-                             d_p_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                             halo_size, rank, world_size, stream);
-        nvtxRangePop();
+        comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                           d_p_halo_next, halo_size, stream);
 
         rs_old = rs_new;
         nvtxRangePop();
@@ -489,14 +434,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     if (d_r_halo_next)
         cudaFree(d_r_halo_next);
 
-    if (h_send_prev)
-        cudaFreeHost(h_send_prev);
-    if (h_send_next)
-        cudaFreeHost(h_send_next);
-    if (h_recv_prev)
-        cudaFreeHost(h_recv_prev);
-    if (h_recv_next)
-        cudaFreeHost(h_recv_next);
+    if (own_comm)
+        comm_destroy(comm);
 
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);
@@ -579,6 +518,13 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         exit(EXIT_FAILURE);
     }
     cublasSetStream(cublas_handle, stream);
+
+    CommContext* comm = config.comm;
+    int own_comm = 0;
+    if (comm == NULL) {
+        comm = comm_create(COMM_STAGED, MPI_COMM_WORLD, (size_t)halo_size);
+        own_comm = 1;
+    }
 
     if (rank == 0 && config.verbose >= 1) {
         printf("Building local CSR partitions...\n");
@@ -681,22 +627,35 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         CUDA_CHECK(cudaMalloc(&d_r_halo_next, halo_size * sizeof(double)));
     }
 
-    double *h_send_prev = NULL, *h_send_next = NULL;
-    double *h_recv_prev = NULL, *h_recv_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMallocHost(&h_send_prev, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMallocHost(&h_send_next, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_next, halo_size * sizeof(double)));
-    }
-
     CUDA_CHECK(cudaMemcpy(d_b, &b[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(
         cudaMemcpy(d_x_local, &x[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_r_local, 0, n_local * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_p_local, 0, n_local * sizeof(double)));
+
+    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
+    if (rank > 0) {
+        if (use_soa)
+            d_x_halo_prev = d_x_ext;  // alias: prev ghost plane
+        else
+            CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
+    }
+    if (rank < world_size - 1) {
+        if (use_soa)
+            d_x_halo_next = d_x_ext + halo_size + n_local;  // alias
+        else
+            CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
+    }
+
+    // Exercise every send/receive buffer pair once before the clock starts, so
+    // that lazy connection setup or buffer registration by the communication
+    // library is never timed. The timed region rewrites every halo it reads.
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                       d_p_halo_next, halo_size, stream);
 
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -713,23 +672,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial x halo exchange
-    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
-    if (rank > 0) {
-        if (use_soa)
-            d_x_halo_prev = d_x_ext;  // alias: prev ghost plane
-        else
-            CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        if (use_soa)
-            d_x_halo_next = d_x_ext + halo_size + n_local;  // alias
-        else
-            CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
-    }
-
-    exchange_halo_mpi_3d(d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev, d_x_halo_next,
-                         h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
-                         world_size, stream);
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
 
     // Initial SpMV: Ap = A*x (27-point kernel, CSR or SoA)
     if (use_soa) {
@@ -746,9 +690,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     CUDA_CHECK(cudaMemcpy(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice));
 
     // Exchange r halo
-    exchange_halo_mpi_3d(d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev, d_r_halo_next,
-                         h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
-                         world_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
 
     // p = r
     CUDA_CHECK(
@@ -766,7 +709,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     // rs_old
     double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
     double rs_old;
-    MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    rs_old = comm_allreduce_sum(comm, rs_local_old);
 
     double b_norm = sqrt(rs_old);
 
@@ -798,7 +741,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         nvtxRangePop();
 
         double pAp;
-        MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        pAp = comm_allreduce_sum(comm, pAp_local);
 
         double alpha = rs_old / pAp;
 
@@ -813,7 +756,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         nvtxRangePop();
 
         double rs_new;
-        MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        rs_new = comm_allreduce_sum(comm, rs_local_new);
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -843,11 +786,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         nvtxRangePop();
 
         // Halo exchange for p
-        nvtxRangePush("Halo_Exchange_MPI_27PT_3D");
-        exchange_halo_mpi_3d(d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
-                             d_p_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                             halo_size, rank, world_size, stream);
-        nvtxRangePop();
+        comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                           d_p_halo_next, halo_size, stream);
 
         rs_old = rs_new;
         nvtxRangePop();
@@ -944,14 +884,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     if (d_r_halo_next)
         cudaFree(d_r_halo_next);
 
-    if (h_send_prev)
-        cudaFreeHost(h_send_prev);
-    if (h_send_next)
-        cudaFreeHost(h_send_next);
-    if (h_recv_prev)
-        cudaFreeHost(h_recv_prev);
-    if (h_recv_next)
-        cudaFreeHost(h_recv_next);
+    if (own_comm)
+        comm_destroy(comm);
 
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);
