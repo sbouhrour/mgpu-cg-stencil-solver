@@ -65,6 +65,8 @@ for st in $STENCILS; do
                 for dots in host device; do CONFIGS+=("$st $n $np $be $dots"); done
             done
             [[ " $BACKENDS " == *" nccl "* ]] && CONFIGS+=("$st $n $np nccl device p2poff")
+            [[ " $BACKENDS " == *" nvshmem "* ]] &&
+                CONFIGS+=("$st $n $np nvshmem host fused" "$st $n $np nvshmem device fused")
         done
         if [ "$AMGX" = 1 ]; then
             for np in $RANKS; do
@@ -94,6 +96,7 @@ for cfg in "${CONFIGS[@]}"; do
         exe="$BIN"
         args=(--stencil="$st" --comm="$be" --dots="$dots" --max-iters="$ITERS" --json="$OUT/$name.json")
         [ "$dots" = device ] && args+=(--check-every="$CHECK_EVERY")
+        [ "$tag" = fused ] && args+=(--fused-halo)
     fi
     # Under CUDA MPS, NVSHMEM needs the per-process GPU shares to add up to at most 100 %
     [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && envx+=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / np)))
