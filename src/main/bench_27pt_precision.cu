@@ -373,7 +373,10 @@ int main(int argc, char** argv) {
 
     cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-    const double peak_gbs = 2.0 * prop.memoryClockRate * (prop.memoryBusWidth / 8) / 1.0e6;
+    // Read through the attribute API: CUDA 13 removed the memoryClockRate field from cudaDeviceProp
+    int mem_clock_khz = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, 0));
+    const double peak_gbs = 2.0 * mem_clock_khz * (prop.memoryBusWidth / 8) / 1.0e6;
     printf("GPU: %s (CC %d.%d, %d SMs, peak DRAM %.1f GB/s)\n", prop.name, prop.major, prop.minor,
            prop.multiProcessorCount, peak_gbs);
     printf("Matrix: %d rows, %lld nnz, grid_size=%d\n", n, nnz, grid_size);

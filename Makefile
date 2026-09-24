@@ -42,6 +42,14 @@ ifneq ($(ARCH),)
     NVCCFLAGS += -arch=sm_$(ARCH)
 endif
 
+# CUDA 13 gives the host stubs of __global__ function templates static linkage by default, which
+# breaks templated kernels instantiated in one file and launched from another (the SoA precision
+# kernels). Restore the previous behaviour on toolkits that have the flag; older ones reject it.
+NVCC_MAJOR := $(shell $(NVCC) --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p')
+ifeq ($(shell [ "$(NVCC_MAJOR)" -ge 13 ] 2>/dev/null && echo yes),yes)
+    NVCCFLAGS += -static-global-template-stub=false
+endif
+
 # Header dependency tracking. Without it, editing a header rebuilds no object file, and a struct
 # whose layout changed leaves stale objects disagreeing on field offsets — a silent, crashing binary.
 DEPFLAGS := -MMD -MP
