@@ -14,7 +14,8 @@
 #
 # Usage:  ./scripts/benchmarking/comm_preflight.sh            (all GPUs of the node)
 #         RANKS="1 2 4" N=128 ./scripts/benchmarking/comm_preflight.sh
-#         SHARED_GPU=1 RANKS="1 2 4" ...   several ranks per GPU (correctness only; NCCL >= 2.31)
+#         SHARED_GPU=1 RANKS="1 2 4" ...   several ranks per GPU (correctness only; NCCL >= 2.31;
+#                                           nvshmem also needs a CUDA MPS daemon, CUDA_MPS_* exported)
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 OUT="${OUT_DIR:-out}/comm_preflight"
@@ -67,7 +68,7 @@ hr "3. Build"
 # run) would make this check test the wrong thing. What the binary links is read from the binary.
 make -B -j"$(nproc)" ARCH="$CC" cg_solver_mgpu_stencil_3d > "$OUT/build.log" 2>&1 \
     || { echo "  build FAILED, see $OUT/build.log"; exit 1; }
-ldd "$BIN" | grep -E 'libmpi\.so|libnccl' | sed 's/^\s*/  links /'
+ldd "$BIN" | grep -E 'libmpi\.so|libnccl|libnvshmem' | sed 's/^\s*/  links /'
 ldd "$BIN" | grep -q libnccl || echo "  built WITHOUT NCCL"
 
 # 27-point operator built in memory from a header-only file
@@ -80,11 +81,18 @@ hr "4. Placement and correctness (27-point, ${N}^3, ${ITERS} iterations)"
 ENVV=()
 [ "$(id -u)" = 0 ] && ENVV+=(--allow-run-as-root)   # rented containers usually run as root
 [ "${SHARED_GPU:-0}" = 1 ] && ENVV+=(-x NCCL_MULTI_RANK_GPU_ENABLE=1)
+# NVSHMEM settings and a CUDA MPS client setup are forwarded when present
+for v in NVSHMEM_REMOTE_TRANSPORT NVSHMEM_SYMMETRIC_SIZE CUDA_MPS_PIPE_DIRECTORY CUDA_MPS_LOG_DIRECTORY; do
+    [ -n "${!v:-}" ] && ENVV+=(-x "$v")
+done
 
 run() {  # $1 ranks, $2 backend, $3 dots ("overlap": host dots, overlap solver) -> $OUT/r$1_$2_$3.log
-    local mode=(--dots="$3")
+    local mode=(--dots="$3") mps=()
+    # Under MPS every run, reference included, gets the same share of the GPU: the share
+    # changes how many SMs cuBLAS sees, hence the last bits of its dot products
+    [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && mps=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / $1)))
     [ "$3" = overlap ] && mode=(--overlap)
-    "$MPIRUN" --oversubscribe "${ENVV[@]}" -np "$1" "$BIN" "$MTX" --stencil=27 --comm="$2" \
+    "$MPIRUN" --oversubscribe "${ENVV[@]}" "${mps[@]}" -np "$1" "$BIN" "$MTX" --stencil=27 --comm="$2" \
         "${mode[@]}" --max-iters="$ITERS" --verbose=3 > "$OUT/r$1_$2_$3.log" 2>&1
 }
 
@@ -109,15 +117,15 @@ for np in $RANKS; do
     if [ "${SHARED_GPU:-0}" != 1 ] && [ "$devs" -ne "$np" ]; then
         echo "  $np ranks: only $devs distinct GPUs used -- rank placement is wrong, stop here"; FAIL=1
     fi
-    for be in staged gpuaware nccl; do
+    for be in staged gpuaware nccl nvshmem; do
         # overlap: the overlap solver must reproduce the synchronous reference bit for bit
         for dots in host device overlap; do
             [ "$be/$dots" = staged/host ] && continue
             log="$OUT/r${np}_${be}_${dots}.log"
             if ! run "$np" "$be" "$dots"; then
                 # -a: progress lines end in carriage returns, which make grep call the log binary
-                if grep -aqE 'built without NCCL|needs a CUDA-aware MPI' "$log"; then
-                    printf '  %-6s %-9s %-7s SKIP (%s)\n' "$np" "$be" "$dots" "$(grep -a -m1 -oE 'built without NCCL|needs a CUDA-aware MPI' "$log")"
+                if grep -aqE 'built without NCCL|built without NVSHMEM|needs a CUDA-aware MPI' "$log"; then
+                    printf '  %-6s %-9s %-7s SKIP (%s)\n' "$np" "$be" "$dots" "$(grep -a -m1 -oE 'built without NCCL|built without NVSHMEM|needs a CUDA-aware MPI' "$log")"
                 else
                     printf '  %-6s %-9s %-7s FAIL (run error, see %s)\n' "$np" "$be" "$dots" "$log"; FAIL=1
                 fi
@@ -128,8 +136,8 @@ for np in $RANKS; do
             case "$res" in
                 IDENTICAL) ;;
                 MISSING) verdict=FAIL ;;
-                *)  # only the device all-reduce of NCCL over 3+ ranks may change summation order
-                    if [ "$be/$dots" = nccl/device ] && [ "$np" -ge 3 ] \
+                *)  # only a library all-reduce (NCCL, NVSHMEM) over 3+ ranks may reorder the sum
+                    if [[ "$be" == nccl || "$be" == nvshmem ]] && [ "$dots" = device ] && [ "$np" -ge 3 ] \
                        && python3 -c "import sys; sys.exit(not float('$res') < float('$TOL'))"; then
                         verdict="PASS (reordered sum)"
                     else
