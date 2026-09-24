@@ -5,10 +5,10 @@
 #   1. topology: is every GPU pair connected by NVLink, or does traffic go through PCIe/host?
 #   2. toolchain: NCCL present, MPI CUDA-aware (the gpuaware backend needs it), UCX CUDA transports
 #   3. placement: does each rank drive a distinct GPU?
-#   4. correctness: at a fixed iteration count, every backend and both dot-product modes must
-#      reproduce the residual history of the staged/host reference, bit for bit, except where the
-#      summation order legitimately changes (NCCL all-reduce over 3+ ranks): there, relative
-#      deviation of r.r must stay below TOL.
+#   4. correctness: at a fixed iteration count, every backend, in both dot-product modes and in the
+#      overlap solver, must reproduce the residual history of the staged/host reference bit for
+#      bit, except where the summation order legitimately changes (NCCL all-reduce over 3+ ranks):
+#      there, relative deviation of r.r must stay below TOL.
 #
 # Nothing here is timed. A backend that fails section 4 must not be measured.
 #
@@ -81,9 +81,11 @@ ENVV=()
 [ "$(id -u)" = 0 ] && ENVV+=(--allow-run-as-root)   # rented containers usually run as root
 [ "${SHARED_GPU:-0}" = 1 ] && ENVV+=(-x NCCL_MULTI_RANK_GPU_ENABLE=1)
 
-run() {  # $1 ranks, $2 backend, $3 dots -> writes $OUT/r$1_$2_$3.log, returns the exit status
+run() {  # $1 ranks, $2 backend, $3 dots ("overlap": host dots, overlap solver) -> $OUT/r$1_$2_$3.log
+    local mode=(--dots="$3")
+    [ "$3" = overlap ] && mode=(--overlap)
     "$MPIRUN" --oversubscribe "${ENVV[@]}" -np "$1" "$BIN" "$MTX" --stencil=27 --comm="$2" \
-        --dots="$3" --max-iters="$ITERS" --verbose=3 > "$OUT/r$1_$2_$3.log" 2>&1
+        "${mode[@]}" --max-iters="$ITERS" --verbose=3 > "$OUT/r$1_$2_$3.log" 2>&1
 }
 
 # Compares two hex traces: prints IDENTICAL, or the max relative deviation of r.r
@@ -108,7 +110,8 @@ for np in $RANKS; do
         echo "  $np ranks: only $devs distinct GPUs used -- rank placement is wrong, stop here"; FAIL=1
     fi
     for be in staged gpuaware nccl; do
-        for dots in host device; do
+        # overlap: the overlap solver must reproduce the synchronous reference bit for bit
+        for dots in host device overlap; do
             [ "$be/$dots" = staged/host ] && continue
             log="$OUT/r${np}_${be}_${dots}.log"
             if ! run "$np" "$be" "$dots"; then
