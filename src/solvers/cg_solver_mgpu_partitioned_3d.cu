@@ -194,6 +194,59 @@ static void cg_scalars_update_p(CgScalars* S, const double* r, double* p, int n,
     }
 }
 
+/*
+ * --fused-halo: the same updates, and the threads owning a boundary plane also store their new
+ * value straight into the neighbour's halo (a pointer into its memory from nvshmem_ptr). The fence
+ * makes those stores visible system-wide before anything this thread does next; the signal that
+ * follows the kernel on the stream then tells the neighbour its halo is complete.
+ */
+static __device__ __forceinline__ void store_boundary(double v, int i, int n, int halo,
+                                                      double* into_prev, double* into_next) {
+    if (into_prev && i < halo) {
+        into_prev[i] = v;
+        __threadfence_system();
+    }
+    if (into_next && i >= n - halo) {
+        into_next[i - (n - halo)] = v;
+        __threadfence_system();
+    }
+}
+
+static __global__ void axpby_halo_kernel(double alpha, const double* x, double beta, double* y,
+                                         int n, int halo, double* into_prev, double* into_next) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double v = alpha * x[i] + beta * y[i];  // same expression as axpby_kernel
+        y[i] = v;
+        store_boundary(v, i, n, halo, into_prev, into_next);
+    }
+}
+
+static __global__ void axpby_ratio_halo_kernel(double alpha, const double* x, const double* num,
+                                               const double* den, double* y, int n, int halo,
+                                               double* into_prev, double* into_next) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double beta = *num / *den;
+        double v = alpha * x[i] + beta * y[i];  // same expression as axpby_ratio_kernel
+        y[i] = v;
+        store_boundary(v, i, n, halo, into_prev, into_next);
+    }
+}
+
+/** p = r + beta p, boundary planes stored into the neighbours' halos as well */
+static void cg_scalars_update_p_fused(CgScalars* S, const double* r, double* p, int n, int halo,
+                                      double* into_prev, double* into_next, int blocks,
+                                      int threads) {
+    if (S->on_device) {
+        axpby_ratio_halo_kernel<<<blocks, threads, 0, S->stream>>>(
+            1.0, r, S->d_rs_new, S->d_rs_old, p, n, halo, into_prev, into_next);
+    } else {
+        axpby_halo_kernel<<<blocks, threads, 0, S->stream>>>(1.0, r, S->rs_new / S->rs_old, p, n,
+                                                             halo, into_prev, into_next);
+    }
+}
+
 /** rs_old = rs_new (device mode swaps the two slots, the host copy follows what was read). */
 static void cg_scalars_advance(CgScalars* S) {
     if (S->on_device) {
@@ -367,6 +420,25 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     CgScalars S;
     cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
 
+    // --fused-halo: p's halo planes live in symmetric memory, so that each neighbour can store
+    // into them directly from its axpby kernel
+    double *into_prev = NULL, *into_next = NULL;
+    if (config.fused_halo) {
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+        d_p_halo_prev = comm_symmetric_alloc(comm, (size_t)halo_size);  // every rank, same order
+        d_p_halo_next = comm_symmetric_alloc(comm, (size_t)halo_size);
+        if (comm_fused_peers(comm, d_p_halo_prev, d_p_halo_next, &into_prev, &into_next) != 0) {
+            fprintf(stderr,
+                    "[Rank %d] --fused-halo: a neighbour's memory is not directly addressable "
+                    "(needs NVLink, PCIe P2P or the same GPU)\n",
+                    rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    }
+
     // --graph: record check_every iterations once, before the clock starts (instantiation is
     // setup, like the communicator), then replay them. Every operation of the iteration is
     // stream-ordered here (device scalars, NCCL), so capture sees no host synchronization. The
@@ -486,6 +558,11 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
             continue;
         }
 
+        // --fused-halo: the SpMV reads p's halo, which the neighbours wrote at the end of the
+        // previous iteration; iteration 0 reads the halo set up before the loop
+        if (config.fused_halo && iter > 0)
+            comm_fused_wait(comm, stream);
+
         // Ap = A * p
         nvtxRangePush("SpMV_3D");
         stencil7_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
@@ -537,12 +614,20 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
         // p = r + beta * p, beta = rs_new / rs_old
         nvtxRangePush("BLAS_AXPBY");
-        cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
-        nvtxRangePop();
+        if (config.fused_halo) {
+            // The update writes the neighbours' halos itself; one signal each follows it
+            cg_scalars_update_p_fused(&S, d_r_local, d_p_local, n_local, halo_size, into_prev,
+                                      into_next, blocks_local, threads);
+            comm_fused_notify(comm, stream);
+            nvtxRangePop();
+        } else {
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
+            nvtxRangePop();
 
-        // Halo exchange for p (N² elements per direction)
-        comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
-                           d_p_halo_next, halo_size, stream);
+            // Halo exchange for p (N² elements per direction)
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+        }
 
         cg_scalars_advance(&S);
         nvtxRangePop();
@@ -630,10 +715,15 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         cudaFree(d_x_halo_prev);
     if (d_x_halo_next)
         cudaFree(d_x_halo_next);
-    if (d_p_halo_prev)
-        cudaFree(d_p_halo_prev);
-    if (d_p_halo_next)
-        cudaFree(d_p_halo_next);
+    if (config.fused_halo) {
+        comm_symmetric_free(comm, d_p_halo_prev);
+        comm_symmetric_free(comm, d_p_halo_next);
+    } else {
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+    }
     if (d_r_halo_prev)
         cudaFree(d_r_halo_prev);
     if (d_r_halo_next)
@@ -868,6 +958,25 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     CgScalars S;
     cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
 
+    // --fused-halo: p's halo planes live in symmetric memory, so that each neighbour can store
+    // into them directly from its axpby kernel
+    double *into_prev = NULL, *into_next = NULL;
+    if (config.fused_halo) {
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+        d_p_halo_prev = comm_symmetric_alloc(comm, (size_t)halo_size);  // every rank, same order
+        d_p_halo_next = comm_symmetric_alloc(comm, (size_t)halo_size);
+        if (comm_fused_peers(comm, d_p_halo_prev, d_p_halo_next, &into_prev, &into_next) != 0) {
+            fprintf(stderr,
+                    "[Rank %d] --fused-halo: a neighbour's memory is not directly addressable "
+                    "(needs NVLink, PCIe P2P or the same GPU)\n",
+                    rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    }
+
     // --graph: record check_every iterations once, before the clock starts (instantiation is
     // setup, like the communicator), then replay them. Every operation of the iteration is
     // stream-ordered here (device scalars, NCCL), so capture sees no host synchronization. The
@@ -995,6 +1104,11 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
             continue;
         }
 
+        // --fused-halo: the SpMV reads p's halo, which the neighbours wrote at the end of the
+        // previous iteration; iteration 0 reads the halo set up before the loop
+        if (config.fused_halo && iter > 0)
+            comm_fused_wait(comm, stream);
+
         // Ap = A * p (27-point kernel, CSR or SoA)
         nvtxRangePush("SpMV_27PT_3D");
         if (use_soa) {
@@ -1051,12 +1165,20 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
         // p = r + beta * p, beta = rs_new / rs_old
         nvtxRangePush("BLAS_AXPBY");
-        cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
-        nvtxRangePop();
+        if (config.fused_halo) {
+            // The update writes the neighbours' halos itself; one signal each follows it
+            cg_scalars_update_p_fused(&S, d_r_local, d_p_local, n_local, halo_size, into_prev,
+                                      into_next, blocks_local, threads);
+            comm_fused_notify(comm, stream);
+            nvtxRangePop();
+        } else {
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
+            nvtxRangePop();
 
-        // Halo exchange for p (N² elements per direction)
-        comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
-                           d_p_halo_next, halo_size, stream);
+            // Halo exchange for p (N² elements per direction)
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+        }
 
         cg_scalars_advance(&S);
         nvtxRangePop();
@@ -1140,10 +1262,15 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
             cudaFree(d_x_halo_prev);
         if (d_x_halo_next)
             cudaFree(d_x_halo_next);
-        if (d_p_halo_prev)
-            cudaFree(d_p_halo_prev);
-        if (d_p_halo_next)
-            cudaFree(d_p_halo_next);
+        if (config.fused_halo) {
+            comm_symmetric_free(comm, d_p_halo_prev);
+            comm_symmetric_free(comm, d_p_halo_next);
+        } else {
+            if (d_p_halo_prev)
+                cudaFree(d_p_halo_prev);
+            if (d_p_halo_next)
+                cudaFree(d_p_halo_next);
+        }
     }
     cudaFree(d_r_local);
     cudaFree(d_Ap);

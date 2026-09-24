@@ -77,6 +77,31 @@ void comm_halo_begin(CommContext* ctx, const double* d_send_prev, const double* 
 void comm_halo_post(CommContext* ctx);
 void comm_halo_end(CommContext* ctx);
 
+/*
+ * Fused halo (nvshmem only): the kernel that updates a vector stores its boundary planes straight
+ * into the neighbours' halo buffers, then comm_fused_notify tells each neighbour; the neighbour's
+ * comm_fused_wait orders its next read after those stores. There is no acknowledgement: the caller
+ * must separate two updates by a global reduction (CG's p.Ap does), which cannot complete before
+ * every neighbour has finished reading its halo.
+ */
+
+/** Device memory a neighbour can address: nvshmem_malloc for nvshmem (collective: every rank,
+ *  same size, same order), cudaMalloc otherwise. */
+double* comm_symmetric_alloc(CommContext* ctx, size_t elems);
+void comm_symmetric_free(CommContext* ctx, double* p);
+
+/**
+ * @brief Direct pointers to the neighbours' copies of two symmetric halo buffers
+ * @param d_halo_prev, d_halo_next  this rank's halo buffers (from comm_symmetric_alloc)
+ * @param[out] into_prev  rank-1's d_halo_next (where my first plane goes), NULL without rank-1
+ * @param[out] into_next  rank+1's d_halo_prev (where my last plane goes), NULL without rank+1
+ * @return 0 if every existing neighbour is directly addressable (same GPU, NVLink, P2P)
+ */
+int comm_fused_peers(CommContext* ctx, double* d_halo_prev, double* d_halo_next, double** into_prev,
+                     double** into_next);
+void comm_fused_notify(CommContext* ctx, cudaStream_t stream);
+void comm_fused_wait(CommContext* ctx, cudaStream_t stream);
+
 /** Sum a host scalar over all ranks (MPI_Allreduce on the host for every backend). */
 double comm_allreduce_sum(CommContext* ctx, double local);
 
