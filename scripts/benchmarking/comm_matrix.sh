@@ -27,7 +27,7 @@ STENCILS="${STENCILS:-7 27}"
 SIZES="${SIZES:-128 256 512}"
 ITERS="${ITERS:-300}"
 CHECK_EVERY="${CHECK_EVERY:-10}"
-BACKENDS="${BACKENDS:-staged gpuaware nccl}"
+BACKENDS="${BACKENDS:-staged gpuaware nccl nvshmem}"
 BIN=./bin/cg_solver_mgpu_stencil_3d
 AMGX_BIN=./external/benchmarks/amgx/amgx_cg_solver_mgpu
 AMGX="${AMGX:-$([ -x "$AMGX_BIN" ] && echo 1 || echo 0)}"
@@ -40,6 +40,9 @@ fi
 ROOT=()
 [ "$(id -u)" = 0 ] && ROOT=(--allow-run-as-root)
 [ "${SHARED_GPU:-0}" = 1 ] && ROOT+=(--oversubscribe -x NCCL_MULTI_RANK_GPU_ENABLE=1)
+for v in NVSHMEM_REMOTE_TRANSPORT NVSHMEM_SYMMETRIC_SIZE CUDA_MPS_PIPE_DIRECTORY CUDA_MPS_LOG_DIRECTORY; do
+    [ -n "${!v:-}" ] && ROOT+=(-x "$v")
+done
 
 # Header-only files: both loaders build this rank's rows in memory
 stub() {  # $1 stencil, $2 N -> path
@@ -92,6 +95,8 @@ for cfg in "${CONFIGS[@]}"; do
         args=(--stencil="$st" --comm="$be" --dots="$dots" --max-iters="$ITERS" --json="$OUT/$name.json")
         [ "$dots" = device ] && args+=(--check-every="$CHECK_EVERY")
     fi
+    # Under CUDA MPS, NVSHMEM needs the per-process GPU shares to add up to at most 100 %
+    [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && envx+=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / np)))
     start=$(date +%s)
     if "$MPIRUN" "${ROOT[@]}" "${envx[@]}" -np "$np" "$exe" "$(stub "$st" "$n")" "${args[@]}" \
          > "$OUT/$name.log" 2>&1; then
