@@ -60,6 +60,20 @@ void comm_halo_exchange(CommContext* ctx, const double* d_send_prev, const doubl
                         double* d_recv_prev, double* d_recv_next, int halo_elems,
                         cudaStream_t stream);
 
+/**
+ * @brief The same exchange split in three calls, to overlap it with interior work
+ *
+ * begin enqueues on stream what can be enqueued (staged: the device-to-host copies);
+ * the caller then launches work that does not read the halo; post starts the transfer
+ * (the MPI backends wait for stream here, nccl enqueues on it); end completes it. After
+ * end, the received planes are visible to work enqueued on stream: a caller computing
+ * on another stream records an event on stream and waits on it. One exchange at a time.
+ */
+void comm_halo_begin(CommContext* ctx, const double* d_send_prev, const double* d_send_next,
+                     double* d_recv_prev, double* d_recv_next, int halo_elems, cudaStream_t stream);
+void comm_halo_post(CommContext* ctx);
+void comm_halo_end(CommContext* ctx);
+
 /** Sum a host scalar over all ranks (MPI_Allreduce on the host for every backend). */
 double comm_allreduce_sum(CommContext* ctx, double local);
 
