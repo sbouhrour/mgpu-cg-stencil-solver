@@ -31,7 +31,7 @@
     }
   ],
   "earlier_run": {
-    "note": "CUDA 12.8; the record labels the GPU 'NVIDIA A100 80GB PCIe' and could not be re-verified. Its bandwidth column was removed: it charged the stencil kernel with index arrays it never reads, and exceeded the DRAM peak. Times are kept as recorded.",
+    "note": "CUDA 12.8, on A100-SXM4-80GB (the original record said 'A100 80GB PCIe', a transcription error). Its bandwidth column was removed: it charged the stencil kernel with index arrays it never reads, and exceeded the DRAM peak. Times are kept as recorded.",
     "date": "2026-01-10",
     "results": [
       {

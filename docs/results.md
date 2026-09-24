@@ -47,17 +47,19 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 
 ## 2D — SpMV Format Comparison
 
-| Matrix Size | GPU | cuSPARSE | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup |
-|-------------|-----|----------|---------------:|------------------:|--------:|
-| **10k×10k** (100M unknowns) | A100 80GB¹ | CUDA 12.8 | 6.77 ms | 3.25 ms | **2.08×** |
-| **15k×15k** (225M unknowns) | A100 80GB¹ | CUDA 12.8 | 15.00 ms | 7.29 ms | **2.06×** |
-| **20k×20k** (400M unknowns) | A100 80GB¹ | CUDA 12.8 | 26.77 ms | 12.86 ms | **2.08×** |
-| **10k×10k** | A100-SXM4-80GB | CUDA 12.8 | 6.80 ms | 3.31 ms | **2.05×** |
-| **10k×10k** | A100-SXM4-80GB | CUDA 13.0 | 6.10 ms | 3.31 ms | **1.84×** |
+**Format comparison** on NVIDIA A100-SXM4-80GB
 
-<sub>Median of 10 runs. DRAM traffic measured with Nsight Compute: 56.0 B/row for the stencil kernel
-(1,690 GB/s on the SXM4, 83% of peak), 83.3-83.8 B/row for cuSPARSE. ¹ Recorded as the PCIe variant.
-Analysis in [`profiling-2d.md`](profiling-2d.md#2-spmv-kernel-analysis).</sub>
+| Matrix Size | cuSPARSE | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup |
+|-------------|----------|---------------:|------------------:|--------:|
+| **10k×10k** (100M unknowns) | CUDA 12.8 | 6.77 ms | 3.25 ms | **2.08×** |
+| **15k×15k** (225M unknowns) | CUDA 12.8 | 15.00 ms | 7.29 ms | **2.06×** |
+| **20k×20k** (400M unknowns) | CUDA 12.8 | 26.77 ms | 12.86 ms | **2.08×** |
+| **10k×10k** (100M unknowns) | CUDA 12.8 | 6.80 ms | 3.31 ms | **2.05×** |
+| **10k×10k** (100M unknowns) | CUDA 13.0 | 6.10 ms | 3.31 ms | **1.84×** |
+
+<sub>Median of 10 runs; the last two rows come from one later session on one node. DRAM traffic measured with Nsight Compute: 56.0 B/row for the stencil kernel
+(1.69-1.74 TB/s, 83-85% of peak), 83.3-83.8 B/row for cuSPARSE. Analysis in
+[`profiling-2d.md`](profiling-2d.md#2-spmv-kernel-analysis).</sub>
 
 ## 2D — Custom CG vs NVIDIA AmgX
 
