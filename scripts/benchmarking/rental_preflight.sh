@@ -18,16 +18,21 @@ mkdir -p "$OUT" matrix
 hr() { printf '\n===== %s =====\n' "$1"; }
 
 hr "1. Nsight Compute verdict"
-# A remapped UID namespace means the NVIDIA driver will refuse counter access whatever the
-# container capabilities report, because it checks the initial namespace.
-if head -1 /proc/self/uid_map 2>/dev/null | grep -qE '^\s*0\s+0\s'; then
-    echo "  uid_map: initial namespace -- ncu may work"
+# The host driver decides. RmProfilingAdminOnly=0 opens the counters to every user, whatever the
+# container's user namespace. Only when it is 1 does a remapped uid_map matter: the driver then wants
+# root of the initial namespace, which a container never is. Seen on 2026-09-24: uid_map remapped,
+# RmProfilingAdminOnly=0, ncu working. The final verdict below runs ncu for real either way.
+ADMIN_ONLY=$(awk '/RmProfilingAdminOnly/{print $2}' /proc/driver/nvidia/params 2>/dev/null)
+if [ "$ADMIN_ONLY" = 0 ]; then
+    echo "  RmProfilingAdminOnly: 0 -- counters open to all users, ncu should work"
+    NCU_LIKELY=1
+elif head -1 /proc/self/uid_map 2>/dev/null | grep -qE '^\s*0\s+0\s'; then
+    echo "  RmProfilingAdminOnly: ${ADMIN_ONLY:-unknown}, uid_map initial -- ncu may work as root"
     NCU_LIKELY=1
 else
-    echo "  uid_map: REMAPPED ($(head -1 /proc/self/uid_map 2>/dev/null | tr -s ' ')) -- ncu will be denied"
+    echo "  RmProfilingAdminOnly: ${ADMIN_ONLY:-unknown}, uid_map REMAPPED -- ncu will be denied"
     NCU_LIKELY=0
 fi
-grep -i RestrictProfiling /proc/driver/nvidia/params 2>/dev/null || echo "  (host module params not exposed, normal in a container)"
 
 hr "2. Hardware"
 nvidia-smi --query-gpu=index,name,compute_cap,memory.total,driver_version --format=csv | tee "$OUT/hw_gpus.csv"
