@@ -9,7 +9,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | Finding | Impact |
 |---------|--------|
 | AmgX spends **48% of compute time** in generic CSR SpMV | Primary optimization target |
-| Custom stencil SpMV is **1.84-2.05× faster** than cuSPARSE CSR (CUDA 13.0 / 12.8) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
+| Custom stencil SpMV is **2.08× faster** than the cuSPARSE CSR of CUDA 12.8 (1.84× against CUDA 13.0) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
 | Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
 | Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
@@ -84,7 +84,7 @@ the benchmark's own kernel time.
 | cuSPARSE CSR, CUDA 13.0 | 6.10 ms | 83.3 | 1,367 GB/s | 67% | **1.84×** |
 | Stencil kernel | 3.31 ms | 56.0 | 1,690 GB/s | **83%** | — |
 
-The cuSPARSE version matters: the same matrix, on the same GPU, runs 11% faster with the cuSPARSE of
+This re-measurement reproduces the published 2.08× ([results](results.md#2d-spmv-format-comparison)) at 2.05× with the same cuSPARSE. The cuSPARSE version matters: the same matrix, on the same GPU, runs 11% faster with the cuSPARSE of
 CUDA 13.0 (a shorter partitioning pass and a faster `csrmv` kernel at equal bytes). The stencil kernel
 runs in the same 3.31 ms whichever toolkit compiles it. Times are medians over a rotation of 3 builds ×
 3 GPUs; GPU-to-GPU variation stays below 1%.
@@ -255,7 +255,7 @@ These commands document the profiling of this specific analysis. For general rep
 
 1. **SpMV is the bottleneck**: 48% of AmgX time, making kernel optimization high-impact
 
-2. **Structure exploitation works**: Eliminating index indirection yields a 1.84-2.05× SpMV speedup (cuSPARSE of CUDA 13.0 / 12.8): 1.49× fewer bytes times 1.24-1.37× higher achieved bandwidth
+2. **Structure exploitation works**: Eliminating index indirection yields a 2.08× SpMV speedup against the cuSPARSE of CUDA 12.8 (1.84× against CUDA 13.0): about 1.5× fewer bytes times 1.24-1.37× higher achieved bandwidth
 
 3. **Gains compound at scale**: Single-GPU advantage (1.40×) maintained through 8 GPUs (1.44×)
 
