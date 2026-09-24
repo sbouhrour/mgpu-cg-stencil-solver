@@ -57,7 +57,8 @@ for algo in Ring Tree NVLS; do
         f="$OUT/all_reduce_small_${algo}_${proto}.txt"
         ENVX=(-x NCCL_ALGO="$algo" -x NCCL_PROTO="$proto")
         nt "$NGPU" all_reduce_perf -b 8 -e 1M -f 4 > "$f" 2>&1
-        t8=$(awk '!/^#/ && $1 == 8 {print $6; exit}' "$f")
+        # an unsupported pair prints an error line, not a table row: accept numbers only
+        t8=$(awk '!/^#/ && $1 == 8 && $6 ~ /^[0-9.]+$/ {print $6; exit}' "$f")
         printf '  %-5s %-6s 8 B: %s us\n' "$algo" "$proto" "${t8:-n/a (unsupported here?)}"
     done
 done
