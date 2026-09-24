@@ -91,7 +91,11 @@ run() {  # $1 ranks, $2 backend, $3 dots ("overlap": host dots, overlap solver) 
     # Under MPS every run, reference included, gets the same share of the GPU: the share
     # changes how many SMs cuBLAS sees, hence the last bits of its dot products
     [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && mps=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / $1)))
-    [ "$3" = overlap ] && mode=(--overlap)
+    case "$3" in
+        overlap) mode=(--overlap) ;;
+        fused) mode=(--fused-halo) ;;                         # halo written by the p update
+        fused_device) mode=(--fused-halo --dots=device) ;;
+    esac
     "$MPIRUN" --oversubscribe "${ENVV[@]}" "${mps[@]}" -np "$1" "$BIN" "$MTX" --stencil=27 --comm="$2" \
         "${mode[@]}" --max-iters="$ITERS" --verbose=3 > "$OUT/r$1_$2_$3.log" 2>&1
 }
@@ -119,7 +123,9 @@ for np in $RANKS; do
     fi
     for be in staged gpuaware nccl nvshmem; do
         # overlap: the overlap solver must reproduce the synchronous reference bit for bit
-        for dots in host device overlap; do
+        modes="host device overlap"
+        [ "$be" = nvshmem ] && modes="$modes fused fused_device"
+        for dots in $modes; do
             [ "$be/$dots" = staged/host ] && continue
             log="$OUT/r${np}_${be}_${dots}.log"
             if ! run "$np" "$be" "$dots"; then
@@ -137,7 +143,7 @@ for np in $RANKS; do
                 IDENTICAL) ;;
                 MISSING) verdict=FAIL ;;
                 *)  # only a library all-reduce (NCCL, NVSHMEM) over 3+ ranks may reorder the sum
-                    if [[ "$be" == nccl || "$be" == nvshmem ]] && [ "$dots" = device ] && [ "$np" -ge 3 ] \
+                    if [[ "$be" == nccl || "$be" == nvshmem ]] && [[ "$dots" == *device ]] && [ "$np" -ge 3 ] \
                        && python3 -c "import sys; sys.exit(not float('$res') < float('$TOL'))"; then
                         verdict="PASS (reordered sum)"
                     else
