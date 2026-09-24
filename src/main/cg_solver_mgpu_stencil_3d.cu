@@ -55,6 +55,10 @@ int main(int argc, char** argv) {
             printf("  --graph         Replay K iterations as one CUDA graph (needs --comm=nccl,\n");
             printf("                  --dots=device, even --check-every=K)\n");
             printf(
+                "  --fused-halo    With --comm=nvshmem: the p update stores its boundary planes\n");
+            printf("                  straight into the neighbours' halos (NVLink, P2P or same "
+                   "GPU)\n");
+            printf(
                 "                  (soa: coefficient-major values; 27-point sync solver only)\n");
         }
         MPI_Finalize();
@@ -80,6 +84,7 @@ int main(int argc, char** argv) {
     config.dots_device = 0;
     config.check_every = 1;
     config.use_graph = 0;
+    config.fused_halo = 0;
     CommBackendKind comm_kind_arg = COMM_STAGED;
 
     // Parse arguments before using them
@@ -128,6 +133,8 @@ int main(int argc, char** argv) {
                 MPI_Finalize();
                 return 1;
             }
+        } else if (strcmp(argv[i], "--fused-halo") == 0) {
+            config.fused_halo = 1;
         } else if (strcmp(argv[i], "--graph") == 0) {
             config.use_graph = 1;
         } else if (strncmp(argv[i], "--check-every=", 14) == 0) {
@@ -173,6 +180,14 @@ int main(int argc, char** argv) {
         if (rank == 0)
             fprintf(stderr, "Error: --graph needs --comm=nccl --dots=device and an even "
                             "--check-every >= 2 (no host synchronization inside the graph)\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (config.fused_halo &&
+        (comm_kind_arg != COMM_NVSHMEM || config.enable_overlap || config.use_graph || spmv_soa)) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --fused-halo needs --comm=nvshmem, without --overlap, --graph "
+                            "or --spmv=soa\n");
         MPI_Finalize();
         return 1;
     }
@@ -268,6 +283,8 @@ int main(int argc, char** argv) {
             printf(" (convergence test every %d iterations)", config.check_every);
         if (config.use_graph)
             printf(", CUDA graph");
+        if (config.fused_halo)
+            printf(", halo fused into the p update");
         printf("\n");
     }
 
@@ -445,7 +462,9 @@ int main(int argc, char** argv) {
                            ? "3d-stencil-27pt-overlap"
                            : (spmv_soa ? "3d-stencil-27pt-soa" : "3d-stencil-27pt"))
                     : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
-            export_cg_mgpu_json(json_file, mode_str, comm_backend_name(comm_kind_arg),
+            export_cg_mgpu_json(json_file, mode_str,
+                                config.fused_halo ? "nvshmem-fused"
+                                                  : comm_backend_name(comm_kind_arg),
                                 config.dots_device ? "device" : "host", config.check_every, &mat,
                                 &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);

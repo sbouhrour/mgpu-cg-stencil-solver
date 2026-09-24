@@ -45,12 +45,14 @@ struct CommContext {
     // Symmetric memory, same addresses on every PE:
     //   land: [0, max) receives from rank-1, [max, 2 max) receives from rank+1
     //   sig:  [0] data from rank-1 landed, [1] data from rank+1 landed,
-    //         [2] rank-1 consumed what I sent it, [3] rank+1 consumed what I sent it
+    //         [2] rank-1 consumed what I sent it, [3] rank+1 consumed what I sent it,
+    //         [4] rank-1 wrote my halo (fused), [5] rank+1 wrote my halo (fused)
     //   red:  [0] reduction input, [1] reduction output
     double* land;
     uint64_t* sig;
     double* red;
-    uint64_t seq;  // exchanges so far; identical on every PE
+    uint64_t seq;        // exchanges so far; identical on every PE
+    uint64_t fused_seq;  // fused halo updates so far
 #endif
 
     // Exchange in flight between comm_halo_begin and comm_halo_end
@@ -173,9 +175,10 @@ static int nvshmem_setup(CommContext* ctx) {
     }
     // Collective allocations: same size on every PE
     ctx->land = (double*)nvshmem_malloc(2 * ctx->max_halo_elems * sizeof(double));
-    ctx->sig = (uint64_t*)nvshmem_calloc(4, sizeof(uint64_t));
+    ctx->sig = (uint64_t*)nvshmem_calloc(6, sizeof(uint64_t));
     ctx->red = (double*)nvshmem_malloc(2 * sizeof(double));
     ctx->seq = 0;
+    ctx->fused_seq = 0;
     if (!ctx->land || !ctx->sig || !ctx->red) {
         fprintf(stderr, "[Rank %d] nvshmem_malloc failed\n", ctx->rank);
         return 1;
@@ -558,6 +561,80 @@ void comm_halo_end(CommContext* ctx) {
     }
     ctx->pending.req_count = 0;
     nvtxRangePop();
+}
+
+double* comm_symmetric_alloc(CommContext* ctx, size_t elems) {
+    double* p = NULL;
+#ifdef HAS_NVSHMEM
+    if (ctx->kind == COMM_NVSHMEM) {
+        p = (double*)nvshmem_malloc(elems * sizeof(double));
+        if (!p) {
+            fprintf(stderr, "[Rank %d] nvshmem_malloc(%zu doubles) failed\n", ctx->rank, elems);
+            MPI_Abort(ctx->comm, 1);
+        }
+        return p;
+    }
+#endif
+    CUDA_CHECK(cudaMalloc(&p, elems * sizeof(double)));
+    return p;
+}
+
+void comm_symmetric_free(CommContext* ctx, double* p) {
+#ifdef HAS_NVSHMEM
+    if (ctx->kind == COMM_NVSHMEM) {
+        nvshmem_free(p);
+        return;
+    }
+#endif
+    cudaFree(p);
+}
+
+int comm_fused_peers(CommContext* ctx, double* d_halo_prev, double* d_halo_next, double** into_prev,
+                     double** into_next) {
+    *into_prev = NULL;
+    *into_next = NULL;
+#ifdef HAS_NVSHMEM
+    if (ctx->kind == COMM_NVSHMEM) {
+        if (ctx->rank > 0)
+            *into_prev = (double*)nvshmem_ptr(d_halo_next, ctx->rank - 1);
+        if (ctx->rank < ctx->world_size - 1)
+            *into_next = (double*)nvshmem_ptr(d_halo_prev, ctx->rank + 1);
+        const int ok =
+            (ctx->rank == 0 || *into_prev) && (ctx->rank == ctx->world_size - 1 || *into_next);
+        return ok ? 0 : 1;
+    }
+#endif
+    (void)d_halo_prev;
+    (void)d_halo_next;
+    return 1;
+}
+
+void comm_fused_notify(CommContext* ctx, cudaStream_t stream) {
+#ifdef HAS_NVSHMEM
+    // Ordered after the kernel that stored into the neighbours' halos
+    const uint64_t seq = ++ctx->fused_seq;
+    if (ctx->rank > 0)  // I wrote rank-1's halo_next: its "rank+1 wrote" flag
+        nvshmemx_signal_op_on_stream(&ctx->sig[5], seq, NVSHMEM_SIGNAL_SET, ctx->rank - 1, stream);
+    if (ctx->rank < ctx->world_size - 1)
+        nvshmemx_signal_op_on_stream(&ctx->sig[4], seq, NVSHMEM_SIGNAL_SET, ctx->rank + 1, stream);
+#else
+    (void)ctx;
+    (void)stream;
+#endif
+}
+
+void comm_fused_wait(CommContext* ctx, cudaStream_t stream) {
+#ifdef HAS_NVSHMEM
+    // Neighbours notify once per update, in step with this rank's own count
+    const uint64_t seq = ctx->fused_seq;
+    if (ctx->rank > 0)
+        nvshmemx_signal_wait_until_on_stream(&ctx->sig[4], NVSHMEM_CMP_GE, seq, stream);
+    if (ctx->rank < ctx->world_size - 1)
+        nvshmemx_signal_wait_until_on_stream(&ctx->sig[5], NVSHMEM_CMP_GE, seq, stream);
+#else
+    (void)ctx;
+    (void)stream;
+#endif
 }
 
 double comm_allreduce_sum(CommContext* ctx, double local) {
