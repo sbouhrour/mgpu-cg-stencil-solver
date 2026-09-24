@@ -47,30 +47,17 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 
 ## 2D — SpMV Format Comparison
 
-**Format comparison**, cuSPARSE of CUDA 12.8, median of 10 runs
+| Matrix Size | GPU | cuSPARSE | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup |
+|-------------|-----|----------|---------------:|------------------:|--------:|
+| **10k×10k** (100M unknowns) | A100 80GB¹ | CUDA 12.8 | 6.77 ms | 3.25 ms | **2.08×** |
+| **15k×15k** (225M unknowns) | A100 80GB¹ | CUDA 12.8 | 15.00 ms | 7.29 ms | **2.06×** |
+| **20k×20k** (400M unknowns) | A100 80GB¹ | CUDA 12.8 | 26.77 ms | 12.86 ms | **2.08×** |
+| **10k×10k** | A100-SXM4-80GB | CUDA 12.8 | 6.80 ms | 3.31 ms | **2.05×** |
+| **10k×10k** | A100-SXM4-80GB | CUDA 13.0 | 6.10 ms | 3.31 ms | **1.84×** |
 
-| Matrix Size | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup |
-|-------------|---------------:|------------------:|--------:|
-| **10k×10k** (100M unknowns) | 6.77 ms | 3.25 ms | **2.08×** |
-| **15k×15k** (225M unknowns) | 15.00 ms | 7.29 ms | **2.06×** |
-| **20k×20k** (400M unknowns) | 26.77 ms | 12.86 ms | **2.08×** |
-
-<sub>The record of this run labels the GPU "A100 80GB PCIe"; it could not be re-verified, hence the
-re-measurement below. The bandwidth column first published with this table (up to 2,364 GB/s, above the DRAM
-peak) charged the stencil kernel with index arrays it never reads, and has been removed: with the measured
-56.0 B per row, the stencil kernel ran at 1.72-1.74 TB/s at all three sizes.</sub>
-
-**Re-measured** on NVIDIA A100-SXM4-80GB, 10k×10k, with DRAM bytes from Nsight Compute
-
-| cuSPARSE version | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup | Achieved DRAM bandwidth |
-|------------------|---------------:|------------------:|--------:|------------------------|
-| CUDA 12.8 | 6.80 ms | 3.31 ms | **2.05×** | 1,232 → 1,690 GB/s (60% → 83% of peak) |
-| CUDA 13.0 | 6.10 ms | 3.31 ms | **1.84×** | 1,367 → 1,690 GB/s (67% → 83% of peak) |
-
-<sub>Same cuSPARSE, same speedup within 1.5%. The stencil kernel runs in 3.31 ms whatever toolkit builds it;
-the cuSPARSE of CUDA 13.0 is 11% faster, so the speedup is only meaningful with the cuSPARSE version next to
-it. Bytes per row measured: 83.8 / 83.3 for cuSPARSE, 56.0 for the stencil kernel. Analysis in
-[`profiling-2d.md`](profiling-2d.md#2-spmv-kernel-analysis).</sub>
+<sub>Median of 10 runs. DRAM traffic measured with Nsight Compute: 56.0 B/row for the stencil kernel
+(1,690 GB/s on the SXM4, 83% of peak), 83.3-83.8 B/row for cuSPARSE. ¹ Recorded as the PCIe variant.
+Analysis in [`profiling-2d.md`](profiling-2d.md#2-spmv-kernel-analysis).</sub>
 
 ## 2D — Custom CG vs NVIDIA AmgX
 

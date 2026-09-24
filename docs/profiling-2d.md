@@ -84,7 +84,7 @@ the benchmark's own kernel time.
 | cuSPARSE CSR, CUDA 13.0 | 6.10 ms | 83.3 | 1,367 GB/s | 67% | **1.84×** |
 | Stencil kernel | 3.31 ms | 56.0 | 1,690 GB/s | **83%** | — |
 
-This re-measurement reproduces the published 2.08× ([results](results.md#2d-spmv-format-comparison)) at 2.05× with the same cuSPARSE. The cuSPARSE version matters: the same matrix, on the same GPU, runs 11% faster with the cuSPARSE of
+The cuSPARSE version matters: the same matrix, on the same GPU, runs 11% faster with the cuSPARSE of
 CUDA 13.0 (a shorter partitioning pass and a faster `csrmv` kernel at equal bytes). The stencil kernel
 runs in the same 3.31 ms whichever toolkit compiles it. Times are medians over a rotation of 3 builds ×
 3 GPUs; GPU-to-GPU variation stays below 1%.
