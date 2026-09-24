@@ -14,6 +14,8 @@
  * - staged:   device -> pinned host -> MPI -> pinned host -> device
  * - gpuaware: device pointers passed straight to MPI (requires a CUDA-aware MPI)
  * - nccl:     ncclSend/ncclRecv enqueued on the solver stream (build with NCCL)
+ * - nvshmem:  one-sided puts into the neighbour's symmetric memory, ordered on the solver
+ *             stream (build with NVSHMEM; several ranks per GPU need CUDA MPS)
  *
  * The CUDA device must be selected before comm_create: a NCCL communicator
  * binds to the device that is current when it is created.
@@ -30,11 +32,12 @@ typedef enum {
     COMM_STAGED = 0,
     COMM_GPUAWARE = 1,
     COMM_NCCL = 2,
+    COMM_NVSHMEM = 3,
 } CommBackendKind;
 
 typedef struct CommContext CommContext;
 
-/** Parse "staged" / "gpuaware" / "nccl". Returns 0 on success. */
+/** Parse "staged" / "gpuaware" / "nccl" / "nvshmem". Returns 0 on success. */
 int comm_backend_parse(const char* name, CommBackendKind* kind);
 const char* comm_backend_name(CommBackendKind kind);
 
@@ -53,8 +56,8 @@ CommBackendKind comm_kind(const CommContext* ctx);
  * Sends d_send_prev to rank-1 and d_send_next to rank+1, receives into
  * d_recv_prev / d_recv_next. Pointers for a missing neighbour are ignored.
  * On return the received planes are visible to work later enqueued on stream.
- * staged and gpuaware block the host until the exchange completes; nccl only
- * enqueues it on stream and returns.
+ * staged and gpuaware block the host until the exchange completes; nccl and
+ * nvshmem only enqueue it on stream and return.
  */
 void comm_halo_exchange(CommContext* ctx, const double* d_send_prev, const double* d_send_next,
                         double* d_recv_prev, double* d_recv_next, int halo_elems,

@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
                 "                  3 adds exact (hex) residual trace for bit-level comparison\n");
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
             printf("  --spmv=MODE     SpMV kernel: csr (default) or soa\n");
-            printf("  --comm=MODE     Halo backend: staged (default), gpuaware or nccl\n");
+            printf("  --comm=MODE     Halo backend: staged (default), gpuaware, nccl, nvshmem\n");
             printf("  --dots=MODE     CG scalars: host (default) or device (never read back\n");
             printf("                  except to test convergence)\n");
             printf("  --check-every=K With --dots=device, test convergence every K iterations\n");
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
         } else if (strncmp(argv[i], "--comm=", 7) == 0) {
             if (comm_backend_parse(argv[i] + 7, &comm_kind_arg) != 0) {
                 if (rank == 0)
-                    fprintf(stderr, "Error: --comm must be staged, gpuaware or nccl\n");
+                    fprintf(stderr, "Error: --comm must be staged, gpuaware, nccl or nvshmem\n");
                 MPI_Finalize();
                 return 1;
             }

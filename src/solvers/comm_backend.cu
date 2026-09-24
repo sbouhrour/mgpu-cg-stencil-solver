@@ -15,6 +15,11 @@
 #ifdef HAS_NCCL
     #include <nccl.h>
 #endif
+#ifdef HAS_NVSHMEM
+    #include <stdint.h>
+    #include <nvshmem.h>
+    #include <nvshmemx.h>
+#endif
 
 #include "spmv.h"
 #include "solvers/comm_backend.h"
@@ -35,6 +40,17 @@ struct CommContext {
 
 #ifdef HAS_NCCL
     ncclComm_t nccl;
+#endif
+#ifdef HAS_NVSHMEM
+    // Symmetric memory, same addresses on every PE:
+    //   land: [0, max) receives from rank-1, [max, 2 max) receives from rank+1
+    //   sig:  [0] data from rank-1 landed, [1] data from rank+1 landed,
+    //         [2] rank-1 consumed what I sent it, [3] rank+1 consumed what I sent it
+    //   red:  [0] reduction input, [1] reduction output
+    double* land;
+    uint64_t* sig;
+    double* red;
+    uint64_t seq;  // exchanges so far; identical on every PE
 #endif
 
     // Exchange in flight between comm_halo_begin and comm_halo_end
@@ -61,6 +77,8 @@ int comm_backend_parse(const char* name, CommBackendKind* kind) {
         *kind = COMM_GPUAWARE;
     } else if (strcmp(name, "nccl") == 0) {
         *kind = COMM_NCCL;
+    } else if (strcmp(name, "nvshmem") == 0) {
+        *kind = COMM_NVSHMEM;
     } else {
         return 1;
     }
@@ -75,6 +93,8 @@ const char* comm_backend_name(CommBackendKind kind) {
             return "gpuaware";
         case COMM_NCCL:
             return "nccl";
+        case COMM_NVSHMEM:
+            return "nvshmem";
     }
     return "unknown";
 }
@@ -139,6 +159,75 @@ static int nccl_init(CommContext* ctx) {
 }
 #endif
 
+#ifdef HAS_NVSHMEM
+static int nvshmem_setup(CommContext* ctx) {
+    nvshmemx_uniqueid_t id = NVSHMEMX_UNIQUEID_INITIALIZER;
+    if (ctx->rank == 0)
+        nvshmemx_get_uniqueid(&id);
+    MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, ctx->comm);
+    nvshmemx_init_attr_t attr = NVSHMEMX_INIT_ATTR_INITIALIZER;
+    nvshmemx_set_attr_uniqueid_args(ctx->rank, ctx->world_size, &id, &attr);
+    if (nvshmemx_init_attr(NVSHMEMX_INIT_WITH_UNIQUEID, &attr) != 0) {
+        fprintf(stderr, "[Rank %d] nvshmemx_init_attr failed\n", ctx->rank);
+        return 1;
+    }
+    // Collective allocations: same size on every PE
+    ctx->land = (double*)nvshmem_malloc(2 * ctx->max_halo_elems * sizeof(double));
+    ctx->sig = (uint64_t*)nvshmem_calloc(4, sizeof(uint64_t));
+    ctx->red = (double*)nvshmem_malloc(2 * sizeof(double));
+    ctx->seq = 0;
+    if (!ctx->land || !ctx->sig || !ctx->red) {
+        fprintf(stderr, "[Rank %d] nvshmem_malloc failed\n", ctx->rank);
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Halo exchange by one-sided puts, entirely ordered on stream
+ *
+ * Each plane is put straight into the neighbour's landing buffer together with a
+ * signal; the receiver waits for the signal, copies the plane into its halo and
+ * acknowledges. A sender waits for the acknowledgement of its previous exchange
+ * before putting again: without it, a rank that runs ahead would overwrite a
+ * landing buffer its neighbour has not read yet (two exchanges can follow each
+ * other with no reduction in between, as x and r do before the first iteration).
+ */
+static void halo_nvshmem(CommContext* ctx, const double* d_send_prev, const double* d_send_next,
+                         double* d_recv_prev, double* d_recv_next, int halo_elems,
+                         cudaStream_t stream) {
+    const int has_prev = ctx->rank > 0;
+    const int has_next = ctx->rank < ctx->world_size - 1;
+    const size_t bytes = (size_t)halo_elems * sizeof(double);
+    const uint64_t seq = ++ctx->seq;
+    double* from_prev = ctx->land;
+    double* from_next = ctx->land + ctx->max_halo_elems;
+
+    if (has_next) {  // my last plane lands in rank+1's from_prev slot
+        nvshmemx_signal_wait_until_on_stream(&ctx->sig[3], NVSHMEM_CMP_GE, seq - 1, stream);
+        nvshmemx_putmem_signal_on_stream(from_prev, d_send_next, bytes, &ctx->sig[0], seq,
+                                         NVSHMEM_SIGNAL_SET, ctx->rank + 1, stream);
+    }
+    if (has_prev) {  // my first plane lands in rank-1's from_next slot
+        nvshmemx_signal_wait_until_on_stream(&ctx->sig[2], NVSHMEM_CMP_GE, seq - 1, stream);
+        nvshmemx_putmem_signal_on_stream(from_next, d_send_prev, bytes, &ctx->sig[1], seq,
+                                         NVSHMEM_SIGNAL_SET, ctx->rank - 1, stream);
+    }
+    if (has_prev) {
+        nvshmemx_signal_wait_until_on_stream(&ctx->sig[0], NVSHMEM_CMP_GE, seq, stream);
+        CUDA_CHECK(
+            cudaMemcpyAsync(d_recv_prev, from_prev, bytes, cudaMemcpyDeviceToDevice, stream));
+        nvshmemx_signal_op_on_stream(&ctx->sig[3], seq, NVSHMEM_SIGNAL_SET, ctx->rank - 1, stream);
+    }
+    if (has_next) {
+        nvshmemx_signal_wait_until_on_stream(&ctx->sig[1], NVSHMEM_CMP_GE, seq, stream);
+        CUDA_CHECK(
+            cudaMemcpyAsync(d_recv_next, from_next, bytes, cudaMemcpyDeviceToDevice, stream));
+        nvshmemx_signal_op_on_stream(&ctx->sig[2], seq, NVSHMEM_SIGNAL_SET, ctx->rank + 1, stream);
+    }
+}
+#endif
+
 CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_halo_elems) {
     CommContext* ctx = (CommContext*)calloc(1, sizeof(CommContext));
     ctx->kind = kind;
@@ -188,6 +277,21 @@ CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_hal
 #endif
     }
 
+    if (kind == COMM_NVSHMEM) {
+#ifdef HAS_NVSHMEM
+        if (nvshmem_setup(ctx) != 0) {
+            free(ctx);
+            return NULL;
+        }
+#else
+        if (ctx->rank == 0)
+            fprintf(stderr,
+                    "Error: --comm=nvshmem requested but this binary was built without NVSHMEM\n");
+        free(ctx);
+        return NULL;
+#endif
+    }
+
     if (kind == COMM_STAGED) {
         size_t bytes = max_halo_elems * sizeof(double);
         CUDA_CHECK(cudaMallocHost(&ctx->h_send_prev, bytes));
@@ -212,6 +316,14 @@ void comm_destroy(CommContext* ctx) {
 #ifdef HAS_NCCL
     if (ctx->kind == COMM_NCCL)
         ncclCommDestroy(ctx->nccl);
+#endif
+#ifdef HAS_NVSHMEM
+    if (ctx->kind == COMM_NVSHMEM) {
+        nvshmem_free(ctx->land);
+        nvshmem_free(ctx->sig);
+        nvshmem_free(ctx->red);
+        nvshmem_finalize();
+    }
 #endif
     free(ctx);
 }
@@ -342,6 +454,12 @@ void comm_halo_exchange(CommContext* ctx, const double* d_send_prev, const doubl
             halo_nccl(ctx, d_send_prev, d_send_next, d_recv_prev, d_recv_next, halo_elems, stream);
 #endif
             break;
+        case COMM_NVSHMEM:
+#ifdef HAS_NVSHMEM
+            halo_nvshmem(ctx, d_send_prev, d_send_next, d_recv_prev, d_recv_next, halo_elems,
+                         stream);
+#endif
+            break;
     }
     nvtxRangePop();
 }
@@ -416,6 +534,12 @@ void comm_halo_post(CommContext* ctx) {
                       ctx->pending.recv_next, n, ctx->pending.stream);
 #endif
             break;
+        case COMM_NVSHMEM:
+#ifdef HAS_NVSHMEM
+            halo_nvshmem(ctx, ctx->pending.send_prev, ctx->pending.send_next,
+                         ctx->pending.recv_prev, ctx->pending.recv_next, n, ctx->pending.stream);
+#endif
+            break;
     }
 }
 
@@ -464,6 +588,17 @@ void comm_allreduce_sum_device(CommContext* ctx, double* d_value, cudaStream_t s
         case COMM_NCCL:
 #ifdef HAS_NCCL
             NCCL_CHECK(ncclAllReduce(d_value, d_value, 1, ncclDouble, ncclSum, ctx->nccl, stream));
+#endif
+            break;
+        case COMM_NVSHMEM:
+#ifdef HAS_NVSHMEM
+            // The reduction reads and writes symmetric memory only
+            CUDA_CHECK(cudaMemcpyAsync(&ctx->red[0], d_value, sizeof(double),
+                                       cudaMemcpyDeviceToDevice, stream));
+            nvshmemx_double_sum_reduce_on_stream(NVSHMEM_TEAM_WORLD, &ctx->red[1], &ctx->red[0], 1,
+                                                 stream);
+            CUDA_CHECK(cudaMemcpyAsync(d_value, &ctx->red[1], sizeof(double),
+                                       cudaMemcpyDeviceToDevice, stream));
 #endif
             break;
     }
