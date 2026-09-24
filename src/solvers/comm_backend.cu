@@ -155,10 +155,18 @@ CommContext* comm_create(CommBackendKind kind, MPI_Comm mpi_comm, size_t max_hal
 
     if (kind == COMM_NCCL) {
 #ifdef HAS_NCCL
+        // Reported because this setup, once charged to the solve, is what a timed NCCL run
+        // must never contain: it is paid here, once, before any timed region.
+        double t0 = MPI_Wtime();
         if (nccl_init(ctx) != 0) {
             free(ctx);
             return NULL;
         }
+        double setup_ms = (MPI_Wtime() - t0) * 1e3, max_ms;
+        MPI_Reduce(&setup_ms, &max_ms, 1, MPI_DOUBLE, MPI_MAX, 0, mpi_comm);
+        if (ctx->rank == 0)
+            printf("NCCL setup (communicator + first exchange with each neighbour): %.1f ms\n",
+                   max_ms);
 #else
         if (ctx->rank == 0)
             fprintf(stderr,
