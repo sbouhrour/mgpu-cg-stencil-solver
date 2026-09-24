@@ -113,6 +113,62 @@ fi
 hr "6. Smoke test"
 ./bin/bench_27pt_precision matrix/stencil3d_27pt_128.mtx --reps=2 2>&1 | tail -12 | tee "$OUT/smoke.txt"
 
+hr "7. MPI between two ranks on this node (512 KB, host buffers)"
+# The multi-GPU solvers stage every halo through host memory and hand it to MPI, so a node whose MPI
+# moves data slowly between local processes is unusable for scaling runs, however good its GPUs are.
+# Seen on 2026-09-24: an 8x A100 node reproduced single-GPU results within 1% and ran 8-GPU CG 2.2x
+# slower than published; nsys put the loss on MPI_Waitall, 512 KB messages at ~0.8 GB/s. 512 KB is one
+# halo plane of a 256^3 grid in double precision. The 3 GB/s threshold is a judgement: well above that
+# node, well below what shared memory usually sustains. Below it, measure single-GPU work only.
+MPI_VERDICT="not tested (no mpicc/mpirun)"
+if command -v mpicc >/dev/null && command -v mpirun >/dev/null; then
+    cat > "$OUT/mpi_pingpong.c" <<'EOC'
+#include <mpi.h>
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char** argv) {
+    const int bytes = 512 * 1024, warmup = 20, iters = 200;
+    int rank;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    char* buf = malloc(bytes);
+    for (int i = 0; i < bytes; i++) buf[i] = (char)i;
+    double t0 = 0.0;
+    for (int i = 0; i < warmup + iters; i++) {
+        if (i == warmup) { MPI_Barrier(MPI_COMM_WORLD); t0 = MPI_Wtime(); }
+        if (rank == 0) {
+            MPI_Send(buf, bytes, MPI_CHAR, 1, 0, MPI_COMM_WORLD);
+            MPI_Recv(buf, bytes, MPI_CHAR, 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        } else if (rank == 1) {
+            MPI_Recv(buf, bytes, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Send(buf, bytes, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+        }
+    }
+    double dt = MPI_Wtime() - t0;
+    if (rank == 0)  /* two messages per round trip */
+        printf("%.2f %.1f\n", 2.0 * bytes * iters / dt / 1e9, dt / iters * 1e6);
+    free(buf);
+    MPI_Finalize();
+    return 0;
+}
+EOC
+    if mpicc -O2 -o "$OUT/mpi_pingpong" "$OUT/mpi_pingpong.c" 2>"$OUT/mpi_pingpong.build.log"; then
+        MPI_OUT=$(timeout 120 mpirun --allow-run-as-root -np 2 "$OUT/mpi_pingpong" 2>"$OUT/mpi_pingpong.err" | tail -1)
+        MPI_GBS=${MPI_OUT%% *}
+        if [ -z "$MPI_GBS" ]; then
+            MPI_VERDICT="FAILED or hung (see $OUT/mpi_pingpong.err) -- no multi-GPU runs"
+        elif awk -v b="$MPI_GBS" 'BEGIN{exit !(b >= 3.0)}'; then
+            MPI_VERDICT="OK, ${MPI_GBS} GB/s (round trip ${MPI_OUT##* } us) -- multi-GPU runs can proceed"
+        else
+            MPI_VERDICT="SLOW, ${MPI_GBS} GB/s (round trip ${MPI_OUT##* } us) -- single-GPU work only"
+        fi
+    else
+        MPI_VERDICT="mpicc failed (see $OUT/mpi_pingpong.build.log)"
+    fi
+fi
+echo "  $MPI_VERDICT"
+printf 'mpi_512k=%s\n' "$MPI_VERDICT" >> "$OUT/hw_info.txt"
+
 hr "Verdict"
 if [ "$NCU_LIKELY" = 1 ] && command -v ncu >/dev/null; then
     if ncu --metrics dram__bytes.sum ./bin/bench_27pt_precision matrix/stencil3d_27pt_128.mtx --reps=1 2>&1 \
@@ -124,4 +180,5 @@ if [ "$NCU_LIKELY" = 1 ] && command -v ncu >/dev/null; then
 else
     echo "  ncu: unavailable -- timings and nsys only (expected on container marketplaces)"
 fi
+echo "  mpi: $MPI_VERDICT"
 echo "  Ready. Next: ./scripts/benchmarking/rental_session.sh"
