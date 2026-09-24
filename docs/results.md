@@ -47,13 +47,29 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 
 ## 2D — SpMV Format Comparison
 
-**Format Comparison** on NVIDIA A100 80GB PCIe
+**Format comparison** on NVIDIA A100-SXM4-80GB, 10k×10k grid (100M unknowns, 500M non-zeros), FP64
 
-| Matrix Size | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup | Bandwidth Improvement |
-|-------------|----------------|-------------------|---------|----------------------|
-| **10k×10k** (100M unknowns) | 6.77 ms | 3.25 ms | **2.08×** | 1.98× (1182 → 2339 GB/s) |
-| **15k×15k** (225M unknowns) | 15.00 ms | 7.29 ms | **2.06×** | 1.96× (1200 → 2346 GB/s) |
-| **20k×20k** (400M unknowns) | 26.77 ms | 12.86 ms | **2.08×** | 1.98× (1195 → 2364 GB/s) |
+| cuSPARSE version | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup | Achieved DRAM bandwidth |
+|------------------|---------------:|------------------:|--------:|------------------------|
+| CUDA 12.8 | 6.80 ms | 3.31 ms | **2.05×** | 1,232 → 1,690 GB/s (60% → 83% of peak) |
+| CUDA 13.0 | 6.10 ms | 3.31 ms | **1.84×** | 1,367 → 1,690 GB/s (67% → 83% of peak) |
+
+<sub>Bandwidth = DRAM bytes measured with Nsight Compute (83.8 / 83.3 B per row for cuSPARSE, 56.0 for the
+stencil kernel) divided by the benchmark time. The stencil kernel runs in 3.31 ms whatever toolkit builds
+it; the speedup moves with the cuSPARSE version. Analysis in [`profiling-2d.md`](profiling-2d.md#2-spmv-kernel-analysis).</sub>
+
+??? note "Earlier run (CUDA 12.8), 10k to 20k"
+
+    | Matrix Size | CSR (cuSPARSE) | STENCIL5 (Custom) | Speedup |
+    |-------------|---------------:|------------------:|--------:|
+    | **10k×10k** (100M unknowns) | 6.77 ms | 3.25 ms | **2.08×** |
+    | **15k×15k** (225M unknowns) | 15.00 ms | 7.29 ms | **2.06×** |
+    | **20k×20k** (400M unknowns) | 26.77 ms | 12.86 ms | **2.08×** |
+
+    Its record labels the GPU "A100 80GB PCIe"; this could not be re-verified. The 10k×10k times are
+    reproduced within 2% on an A100-SXM4-80GB with the same cuSPARSE. The bandwidth column published with it
+    (up to 2,364 GB/s, above the DRAM peak) charged the stencil kernel with index arrays it never reads;
+    with the measured 56.0 B per row, the stencil kernel ran at 1.72-1.74 TB/s at all three sizes.
 
 ## 2D — Custom CG vs NVIDIA AmgX
 

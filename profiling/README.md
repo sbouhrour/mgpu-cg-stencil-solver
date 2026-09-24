@@ -26,17 +26,13 @@ profiling/
 
 | Profile                                      | Description        | Hardware |
 |----------------------------------------------|--------------------|----------|
-| `roofline_cusparse_csr_7000_rtx4060.ncu-rep` | cuSPARSE CSR SpMV  | RTX 4060 Laptop |
-| `roofline_stencil_7000_rtx4060.ncu-rep`      | Stencil SpMV (7k)  | RTX 4060 Laptop |
-| `roofline_stencil_5000_rtx4060.ncu-rep`      | Stencil SpMV (5k)  | RTX 4060 Laptop |
-| `roofline_stencil_512_rtx4060.ncu-rep`       | Stencil SpMV (512) | RTX 4060 Laptop |
+| `spmv_2d_10000_a100.ncu-rep` | cuSPARSE CSR and stencil SpMV, 10k×10k, roofline set + DRAM bytes | A100-SXM4-80GB |
 
-### `images/` - Exported Screenshots
+### `images/` - Figures
 
-| Image                              | Description                           |
-|------------------------------------|---------------------------------------|
-| `cusparse_csr_7000_image.png`      | Roofline cuSPARSE CSR (ncu-ui export) |
-| `custom_stencil_csr_7000_image.png`| Roofline stencil kernel (ncu-ui export)|
+| Image | Description |
+|-------|-------------|
+| `roofline_spmv_comparison.png` | SpMV roofline on A100-SXM4-80GB, measured DRAM bytes (`scripts/plotting/plot_roofline.py`) |
 
 ## Viewing Profiles
 
@@ -45,7 +41,7 @@ profiling/
 nsys-ui profiling/nsys/mpi_2ranks_profile_10000.nsys-rep
 
 # Nsight Compute GUI
-ncu-ui profiling/ncu/roofline_stencil_7000_rtx4060.ncu-rep
+ncu-ui profiling/ncu/spmv_2d_10000_a100.ncu-rep
 ```
 
 ## Generating New Profiles
@@ -65,13 +61,10 @@ nsys profile --trace=cuda,mpi,nvtx -o profiling/nsys/amgx_2gpu \
 ### Nsight Compute (Roofline)
 
 ```bash
-# cuSPARSE CSR roofline
-ncu --set roofline -o profiling/ncu/roofline_cusparse \
-    ./bin/spmv_bench matrix/stencil_7000x7000.mtx --mode=cusparse-csr
-
-# Stencil kernel roofline
-ncu --set roofline -o profiling/ncu/roofline_stencil \
-    ./bin/spmv_bench matrix/stencil_7000x7000.mtx --mode=stencil5-csr
+# Both SpMV implementations in one report, clocks left to the GPU
+ncu --set roofline --metrics dram__bytes_read.sum,dram__bytes_write.sum --clock-control none \
+    -k regex:"csrmv_v3|csr_partition|stencil5_csr_direct" -o profiling/ncu/spmv_2d_10000_a100 \
+    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr,stencil5-csr
 ```
 
 ## Key Observations

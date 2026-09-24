@@ -4,7 +4,7 @@ This document describes how the performance results are measured: timing scope, 
 
 For build and run instructions, see [`reproducing.md`](reproducing.md). For the full benchmark results, see [`results.md`](results.md).
 
-> **Hardware context.** All headline results were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). Profiling for roofline analysis was performed on RTX 4060 Laptop due to NCU permission constraints on shared A100 hosts. See [`profiling-2d.md`](profiling-2d.md) and [`profiling-3d.md`](profiling-3d.md) for the analyses themselves.
+> **Hardware context.** All headline results were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The SpMV roofline was profiled with Nsight Compute on the same A100-SXM4-80GB model (DRAM bytes measured per kernel). See [`profiling-2d.md`](profiling-2d.md) and [`profiling-3d.md`](profiling-3d.md) for the analyses themselves.
 
 **How results were measured:**
 
@@ -25,15 +25,15 @@ For build and run instructions, see [`reproducing.md`](reproducing.md). For the 
 nvcc -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true -std=c++11
 ```
 
-**Compilation flags asymmetry.** The Custom CG and the AmgX library are not built with the same settings, and the difference favors AmgX:
+**Compilation flags asymmetry.** The Custom CG and the AmgX library are not built with the same settings:
 
-1. **Optimization level.** The Custom CG is built with `-O2` (and `--ptxas-options=-O2`, below the `ptxas` default of `-O3`); the AmgX library is built `-O3` (CMake Release). The `-O3` in `external/benchmarks/amgx/Makefile` applies only to the thin benchmark wrapper, not to AmgX's kernels.
+1. **Optimization level.** The Custom CG is built with `-O2` (and `--ptxas-options=-O2`, below the `ptxas` default of `-O3`); the AmgX library is built `-O3` (CMake Release). The `-O3` in `external/benchmarks/amgx/Makefile` applies only to the thin benchmark wrapper, not to AmgX's kernels. **Measured effect on the GPU code: none.** Rebuilt for `sm_80` at `-O2` and at `-O3 --ptxas-options=-O3`, all 27 kernels of `spmv_bench` and `cg_solver_mgpu_stencil` produce instruction-for-instruction identical SASS; only host code differs.
 
-2. **Architecture targeting.** The Custom CG ships PTX for a default virtual architecture (no `-arch`/`-gencode`), JIT-compiled to SASS on first launch; the AmgX library ships native SASS for real architectures, including `sm_80` (the A100 of the Key Numbers). This is likely the heavier of the two asymmetries — though for a memory-bound double-precision SpMV its practical effect is expected to be limited, and it has not been measured here.
+2. **Architecture targeting.** The Custom CG ships PTX for a default virtual architecture (no `-arch`/`-gencode`), JIT-compiled to SASS on first launch; the AmgX library ships native SASS for real architectures, including `sm_80`. **Measured on the SpMV kernel: no effect.** On an A100-SXM4-80GB with CUDA 12.8, the stencil SpMV runs in 3.313 ms whether JIT-compiled from PTX or built natively for `sm_80` (10k×10k grid). The other kernels were not timed in both modes.
 
 **Floating-point mode.** Neither build enables `--use_fast_math`, so both use default IEEE arithmetic — not a source of asymmetry. This is deliberate: strict IEEE arithmetic (no flush-to-zero, no approximate reciprocals/square-roots) preserves the precision and reproducibility that matter in production iterative solvers, at little expected cost on a memory-bound kernel.
 
-**Consequence.** Both flag asymmetries favor AmgX, so the measured speedup is conservative: aligning the Custom CG flags (`-O3`, `-arch`) would be expected to increase the advantage, not reduce it. The magnitude is unquantified — only the direction is established — and measuring it is left as future work.
+**Consequence.** Neither asymmetry changes the speed of the custom SpMV kernel, so the reported speedups are neither inflated nor deflated by the build settings on the GPU side. What remains unmeasured is the host code (kernel launches, MPI calls), built at `-O2` against AmgX's `-O3`.
 
 **Run benchmarks on your hardware:**
 ```bash
