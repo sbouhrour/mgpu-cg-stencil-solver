@@ -183,13 +183,6 @@ int main(int argc, char** argv) {
         MPI_Finalize();
         return 1;
     }
-    if (comm_kind_arg != COMM_STAGED && config.enable_overlap) {
-        if (rank == 0)
-            fprintf(stderr, "Error: --comm=%s is not supported with --overlap yet\n",
-                    comm_backend_name(comm_kind_arg));
-        MPI_Finalize();
-        return 1;
-    }
     if (spmv_soa && config.enable_overlap) {
         if (rank == 0)
             fprintf(stderr, "Error: --spmv=soa is not supported with --overlap yet\n");

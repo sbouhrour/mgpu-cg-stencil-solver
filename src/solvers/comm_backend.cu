@@ -37,6 +37,18 @@ struct CommContext {
     ncclComm_t nccl;
 #endif
 
+    // Exchange in flight between comm_halo_begin and comm_halo_end
+    struct {
+        const double* send_prev;
+        const double* send_next;
+        double* recv_prev;
+        double* recv_next;
+        int elems;
+        cudaStream_t stream;
+        MPI_Request requests[4];
+        int req_count;
+    } pending;
+
     char halo_label[32];
     char allreduce_label[32];
     char allreduce_device_label[32];
@@ -331,6 +343,96 @@ void comm_halo_exchange(CommContext* ctx, const double* d_send_prev, const doubl
 #endif
             break;
     }
+    nvtxRangePop();
+}
+
+void comm_halo_begin(CommContext* ctx, const double* d_send_prev, const double* d_send_next,
+                     double* d_recv_prev, double* d_recv_next, int halo_elems,
+                     cudaStream_t stream) {
+    if ((size_t)halo_elems > ctx->max_halo_elems) {
+        fprintf(stderr, "comm_halo_begin: %d elements exceeds context capacity %zu\n", halo_elems,
+                ctx->max_halo_elems);
+        MPI_Abort(ctx->comm, 1);
+    }
+    ctx->pending.send_prev = d_send_prev;
+    ctx->pending.send_next = d_send_next;
+    ctx->pending.recv_prev = d_recv_prev;
+    ctx->pending.recv_next = d_recv_next;
+    ctx->pending.elems = halo_elems;
+    ctx->pending.stream = stream;
+    ctx->pending.req_count = 0;
+    nvtxRangePushA(ctx->halo_label);
+    if (ctx->kind == COMM_STAGED) {
+        const size_t bytes = (size_t)halo_elems * sizeof(double);
+        if (ctx->rank > 0)
+            CUDA_CHECK(cudaMemcpyAsync(ctx->h_send_prev, d_send_prev, bytes, cudaMemcpyDeviceToHost,
+                                       stream));
+        if (ctx->rank < ctx->world_size - 1)
+            CUDA_CHECK(cudaMemcpyAsync(ctx->h_send_next, d_send_next, bytes, cudaMemcpyDeviceToHost,
+                                       stream));
+    }
+}
+
+void comm_halo_post(CommContext* ctx) {
+    const int has_prev = ctx->rank > 0;
+    const int has_next = ctx->rank < ctx->world_size - 1;
+    const int n = ctx->pending.elems;
+    MPI_Request* rq = ctx->pending.requests;
+    int* rc = &ctx->pending.req_count;
+    switch (ctx->kind) {
+        case COMM_STAGED:
+            CUDA_CHECK(cudaStreamSynchronize(ctx->pending.stream));  // D2H landed
+            if (has_prev) {
+                MPI_Isend(ctx->h_send_prev, n, MPI_DOUBLE, ctx->rank - 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+                MPI_Irecv(ctx->h_recv_prev, n, MPI_DOUBLE, ctx->rank - 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+            }
+            if (has_next) {
+                MPI_Isend(ctx->h_send_next, n, MPI_DOUBLE, ctx->rank + 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+                MPI_Irecv(ctx->h_recv_next, n, MPI_DOUBLE, ctx->rank + 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+            }
+            break;
+        case COMM_GPUAWARE:
+            CUDA_CHECK(cudaStreamSynchronize(ctx->pending.stream));  // send planes written
+            if (has_prev) {
+                MPI_Isend(ctx->pending.send_prev, n, MPI_DOUBLE, ctx->rank - 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+                MPI_Irecv(ctx->pending.recv_prev, n, MPI_DOUBLE, ctx->rank - 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+            }
+            if (has_next) {
+                MPI_Isend(ctx->pending.send_next, n, MPI_DOUBLE, ctx->rank + 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+                MPI_Irecv(ctx->pending.recv_next, n, MPI_DOUBLE, ctx->rank + 1, 0, ctx->comm,
+                          &rq[(*rc)++]);
+            }
+            break;
+        case COMM_NCCL:
+#ifdef HAS_NCCL
+            halo_nccl(ctx, ctx->pending.send_prev, ctx->pending.send_next, ctx->pending.recv_prev,
+                      ctx->pending.recv_next, n, ctx->pending.stream);
+#endif
+            break;
+    }
+}
+
+void comm_halo_end(CommContext* ctx) {
+    if (ctx->pending.req_count > 0)
+        MPI_Waitall(ctx->pending.req_count, ctx->pending.requests, MPI_STATUSES_IGNORE);
+    if (ctx->kind == COMM_STAGED) {
+        const size_t bytes = (size_t)ctx->pending.elems * sizeof(double);
+        if (ctx->rank > 0)
+            CUDA_CHECK(cudaMemcpyAsync(ctx->pending.recv_prev, ctx->h_recv_prev, bytes,
+                                       cudaMemcpyHostToDevice, ctx->pending.stream));
+        if (ctx->rank < ctx->world_size - 1)
+            CUDA_CHECK(cudaMemcpyAsync(ctx->pending.recv_next, ctx->h_recv_next, bytes,
+                                       cudaMemcpyHostToDevice, ctx->pending.stream));
+        CUDA_CHECK(cudaStreamSynchronize(ctx->pending.stream));
+    }
+    ctx->pending.req_count = 0;
     nvtxRangePop();
 }
 
