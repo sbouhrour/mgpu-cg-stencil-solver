@@ -556,7 +556,9 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
     }
 
     // Set GPU device
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
 
     // Partition: 1D row-band decomposition
     int n_local = n / world_size;
@@ -567,8 +569,9 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank % device_count));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank % device_count, prop.name,
+               prop.major, prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows)\n", rank, row_offset, row_offset + n_local,
                n_local);
     }
@@ -871,6 +874,9 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
         }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
+        }
 
         // Check convergence
         if (rel_residual < config.tolerance) {
@@ -1055,7 +1061,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
 
     int n_local = n / world_size;
     int row_offset = rank * n_local;
@@ -1065,8 +1073,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank % device_count));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank % device_count, prop.name,
+               prop.major, prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -1354,6 +1363,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
         }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
+        }
 
         if (rel_residual < config.tolerance) {
             iter++;
@@ -1533,7 +1545,9 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
 
     int n_local = n / world_size;
     int row_offset = rank * n_local;
@@ -1543,8 +1557,9 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank % device_count));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank % device_count, prop.name,
+               prop.major, prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -1809,6 +1824,9 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         if (rank == 0 && config.verbose >= 2) {
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
+        }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
         }
 
         if (rel_residual < config.tolerance) {
