@@ -42,6 +42,8 @@ int main(int argc, char** argv) {
             printf("  --verify        Use known solution (x=1) to verify correctness\n");
             printf("  --max-iters=N   Set maximum CG iterations (default: 5000)\n");
             printf("  --json=<file>   Export results to JSON file\n");
+            printf(
+                "  --runs=N        Timed solves behind the reported median (3-10, default 10)\n");
             printf("  --verbose=N     0 silent, 1 summary (default), 2 per-iteration residual,\n");
             printf(
                 "                  3 adds exact (hex) residual trace for bit-level comparison\n");
@@ -71,6 +73,7 @@ int main(int argc, char** argv) {
     int custom_max_iters = 0;
     int max_iters_value = 5000;
     int stencil_points = 7;  // default: 7-point stencil
+    int bench_runs = 10;     // timed solves behind the median
     int spmv_soa = 0;        // default: CSR kernel
 
     // Configuration
@@ -130,6 +133,14 @@ int main(int argc, char** argv) {
             } else {
                 if (rank == 0)
                     fprintf(stderr, "Error: --dots must be host or device\n");
+                MPI_Finalize();
+                return 1;
+            }
+        } else if (strncmp(argv[i], "--runs=", 7) == 0) {
+            bench_runs = atoi(argv[i] + 7);
+            if (bench_runs < 3 || bench_runs > 10) {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --runs must be between 3 and 10\n");
                 MPI_Finalize();
                 return 1;
             }
@@ -328,12 +339,12 @@ int main(int argc, char** argv) {
                profiled_stats.converged ? "converged" : "failed", profiled_stats.iterations);
     }
 
-    // Benchmark: 10 runs with inline median
+    // Benchmark: bench_runs timed solves (10 by default) with inline median
     memset(x, 0, mat.rows * sizeof(double));
     if (rank == 0)
-        printf("Running benchmark (10 runs)...\n");
+        printf("Running benchmark (%d runs)...\n", bench_runs);
 
-    const int num_runs = 10;
+    const int num_runs = bench_runs;
     double times[10];
     CGStatsMultiGPU all_stats[10];
     CGConfigMultiGPU bench_config = config;
