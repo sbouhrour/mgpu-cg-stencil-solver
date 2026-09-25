@@ -11,8 +11,10 @@ import re
 import sys
 
 NAME = re.compile(r"(\d+)pt_N(\d+)_np(\d+)_(\w+?)_(host|device)(?:_(\w+))?\.json$")
-COLUMNS = ["staged/host", "staged/device", "gpuaware/host", "gpuaware/device",
-           "nccl/host", "nccl/device", "nccl/device/p2poff", "nvshmem/host", "nvshmem/device", "nvshmem/host/fused", "nvshmem/device/fused",
+COLUMNS = ["staged/host", "staged/host/overlap", "staged/device", "gpuaware/host",
+           "gpuaware/host/overlap", "gpuaware/device", "nccl/host", "nccl/host/overlap",
+           "nccl/device", "nccl/device/graph", "nccl/device/p2poff", "nvshmem/host",
+           "nvshmem/host/overlap", "nvshmem/device", "nvshmem/host/fused", "nvshmem/device/fused",
            "amgx/host/mpi", "amgx/host/mpidirect"]
 
 
