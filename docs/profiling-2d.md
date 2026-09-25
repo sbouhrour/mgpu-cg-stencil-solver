@@ -2,14 +2,14 @@
 
 This document explains **why** the custom CG solver outperforms NVIDIA AmgX, using profiling data from Nsight Systems and Nsight Compute. Both sides run unpreconditioned CG, so the speedup reflects implementation efficiency on the same algorithm, not an algorithmic difference.
 
-> **Hardware note.** Performance numbers in this document (solver timings, kernel breakdowns, SpMV throughput) were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The roofline analysis in [section 2](#2-spmv-kernel-analysis) was profiled on an RTX 4060 Laptop GPU due to NCU permission constraints on shared A100 hosts. Both kernels remain memory-bound on either architecture, so the relative comparison (95% vs 67% memory throughput) transfers; absolute GFLOP/s values reflect the RTX 4060 only.
+> **Hardware note.** Performance numbers in this document (solver timings, kernel breakdowns, SpMV throughput) were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The SpMV roofline in [section 2](#2-spmv-kernel-analysis) was profiled with Nsight Compute on the same GPU model, with DRAM bytes measured per kernel.
 
 ## Executive Summary
 
 | Finding | Impact |
 |---------|--------|
 | AmgX spends **48% of compute time** in generic CSR SpMV | Primary optimization target |
-| Custom stencil kernel achieves **2× higher throughput** | Eliminates index indirection |
+| Custom stencil SpMV is **2.08× faster** than the cuSPARSE CSR of CUDA 12.8 (1.84× against CUDA 13.0) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
 | Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
 | Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
@@ -72,51 +72,70 @@ Each interior row has exactly 5 non-zeros at fixed offsets: `-grid_size`, `-1`, 
 - Grouped memory accesses: W-C-E (stride-1) before N-S (stride grid_size)
 - 95% of rows use fast path (interior points)
 
-### Measured Performance (A100 80GB)
+### Measured Performance (A100-SXM4-80GB)
 
-| Implementation | Time (20k×20k) | Bandwidth | Speedup |
-|----------------|---------------:|-----------:|--------:|
-| cuSPARSE CSR | 26.77 ms | 1195 GB/s | baseline |
-| Stencil kernel | 12.86 ms | 2364 GB/s | **2.08×** |
+Single GPU, 10k×10k grid (100M rows, 500M non-zeros), FP64, median of 10 runs. DRAM bytes are measured
+with Nsight Compute (`dram__bytes_read.sum + dram__bytes_write.sum`); bandwidth is those bytes divided by
+the benchmark's own kernel time.
+
+| Implementation | Time | DRAM bytes / row | Achieved bandwidth | % of 2,039 GB/s peak | Stencil speedup |
+|----------------|-----:|-----------------:|-------------------:|---------------------:|----------------:|
+| cuSPARSE CSR, CUDA 12.8 | 6.80 ms | 83.8 | 1,232 GB/s | 60% | **2.05×** |
+| cuSPARSE CSR, CUDA 13.0 | 6.10 ms | 83.3 | 1,367 GB/s | 67% | **1.84×** |
+| Stencil kernel | 3.31 ms | 56.0 | 1,690 GB/s | **83%** | — |
+
+The cuSPARSE version matters: the same matrix, on the same GPU, runs 11% faster with the cuSPARSE of
+CUDA 13.0 (a shorter partitioning pass and a faster `csrmv` kernel at equal bytes). The stencil kernel
+runs in the same 3.31 ms whichever toolkit compiles it. Times are medians over a rotation of 3 builds ×
+3 GPUs; GPU-to-GPU variation stays below 1%.
 
 ### Roofline Analysis (Nsight Compute)
 
-Profiled on RTX 4060 Laptop GPU (7k×7k matrix, same relative behavior):
-
 ![Roofline Comparison](figures/roofline_spmv_comparison.png)
 
-| Kernel | Duration | Memory Throughput | Performance |
-|--------|----------|-------------------|-------------|
-| cuSPARSE CSR | 22.99 ms | 67% | 21.3 GFLOP/s |
-| Custom Stencil | 11.25 ms | **95%** | **43.6 GFLOP/s** |
+Every point is placed from measured DRAM bytes and kernel time (Nsight Compute, GPU clocks left
+unlocked), with the useful work of the operator (2 × nnz FLOPs) on both sides. The 3D points use the
+same kernels as the 3D solver, at 256³.
+
+| Operator | Kernel | DRAM bytes / row | Time | % of DRAM peak | Arithmetic intensity |
+|----------|--------|-----------------:|-----:|---------------:|---------------------:|
+| 2D 5-point | Stencil | 56.0 | 3.29 ms | 83% | 0.179 FLOP/B |
+| 2D 5-point | cuSPARSE CSR | 83.3 | 5.74 ms | 71% | 0.120 FLOP/B |
+| 3D 7-point | Stencil | 81.1 | 0.83 ms | 80% | 0.172 FLOP/B |
+| 3D 7-point | cuSPARSE CSR | 105.6 | 1.32 ms | 66% | 0.132 FLOP/B |
+| 3D 27-point | Stencil | 272.1 | 3.44 ms | 65% | 0.197 FLOP/B |
+| 3D 27-point | cuSPARSE CSR | 355.6 | 3.91 ms | 75% | 0.151 FLOP/B |
+
+<sub>CUDA 13.0. Kernel times here are Nsight Compute's (`gpu__time_duration`); cuSPARSE rows include its
+partitioning kernel. Under the profiler, write traffic after the first launch varies by up to 9 B/row
+while read traffic is stable to 0.1 B; values are medians over all profiled launches.</sub>
 
 **Key observations:**
-- Both kernels are **memory-bound** (positioned on the sloped part of the roofline)
-- Stencil achieves **95% memory throughput** vs 67% for CSR
-- The 2× speedup comes from better memory system utilization, not more compute
-- CSR's index indirection creates irregular access patterns that reduce effective bandwidth
-
-??? note "Raw Nsight Compute Screenshots"
-
-    **cuSPARSE CSR:**
-
-    ![cuSPARSE CSR Roofline](figures/profiling_roofline_cusparse_csr.png)
-
-    **Custom Stencil:**
-
-    ![Stencil Kernel Roofline](figures/profiling_roofline_stencil.png)
+- Every kernel is **memory-bound**, 24-40× below the ridge point (4.8 FLOP/B): no compute unit,
+  tensor cores included, can speed up this operation. Only bytes and bandwidth can.
+- The 2D speedup has **two factors that multiply**: the stencil kernel moves **1.49× fewer bytes**
+  (83.3 → 56.0 B/row) and reaches **1.24× higher bandwidth** (1,690 against 1,367 GB/s). 1.49 × 1.24 = 1.84.
+- The same holds in 3D 7-point (81 against 106 B/row, 80% against 66% of peak).
+- The 3D 27-point row-major kernel is the exception: **only 1.14× faster than cuSPARSE**, at 65% of
+  peak. Reading 27 coefficients per row across the lanes of a warp is not coalesced, and it costs twice:
+  the kernel moves 272 B/row where 240 would do, because the input vector is evicted and fetched again
+  from DRAM, and it reaches a lower bandwidth.
 
 ### Arithmetic Intensity Analysis
 
-Both kernels are memory-bound, but the stencil kernel achieves higher effective bandwidth:
+Bytes per row, 2D 5-point, measured against the traffic each kernel must move at minimum:
 
-| Metric | CSR | Stencil |
-|--------|----:|--------:|
-| Bytes per row | 88 B | 48 B |
-| (5 values + 5 indices + 1 x + 1 y) | | (5 values + 1 x + 1 y, no indices) |
-| Arithmetic intensity | 0.11 FLOP/B | 0.21 FLOP/B |
+| Metric | cuSPARSE CSR | Stencil |
+|--------|-------------:|--------:|
+| Coefficients (5 × 8 B) | 40 B | 40 B |
+| Column indices (5 × 4 B) + row offset (4 B) | 24 B | none: computed from the row index |
+| Input vector `x` (read once, reused from cache) + output `y` | 16 B | 16 B |
+| **Minimum** | **80 B** | **56 B** |
+| **Measured (Nsight Compute)** | **83.3 B** | **56.0 B** |
+| Arithmetic intensity (10 FLOP per row) | 0.120 FLOP/B | 0.179 FLOP/B |
 
-The stencil kernel moves **45% less data** per row by eliminating index storage and lookups.
+The stencil kernel moves **33% fewer bytes** per row by never loading index data. It reads exactly its
+minimum; cuSPARSE reads 4% above its own.
 
 ---
 
@@ -167,7 +186,7 @@ Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`res
 
 The custom CG's single-GPU advantage over AmgX (**1.41× at 10k×10k**, the size of the kernel breakdowns above; the headline **1.40×** refers to 20k×20k — see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx)) comes from two measurable sources, not one:
 
-- **SpMV specialization (primary)** — The custom stencil SpMV runs **1.65× faster in-solver** than AmgX's cuSPARSE CSR SpMV (derived from the kernel breakdowns: 41% of custom time vs 48% of AmgX time, normalized by the 1.41× overall speedup). The isolated microbenchmark shows a larger 2.08× gain; the in-solver figure is lower because cache state, launch patterns, and co-running operations differ from the isolated case.
+- **SpMV specialization (primary)** — The custom stencil SpMV runs **1.65× faster in-solver** than AmgX's cuSPARSE CSR SpMV (derived from the kernel breakdowns: 41% of custom time vs 48% of AmgX time, normalized by the 1.41× overall speedup). The isolated microbenchmark shows a larger 2.05× gain with the same CUDA 12.8 cuSPARSE; the in-solver figure is lower because cache state, launch patterns, and co-running operations differ from the isolated case.
 - **A faster rest-of-solver (secondary)** — The non-SpMV operations (AXPY, dot, AXPBY) are collectively **1.24× faster in-solver**. This is consistent with operating on partitioned local vectors with coalesced access rather than AmgX's library-level operations on global vectors, though this contribution is not isolated to a single mechanism in the current measurements.
 
 Communication volume is a design property of the stencil-aware halo exchange (one boundary row per neighbor vs generic patterns), but at the single-GPU and small-multi-GPU sizes profiled here it is not a measurable driver of the 2D speedup. Its impact appears at larger scale and is the central mechanism of the 3D overlap solver (see [`profiling-3d.md`](profiling-3d.md)).
@@ -205,14 +224,18 @@ nsys profile --trace=cuda,nvtx -o amgx_1gpu \
 
 **Nsight Compute** (kernel analysis):
 ```bash
-# cuSPARSE CSR roofline
-ncu --set roofline -o roofline_cusparse \
-    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr
+# Both SpMV implementations in one report, clocks left to the GPU
+ncu --set roofline --metrics dram__bytes_read.sum,dram__bytes_write.sum --clock-control none \
+    -k regex:"csrmv_v3|csr_partition|stencil5_csr_direct" -o spmv_2d_10000_a100 \
+    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr,stencil5-csr
 
-# Stencil kernel roofline
-ncu --set roofline -o roofline_stencil \
-    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=stencil5-csr
+# DRAM bytes per row = (dram__bytes_read.sum + dram__bytes_write.sum) / rows
+ncu -i spmv_2d_10000_a100.ncu-rep --csv --page raw \
+    --metrics dram__bytes_read.sum,dram__bytes_write.sum,gpu__time_duration.sum
 ```
+
+Use raw byte counts, not the percentage-of-peak figures: those are computed at the clocks Nsight Compute
+imposes by default (`--clock-control base`), which change time but not bytes.
 
 These commands document the profiling of this specific analysis. For general reproduction of the published numbers, see the [Reproducing](reproducing.md#profiling) page.
 
@@ -224,8 +247,7 @@ These commands document the profiling of this specific analysis. For general rep
 | Custom 2 GPUs (10k) | `profiling/nsys/mpi_2ranks_profile_10000.nsys-rep` | A100 |
 | AmgX 1 GPU (10k) | `profiling/nsys/amgx_1ranks_profile_10000.nsys-rep` | A100 |
 | AmgX 2 GPUs (10k) | `profiling/nsys/amgx_2ranks_profile_10000.nsys-rep` | A100 |
-| CSR roofline | `profiling/ncu/roofline_cusparse_csr_7000_rtx4060.ncu-rep` | RTX 4060 Laptop |
-| Stencil roofline | `profiling/ncu/roofline_stencil_7000_rtx4060.ncu-rep` | RTX 4060 Laptop |
+| SpMV roofline, cuSPARSE and stencil (10k) | `profiling/ncu/spmv_2d_10000_a100.ncu-rep` | A100-SXM4-80GB |
 
 ---
 
@@ -233,7 +255,7 @@ These commands document the profiling of this specific analysis. For general rep
 
 1. **SpMV is the bottleneck**: 48% of AmgX time, making kernel optimization high-impact
 
-2. **Structure exploitation works**: Eliminating index indirection yields 2× SpMV speedup
+2. **Structure exploitation works**: Eliminating index indirection yields a 2.08× SpMV speedup against the cuSPARSE of CUDA 12.8 (1.84× against CUDA 13.0): about 1.5× fewer bytes times 1.24-1.37× higher achieved bandwidth
 
 3. **Gains compound at scale**: Single-GPU advantage (1.40×) maintained through 8 GPUs (1.44×)
 

@@ -1,58 +1,81 @@
 {
   "benchmark_info": {
-    "gpu": "NVIDIA A100 80GB PCIe",
-    "date": "2026-01-10",
-    "branch": "main",
-    "runs": 10
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "date": "2026-09-24",
+    "runs": 10,
+    "grid": "10000x10000 (100M rows, 499,960,000 non-zeros), FP64",
+    "timing": "spmv_bench median of 10 runs, one process per build and GPU, 3 builds x 3 GPUs",
+    "bytes": "Nsight Compute 2025.3.1, dram__bytes_read.sum + dram__bytes_write.sum per SpMV call, divided by rows",
+    "peak_dram_gb_s": 2039
   },
   "results": [
     {
       "size": 10000,
-      "unknowns": 100000000,
-      "nnz": 499960000,
-      "csr": {
-        "time_ms": 6.767,
-        "gflops": 147.756,
-        "bandwidth_gb_s": 1182.068
-      },
       "stencil5": {
-        "time_ms": 3.249,
-        "gflops": 307.781,
-        "bandwidth_gb_s": 2339.325
+        "time_ms": 3.313,
+        "dram_bytes_per_row": 56.0,
+        "bandwidth_gb_s": 1690
       },
-      "speedup": 2.08
-    },
-    {
-      "size": 15000,
-      "unknowns": 225000000,
-      "nnz": 1124940000,
-      "csr": {
-        "time_ms": 15.004,
-        "gflops": 149.947,
-        "bandwidth_gb_s": 1199.594
+      "csr_cusparse_cuda_12_8": {
+        "time_ms": 6.8,
+        "dram_bytes_per_row": 83.8,
+        "bandwidth_gb_s": 1232,
+        "speedup_stencil": 2.05
       },
-      "stencil5": {
-        "time_ms": 7.289,
-        "gflops": 308.667,
-        "bandwidth_gb_s": 2345.993
-      },
-      "speedup": 2.06
-    },
-    {
-      "size": 20000,
-      "unknowns": 400000000,
-      "nnz": 1999920000,
-      "csr": {
-        "time_ms": 26.767,
-        "gflops": 149.431,
-        "bandwidth_gb_s": 1195.461
-      },
-      "stencil5": {
-        "time_ms": 12.859,
-        "gflops": 311.061,
-        "bandwidth_gb_s": 2364.160
-      },
-      "speedup": 2.08
+      "csr_cusparse_cuda_13_0": {
+        "time_ms": 6.095,
+        "dram_bytes_per_row": 83.3,
+        "bandwidth_gb_s": 1367,
+        "speedup_stencil": 1.84
+      }
     }
-  ]
+  ],
+  "earlier_run": {
+    "note": "CUDA 12.8, on A100-SXM4-80GB (the original record said 'A100 80GB PCIe', a transcription error). Its bandwidth column was removed: it charged the stencil kernel with index arrays it never reads, and exceeded the DRAM peak. Times are kept as recorded.",
+    "date": "2026-01-10",
+    "results": [
+      {
+        "size": 10000,
+        "unknowns": 100000000,
+        "nnz": 499960000,
+        "csr": {
+          "time_ms": 6.767,
+          "gflops": 147.756
+        },
+        "stencil5": {
+          "time_ms": 3.249,
+          "gflops": 307.781
+        },
+        "speedup": 2.08
+      },
+      {
+        "size": 15000,
+        "unknowns": 225000000,
+        "nnz": 1124940000,
+        "csr": {
+          "time_ms": 15.004,
+          "gflops": 149.947
+        },
+        "stencil5": {
+          "time_ms": 7.289,
+          "gflops": 308.667
+        },
+        "speedup": 2.06
+      },
+      {
+        "size": 20000,
+        "unknowns": 400000000,
+        "nnz": 1999920000,
+        "csr": {
+          "time_ms": 26.767,
+          "gflops": 149.431
+        },
+        "stencil5": {
+          "time_ms": 12.859,
+          "gflops": 311.061
+        },
+        "speedup": 2.08
+      }
+    ]
+  }
 }

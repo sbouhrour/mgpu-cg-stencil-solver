@@ -159,7 +159,7 @@ Each row maps a published number to the exact command that produces it. Expected
 
 | Key Number | Source | Command | What to check |
 |---|---|---|---|
-| SpMV vs cuSPARSE CSR (A100, 20k×20k): **2.08×** | [Results](results.md#2d-spmv-format-comparison) | `./bin/generate_matrix 20000 matrix/stencil_20000x20000.mtx`<br>`./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=cusparse-csr,stencil5-csr` | `Execution time` of `stencil5-csr` (12.86 ms) vs `cusparse-csr` (26.77 ms) → 2.08×. `spmv_bench` prints no ratio; for a precise figure run each mode separately. |
+| SpMV vs cuSPARSE CSR (A100, 20k×20k): **2.08×** against the cuSPARSE of CUDA 12.8 | [Results](results.md#2d-spmv-format-comparison) | `./bin/generate_matrix 20000 matrix/stencil_20000x20000.mtx`<br>`./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=cusparse-csr,stencil5-csr` | `Execution time` of `stencil5-csr` (12.86 ms) vs `cusparse-csr` (26.77 ms) → 2.08×. `spmv_bench` prints no ratio; for a precise figure run each mode separately. The ratio depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench \| grep cusparse`): 1.84× with CUDA 13.0. |
 | CG single-GPU vs AmgX (20k×20k): **1.40×** | [Results](results.md#2d-custom-cg-vs-nvidia-amgx) | `./scripts/run_all.sh --size=20000` (AmgX build required) | `PERFORMANCE SUMMARY`: Custom CG (1 GPU) 531.4 ms vs AmgX (1 GPU) 746.7 ms → 1.40× |
 | CG 8-GPU vs AmgX (20k×20k): **1.44×** | [Results](results.md#2d-custom-cg-vs-nvidia-amgx) | `./scripts/run_all.sh --size=20000` on an 8-GPU node (AmgX build required) | `PERFORMANCE SUMMARY`: Custom CG (8 GPUs) 71.0 ms vs AmgX (8 GPUs) 102.3 ms → 1.44× |
 | 27pt overlap gain (256³, 8 GPUs): **1.45×** | [Results](results.md#3d-27-point-stencil-sync-vs-overlap) | `echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx`<br>`mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27`<br>`mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap` | Median of sync run (294.0 ms) ÷ median of overlap run (203.5 ms) → 1.45× |
@@ -263,11 +263,10 @@ nsys-ui custom_mgpu.nsys-rep
 Used for the SpMV roofline analysis in [`profiling-2d.md`](profiling-2d.md#2-spmv-kernel-analysis):
 
 ```bash
-# cuSPARSE CSR roofline
-ncu --set roofline -o roofline_cusparse \
-    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr
-
-# Stencil kernel roofline
-ncu --set roofline -o roofline_stencil \
-    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=stencil5-csr
+# Both SpMV implementations in one report, clocks left to the GPU
+ncu --set roofline --metrics dram__bytes_read.sum,dram__bytes_write.sum --clock-control none \
+    -k regex:"csrmv_v3|csr_partition|stencil5_csr_direct" -o spmv_2d_10000_a100 \
+    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr,stencil5-csr
 ```
+
+Read the raw `dram__bytes_*` counts rather than the percentage-of-peak figures, which depend on the clocks Nsight Compute imposes by default.

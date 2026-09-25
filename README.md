@@ -18,7 +18,7 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 | Metric | Result |
 |--------|--------|
 | **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
-| **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100 80GB (20k×20k) |
+| **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100 80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
 | **3D overlap (7pt/27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
@@ -42,7 +42,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
   <img src="docs/figures/performance_summary_horizontal.png" alt="Performance Summary: All Gains" width="100%">
 </p>
 
-- **SpMV kernel**: 2.08× faster than cuSPARSE CSR (single-GPU, 20k×20k)
+- **SpMV kernel**: 2.08× faster than the cuSPARSE CSR of CUDA 12.8 (single-GPU, 20k×20k); 1.84× against the faster cuSPARSE of CUDA 13.0
 - **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, both unpreconditioned CG to the same tolerance)
 - **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
 - **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
@@ -189,7 +189,7 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 ### Performance Engineering
 - **Profiling-driven**: Nsight Systems analysis to identify bottlenecks
 - **Numerical stability**: Deterministic results across all GPU counts
-- **Conservative benchmarking**: the custom CUDA kernels are compiled with `nvcc -O2 --ptxas-options=-O2` (device-side PTX/SASS optimization), while the AmgX driver and library are built at `-O3`, so the custom solver is the less-optimized side — reported speedups are conservative. Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
+- **Build settings measured, not assumed**: the custom kernels are compiled at `-O2` while AmgX is built at `-O3`; rebuilt at `-O3`, the kernels of the 2D SpMV benchmark and 2D solver produce identical SASS, and JIT from PTX runs the SpMV as fast as native `sm_80` code, so the build asymmetry does not move the SpMV results ([details](docs/methodology.md)). Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
 
 ---
 
@@ -329,7 +329,7 @@ If you use this code in your research, please cite:
   title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
   year = {2026},
   url = {https://github.com/sbouhrour/mgpu-cg-stencil-solver},
-  note = {2.08× SpMV vs cuSPARSE; 1.44× CG vs NVIDIA AmgX (iso-algorithm, both unpreconditioned CG; 8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
+  note = {2.08× SpMV vs cuSPARSE (CUDA 12.8); 1.44× CG vs NVIDIA AmgX (iso-algorithm, both unpreconditioned CG; 8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
 }
 ```
 
