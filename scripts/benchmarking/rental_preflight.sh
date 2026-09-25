@@ -169,6 +169,66 @@ fi
 echo "  $MPI_VERDICT"
 printf 'mpi_512k=%s\n' "$MPI_VERDICT" >> "$OUT/hw_info.txt"
 
+hr "8. Device-to-host copies, all GPUs at once (128 KB, pinned)"
+# Section 7 moves host buffers only; the staged halo first copies each plane from the GPU. Seen on
+# 2026-09-25: an 8x A100 node passed section 7 at 15 GB/s, copied 128 KB from one GPU in 18.5 us, and
+# took 162 us (0.8 GB/s) when the eight GPUs copied together. Staged 8-GPU CG ran 1.9x slower than
+# published, while the same solve with NCCL and no host copy ran faster than published. Part of it was
+# NUMA placement the VM did not expose (copies to the other socket's memory ran 3x slower); pinning each
+# rank to its GPU's socket removed that part, not the rest. One process per GPU, as in the solver; each
+# copies for a fixed time, so the launch skew between them does not matter. The threshold (half of one
+# GPU copying alone) is a judgement: that node scored about 0.15, and a healthy node should lose little
+# more than the share of a PCIe switch.
+D2H_VERDICT="not tested"
+NGPU=$(nvidia-smi -L | wc -l)
+cat > "$OUT/d2h_probe.cu" <<'EOC'
+#include <cstdio>
+#include <cstdlib>
+#include <chrono>
+#include <cuda_runtime.h>
+int main(int argc, char** argv) {
+    const size_t bytes = 128 * 1024;
+    const double seconds = atof(argv[2]);
+    cudaSetDevice(atoi(argv[1]));
+    void *d, *h;
+    cudaMalloc(&d, bytes);
+    cudaMallocHost(&h, bytes);
+    cudaStream_t s;
+    cudaStreamCreate(&s);
+    for (int i = 0; i < 100; i++) cudaMemcpyAsync(h, d, bytes, cudaMemcpyDeviceToHost, s);
+    cudaStreamSynchronize(s);
+    auto t0 = std::chrono::steady_clock::now();
+    long n = 0;
+    double dt = 0.0;
+    while (dt < seconds) {  /* synchronous per copy, like one staged halo */
+        cudaMemcpyAsync(h, d, bytes, cudaMemcpyDeviceToHost, s);
+        cudaStreamSynchronize(s);
+        n++;
+        dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+    printf("%.2f\n", (double)bytes * n / dt / 1e9);
+    return 0;
+}
+EOC
+if [ "$NGPU" -lt 2 ]; then
+    D2H_VERDICT="one GPU, not relevant"
+elif nvcc -O2 -arch=sm_"$CC" -o "$OUT/d2h_probe" "$OUT/d2h_probe.cu" 2>"$OUT/d2h_probe.build.log"; then
+    ALONE=$("$OUT/d2h_probe" 0 1)
+    for g in $(seq 0 $((NGPU - 1))); do "$OUT/d2h_probe" "$g" 3 > "$OUT/d2h_probe.$g" & done
+    wait
+    WORST=$(sort -g "$OUT"/d2h_probe.[0-9]* | head -1)
+    rm -f "$OUT"/d2h_probe.[0-9]*
+    if awk -v w="$WORST" -v a="$ALONE" -v r=0.5 'BEGIN{exit !(w >= r * a)}'; then
+        D2H_VERDICT="OK, ${WORST} GB/s per GPU with ${NGPU} copying (${ALONE} alone) -- staged runs can proceed"
+    else
+        D2H_VERDICT="SLOW, ${WORST} GB/s per GPU with ${NGPU} copying (${ALONE} alone) -- no staged or AmgX MPI runs"
+    fi
+else
+    D2H_VERDICT="nvcc failed (see $OUT/d2h_probe.build.log)"
+fi
+echo "  $D2H_VERDICT"
+printf 'd2h_concurrent=%s\n' "$D2H_VERDICT" >> "$OUT/hw_info.txt"
+
 hr "Verdict"
 if [ "$NCU_LIKELY" = 1 ] && command -v ncu >/dev/null; then
     if ncu --metrics dram__bytes.sum ./bin/bench_27pt_precision matrix/stencil3d_27pt_128.mtx --reps=1 2>&1 \
@@ -181,4 +241,5 @@ else
     echo "  ncu: unavailable -- timings and nsys only (expected on container marketplaces)"
 fi
 echo "  mpi: $MPI_VERDICT"
+echo "  d2h: $D2H_VERDICT"
 echo "  Ready. Next: ./scripts/benchmarking/rental_session.sh"

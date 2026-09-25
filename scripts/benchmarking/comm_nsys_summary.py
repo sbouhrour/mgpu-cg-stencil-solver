@@ -3,8 +3,8 @@
 
     comm_nsys_summary.py [--iters 20] out/comm_profile/nsys/*_r0.sqlite
 
-Counts only what happens inside solves: NVTX ranges CG_Solver* (custom solver) or AmgX_Solve
-(AmgX driver), of the most frequent kind (warmup solves of an overlap run are synchronous).
+Counts only what happens inside solves: NVTX ranges CG_Solver* (custom solver) or
+AMGX_solver_solve (pushed by the AmgX library itself), of the most frequent kind (warmup solves of an overlap run are synchronous).
 Every solve runs the same fixed number of iterations (--iters, the --max-iters the capture
 used, below the iteration count at which the tolerance is reached), so dividing by
 solves x iters gives per-iteration figures for every mode, CUDA graphs included (a graph runs
@@ -30,7 +30,7 @@ def windows(c):
         "SELECT n.start, n.end, COALESCE(n.text, s.value) FROM NVTX_EVENTS n "
         "LEFT JOIN StringIds s ON n.textId = s.id").fetchall()
     solves = [(a, b, label) for a, b, label in rows
-              if label and (label.startswith("CG_Solver") or label == "AmgX_Solve") and b]
+              if label and (label.startswith("CG_Solver") or label.lstrip(":") == "AMGX_solver_solve") and b]
     # main() warms up with the synchronous solver even for an overlap run: keep the solver the
     # capture is about, the most frequent one
     if not solves:

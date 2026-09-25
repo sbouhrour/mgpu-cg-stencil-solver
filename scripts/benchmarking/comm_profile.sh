@@ -39,10 +39,12 @@ MTX="matrix/stencil3d_27pt_${N}_stub.mtx"
 hr() { printf '\n===== %s =====\n' "$1"; }
 
 # nsys on every rank (the output name carries the rank); the solver runs its usual protocol with
-# few solves, so the capture stays small
+# few solves, so the capture stays small. A CUDA graph is traced node by node: by default nsys records
+# a replayed graph as one opaque range, and the per-iteration kernel counts would read zero.
 profile() {  # $1 name, $2 executable, rest: arguments
     local name=$1 exe=$2; shift 2
-    "$MPIRUN" "${ROOT[@]}" -np "$NP" nsys profile --trace=cuda,nvtx,osrt --force-overwrite=true \
+    "$MPIRUN" "${ROOT[@]}" -np "$NP" nsys profile --trace=cuda,nvtx,osrt --cuda-graph-trace=node \
+        --force-overwrite=true \
         -o "$OUT/nsys/${name}_r%q{OMPI_COMM_WORLD_RANK}" "$exe" "$MTX" "$@" \
         > "$OUT/nsys/$name.log" 2>&1 || { echo "  $name: FAILED, see $OUT/nsys/$name.log"; return; }
     nsys export --type sqlite --force-overwrite=true -o "$OUT/nsys/${name}_r0.sqlite" \
