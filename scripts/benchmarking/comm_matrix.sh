@@ -18,13 +18,22 @@
 #         DRY_RUN=1 ./scripts/benchmarking/comm_matrix.sh       list the configurations only
 #         STENCILS="27" SIZES="256" RANKS="2 8" ITERS=300 CHECK_EVERY=10 ...
 #         SHARED_GPU=1 ...   several ranks per GPU: checks the script runs, times mean nothing
+#         SET=core ...       only what the README figure and main table need (see below)
+#         RUNS=5 ...         timed solves per configuration (default: the solver's 10)
 # Uses the binary as built by comm_preflight.sh (same toolchain), and does not rebuild it.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 OUT="${OUT_DIR:-out}/comm_matrix"
 mkdir -p "$OUT" matrix
-STENCILS="${STENCILS:-7 27}"
-SIZES="${SIZES:-128 256 512}"
+SET="${SET:-full}"
+if [ "$SET" = core ]; then
+    STENCILS="${STENCILS:-27}"
+    SIZES="${SIZES:-128 512}"
+else
+    STENCILS="${STENCILS:-7 27}"
+    SIZES="${SIZES:-128 256 512}"
+fi
+RUNS="${RUNS:-10}"
 ITERS="${ITERS:-300}"
 CHECK_EVERY="${CHECK_EVERY:-10}"
 BACKENDS="${BACKENDS:-staged gpuaware nccl nvshmem}"
@@ -54,29 +63,57 @@ stub() {  # $1 stencil, $2 N -> path
 }
 
 CONFIGS=()
-for st in $STENCILS; do
-    for n in $SIZES; do
-        for np in $RANKS; do
-            if [ "$np" = 1 ]; then
-                CONFIGS+=("$st $n 1 staged host" "$st $n 1 staged device")
-                continue
-            fi
-            for be in $BACKENDS; do
-                for dots in host device; do CONFIGS+=("$st $n $np $be $dots"); done
-            done
-            [[ " $BACKENDS " == *" nccl "* ]] && CONFIGS+=("$st $n $np nccl device p2poff")
-            [[ " $BACKENDS " == *" nvshmem "* ]] &&
-                CONFIGS+=("$st $n $np nvshmem host fused" "$st $n $np nvshmem device fused")
-        done
-        if [ "$AMGX" = 1 ]; then
+if [ "$SET" = core ]; then
+    # Main table: per GPU count, the best mode of each backend (synchronous and overlap), NCCL with
+    # a CUDA graph, NVSHMEM with the fused halo, and AmgX with both communicators. The largest size
+    # runs only on 1 and 8 GPUs, the two points the headline scaling figure uses.
+    big=""
+    [ "$(echo $SIZES | wc -w)" -gt 1 ] && big=$(echo $SIZES | tr ' ' '\n' | sort -n | tail -1)
+    for st in $STENCILS; do
+        for n in $SIZES; do
             for np in $RANKS; do
-                # AmgX dDDI indexes local entries with int: skip partitions above 2^31 entries
-                [ $((st * n * n * n / np)) -lt 2147483647 ] || continue
-                CONFIGS+=("$st $n $np amgx host mpi" "$st $n $np amgx host mpidirect")
+                [ "$n" = "$big" ] && [ "$np" != 1 ] && [ "$np" != 8 ] && continue
+                if [ "$np" = 1 ]; then
+                    CONFIGS+=("$st $n 1 staged host")
+                else
+                    CONFIGS+=("$st $n $np staged host" "$st $n $np gpuaware host"
+                              "$st $n $np nccl host" "$st $n $np nccl device"
+                              "$st $n $np nccl device graph" "$st $n $np nvshmem device"
+                              "$st $n $np nvshmem device fused"
+                              "$st $n $np staged host overlap" "$st $n $np gpuaware host overlap"
+                              "$st $n $np nccl host overlap" "$st $n $np nvshmem host overlap")
+                fi
+                if [ "$AMGX" = 1 ] && [ $((st * n * n * n / np)) -lt 2147483647 ]; then
+                    CONFIGS+=("$st $n $np amgx host mpi" "$st $n $np amgx host mpidirect")
+                fi
             done
-        fi
+        done
     done
-done
+else
+    for st in $STENCILS; do
+        for n in $SIZES; do
+            for np in $RANKS; do
+                if [ "$np" = 1 ]; then
+                    CONFIGS+=("$st $n 1 staged host" "$st $n 1 staged device")
+                    continue
+                fi
+                for be in $BACKENDS; do
+                    for dots in host device; do CONFIGS+=("$st $n $np $be $dots"); done
+                done
+                [[ " $BACKENDS " == *" nccl "* ]] && CONFIGS+=("$st $n $np nccl device p2poff")
+                [[ " $BACKENDS " == *" nvshmem "* ]] &&
+                    CONFIGS+=("$st $n $np nvshmem host fused" "$st $n $np nvshmem device fused")
+            done
+            if [ "$AMGX" = 1 ]; then
+                for np in $RANKS; do
+                    # AmgX dDDI indexes local entries with int: skip partitions above 2^31 entries
+                    [ $((st * n * n * n / np)) -lt 2147483647 ] || continue
+                    CONFIGS+=("$st $n $np amgx host mpi" "$st $n $np amgx host mpidirect")
+                done
+            fi
+        done
+    done
+fi
 echo "${#CONFIGS[@]} configurations, ${ITERS} iterations each, output in $OUT"
 
 for cfg in "${CONFIGS[@]}"; do
@@ -90,13 +127,16 @@ for cfg in "${CONFIGS[@]}"; do
         # Same fixed iteration count: a tolerance no run can reach
         exe="$AMGX_BIN"
         comm=MPI; [ "$tag" = mpidirect ] && comm=MPI_DIRECT
-        args=(--stencil="$st" --communicator="$comm" --max-iters="$ITERS" --tol=1e-300 --runs=10
+        args=(--stencil="$st" --communicator="$comm" --max-iters="$ITERS" --tol=1e-300 --runs="$RUNS"
               --json="$OUT/$name.json")
     else
         exe="$BIN"
-        args=(--stencil="$st" --comm="$be" --dots="$dots" --max-iters="$ITERS" --json="$OUT/$name.json")
+        args=(--stencil="$st" --comm="$be" --dots="$dots" --max-iters="$ITERS" --runs="$RUNS"
+              --json="$OUT/$name.json")
         [ "$dots" = device ] && args+=(--check-every="$CHECK_EVERY")
         [ "$tag" = fused ] && args+=(--fused-halo)
+        [ "$tag" = graph ] && args+=(--graph)
+        [ "$tag" = overlap ] && args+=(--overlap)
     fi
     # Under CUDA MPS, NVSHMEM needs the per-process GPU shares to add up to at most 100 %
     [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && envx+=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / np)))
