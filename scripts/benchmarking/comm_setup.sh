@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Installs, on a rented multi-GPU node, everything the communication study needs, with the same
-# versions as its local validation: CUDA 12.9, NCCL 2.31.2, NVSHMEM 3.7.2, UCX 1.18.1 + Open MPI
-# 5.0.8 built with CUDA, nccl-tests, and AmgX (commit cc1cebd) built with MPI. Then builds the
-# solver and the AmgX driver against them and writes an environment file.
+# Installs, on a rented multi-GPU node, everything the communication study needs: CUDA 12.8 (the
+# toolkit, cuBLAS and cuSPARSE the published results were measured with), NCCL 2.31.2, NVSHMEM
+# 3.7.2, UCX 1.18.1 + Open MPI 5.0.8 built with CUDA, nccl-tests, and AmgX (commit cc1cebd) built
+# with MPI. Then builds the solver and the AmgX driver against them and writes an environment file.
+#
+# NCCL 2.31.2 is only packaged for CUDA 12.9 and later; it carries its own CUDA runtime and runs
+# next to a CUDA 12.8 application when the driver supports CUDA 12.9. On an older driver the
+# script falls back to NCCL 2.26.2, the newest build for CUDA 12.8, and says so.
 #
 # Each stage is skipped when its result is already there, so the script can be rerun after an
 # interruption, or on a node where PREFIX was restored from an archive of a previous run:
@@ -14,25 +18,31 @@
 set -eo pipefail
 cd "$(dirname "$0")/../.."
 PREFIX="${PREFIX:-/opt/comm}"
-CUDA="${CUDA:-/usr/local/cuda-12.9}"
+CUDA_VER="${CUDA_VER:-12.8}"
+CUDA="${CUDA:-/usr/local/cuda-$CUDA_VER}"
 J=$(nproc)
 CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
 mkdir -p "$PREFIX/src" "$PREFIX/logs"
 stage() { echo "=== $(date +%T) $*"; }
 export DEBIAN_FRONTEND=noninteractive
 
-stage "packages (CUDA 12.9, NCCL, NVSHMEM)"
+# Highest CUDA version the driver runs, e.g. 12.9 -> 1209
+drv=$(nvidia-smi | sed -n 's/.*CUDA Version: *\([0-9]*\)\.\([0-9]*\).*/\1 \2/p' | awk '{printf "%d", $1 * 100 + $2}')
+if [ "${drv:-0}" -ge 1209 ]; then NCCL_PKG=2.31.2-1+cuda12.9; else NCCL_PKG=2.26.2-1+cuda12.8; fi
+echo "  driver runs CUDA up to $((drv / 100)).$((drv % 100)); NCCL package: $NCCL_PKG"
+
+stage "packages (CUDA $CUDA_VER, NCCL, NVSHMEM)"
 if [ ! -x "$CUDA/bin/nvcc" ] || ! dpkg -s libnvshmem3-static-cuda-12 >/dev/null 2>&1; then
     apt-get update -qq
-    if ! apt-cache policy cuda-toolkit-12-9 | grep -q 'Candidate: [0-9]'; then
+    if ! apt-cache policy "cuda-toolkit-${CUDA_VER/./-}" | grep -q 'Candidate: [0-9]'; then
         # NVIDIA's CUDA repository is not configured on this image: add it
         distro=$(. /etc/os-release && echo "${ID}${VERSION_ID//./}")
         wget -q "https://developer.download.nvidia.com/compute/cuda/repos/$distro/x86_64/cuda-keyring_1.1-1_all.deb" \
             -O /tmp/cuda-keyring.deb
         dpkg -i /tmp/cuda-keyring.deb > /dev/null && apt-get update -qq
     fi
-    apt-get install -y -qq cuda-toolkit-12-9 \
-        libnccl2=2.31.2-1+cuda12.9 libnccl-dev=2.31.2-1+cuda12.9 \
+    apt-get install -y -qq --allow-downgrades "cuda-toolkit-${CUDA_VER/./-}" \
+        "libnccl2=$NCCL_PKG" "libnccl-dev=$NCCL_PKG" \
         libnvshmem3-cuda-12=3.7.2-1 libnvshmem3-dev-cuda-12=3.7.2-1 libnvshmem3-static-cuda-12=3.7.2-1 \
         build-essential pkg-config git wget > "$PREFIX/logs/apt.log" 2>&1
 fi
