@@ -58,7 +58,7 @@ Full per-grid efficiency tables (7-point and 27-point, all GPU counts) are in [`
 
 ### Key Observations
 
-Overlap gain scales with both GPU count and problem size. Larger grids have a larger interior region relative to the halo boundary, giving `stream_compute` more work to hide behind halo exchange. The 27-point stencil benefits more than the 7-point stencil at the same grid size because it is more compute-intensive (27 vs 7 loads per row), which extends interior computation time and increases the fraction of communication that can be masked. Best overlap gains are 1.45× (27pt, 256³, 8 GPUs) and 1.36× (7pt, 512³, 8 GPUs).
+Overlap gain generally grows with GPU count and problem size: larger grids have a larger interior region relative to the halo boundary, giving `stream_compute` more work to hide behind halo exchange. It is not monotonic, though. At 128³ the 7-point gain falls as GPUs are added (1.20× on 2 GPUs, 0.96× on 8), and on 8 GPUs the 27-point gain is higher at 256³ (1.45×) than at 512³ (1.23×); that last drop has not been profiled. At 128³ and 256³ the 27-point stencil benefits more than the 7-point stencil, because its interior SpMV is longer (27 vs 7 coefficients per row) and hides a larger fraction of the halo exchange. Best overlap gains are 1.45× (27pt, 256³, 8 GPUs) and 1.36× (7pt, 512³, 8 GPUs).
 
 Small workloads show diminishing returns. At 128³ on 8 GPUs the per-GPU workload is too brief to mask halo exchange latency, and the 7pt/128³/8GPU case incurs slight overhead (0.96×) from dual-stream management. 1-GPU runs confirm zero overhead: sync and overlap times are equivalent with no communication to hide.
 

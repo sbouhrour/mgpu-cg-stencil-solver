@@ -46,7 +46,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 - **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, both unpreconditioned CG to the same tolerance)
 - **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
 - **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
-- **Deterministic convergence**: all configurations converge in exactly 14 iterations
+- **Same iteration count everywhere**: every 2D configuration converges in 14 iterations. The 2D matrix is a 5-point Laplacian plus a unit mass term (condition number below 9), so the count does not grow with the grid and the 2D timings measure per-iteration cost; the 3D matrices are plain Laplacians, whose counts grow with the grid
 - **Efficiency improves with problem size**: 86.8% (10k) → 93.5% (20k)
 
 **Key insight**: Generic solvers cannot exploit known stencil structure for memory access, leaving systematic per-iteration overhead even when they scale efficiently.
@@ -146,7 +146,7 @@ See [Profiling Analysis (2D)](docs/profiling-2d.md) for the Nsight Systems timel
 
 The solver is extended to realistic 3D stencils (7-point and 27-point) with compute-communication overlap. Each SpMV is split into interior rows (independent of halo data, computed on `stream_compute`) and boundary rows (computed after halo arrival). Halo exchange (D2H + MPI + H2D) runs concurrently on `stream_comm`.
 
-Best results: **1.45× overlap gain** (27pt, 256³, 8 GPUs) and **1.36×** (7pt, 512³, 8 GPUs). Larger grids and the higher-arithmetic-intensity 27-point stencil benefit most from the overlap (more interior work to hide behind communication).
+Best results: **1.45× overlap gain** (27pt, 256³, 8 GPUs) and **1.36×** (7pt, 512³, 8 GPUs). The gain depends on how much interior work is available to hide the halo exchange: it vanishes when the per-GPU slab is too thin (7-point, 128³ on 8 GPUs: 0.96×), and it is not monotonic in grid size (27-point on 8 GPUs: 1.45× at 256³, 1.23× at 512³).
 
 See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables across all configurations (7pt/27pt × 128³/256³/512³ × 1/2/4/8 GPUs), strong scaling efficiency analysis, and key observations.
 
@@ -227,7 +227,7 @@ GPU 1: rows [12.5M, 25M)     │
 GPU 2: rows [25M, 37.5M)     │  Halo exchange:
 GPU 3: rows [37.5M, 50M)     │  - 160 KB per GPU
 GPU 4: rows [50M, 62.5M)     │  - MPI_Isend/Irecv
-GPU 5: rows [62.5M, 75M)     │  - ~2 ms latency
+GPU 5: rows [62.5M, 75M)     │  - host-staged (D2H/H2D)
 GPU 6: rows [75M, 87.5M)     │
 GPU 7: rows [87.5M, 100M)    ┘
 ```
