@@ -42,8 +42,6 @@ external/kokkos-install/
 external/kokkos-kernels-install/
 external/kokkos_cg_baseline
 
-# Claude Code instructions (private)
-CLAUDE.md
 
 # Debug files
 *.gdb

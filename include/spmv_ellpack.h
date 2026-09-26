@@ -29,7 +29,7 @@ struct ELLPACKMatrix {
     int nb_rows;
     int nb_cols;
     int ell_width;
-    int grid_size;  // n pour grille n×n (nouveau champ)
+    int grid_size;  // n for an n×n grid
     int* indices;
     int nb_nonzeros;
     double* values;

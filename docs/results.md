@@ -80,7 +80,7 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 
 ## 3D: 7-Point Stencil (Sync vs Overlap)
 
-**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink)
+**Hardware**: 8× NVIDIA A100-SXM4-80GB
 
 | Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain | Iterations |
 |------|------|-----------|--------------|--------------|------------|
