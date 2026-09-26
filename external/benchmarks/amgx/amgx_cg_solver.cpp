@@ -195,9 +195,6 @@ int main(int argc, char* argv[]) {
     int num_runs = 10;
     const char* json_file = nullptr;
     const char* csv_file = nullptr;
-    // dDDI keeps everything in double. dDFI stores the matrix in float and keeps the vectors in
-    // double: AmgX's own mixed mode, the reference a reduced-precision solver has to beat.
-    AMGX_Mode mode = AMGX_mode_dDDI;
 
     // Parse arguments
     for (int i = 2; i < argc; i++) {
@@ -211,10 +208,6 @@ int main(int argc, char* argv[]) {
             json_file = argv[i] + 7;
         } else if (strncmp(argv[i], "--csv=", 6) == 0) {
             csv_file = argv[i] + 6;
-        } else if (strcmp(argv[i], "--mode=dDFI") == 0) {
-            mode = AMGX_mode_dDFI;
-        } else if (strcmp(argv[i], "--mode=dDDI") == 0) {
-            mode = AMGX_mode_dDDI;
         }
     }
 
@@ -224,8 +217,7 @@ int main(int argc, char* argv[]) {
     printf("Matrix: %s\n", matrix_file);
     printf("Tolerance: %.0e\n", tolerance);
     printf("Max iterations: %d\n", max_iters);
-    printf("Benchmark runs: %d\n", num_runs);
-    printf("Mode: %s\n\n", mode == AMGX_mode_dDFI ? "dDFI (matrix float, vectors double)" : "dDDI");
+    printf("Benchmark runs: %d\n\n", num_runs);
 
     // Load matrix
     MatrixMarket mat = read_matrix_market(matrix_file);
@@ -264,20 +256,14 @@ int main(int argc, char* argv[]) {
     AMGX_vector_handle b, x;
     AMGX_solver_handle solver;
 
-    AMGX_CHECK(AMGX_matrix_create(&A, rsrc, mode));
-    AMGX_CHECK(AMGX_vector_create(&b, rsrc, mode));
-    AMGX_CHECK(AMGX_vector_create(&x, rsrc, mode));
-    AMGX_CHECK(AMGX_solver_create(&solver, rsrc, mode, cfg));
+    AMGX_CHECK(AMGX_matrix_create(&A, rsrc, AMGX_mode_dDDI));
+    AMGX_CHECK(AMGX_vector_create(&b, rsrc, AMGX_mode_dDDI));
+    AMGX_CHECK(AMGX_vector_create(&x, rsrc, AMGX_mode_dDDI));
+    AMGX_CHECK(AMGX_solver_create(&solver, rsrc, AMGX_mode_dDDI, cfg));
 
-    // Upload matrix, in the storage precision of the mode
-    if (mode == AMGX_mode_dDFI) {
-        std::vector<float> values_f(mat.values, mat.values + mat.nnz);
-        AMGX_CHECK(AMGX_matrix_upload_all(A, mat.rows, mat.nnz, 1, 1, mat.row_ptr, mat.col_idx,
-                                          values_f.data(), nullptr));
-    } else {
-        AMGX_CHECK(AMGX_matrix_upload_all(A, mat.rows, mat.nnz, 1, 1, mat.row_ptr, mat.col_idx,
-                                          mat.values, nullptr));
-    }
+    // Upload matrix
+    AMGX_CHECK(AMGX_matrix_upload_all(A, mat.rows, mat.nnz, 1, 1, mat.row_ptr, mat.col_idx,
+                                      mat.values, nullptr));
 
     // Create RHS: b = ones
     printf("RHS: b = ones, Initial guess: x0 = 0\n\n");
