@@ -547,8 +547,8 @@ void read_matrix_symtogen(MatrixData* mat, const char* filename, int* rows, int*
  * @brief Generates and writes a 5-point stencil matrix to Matrix Market format.
  * @details Creates a 5-point finite difference stencil matrix for a 2D grid of size n×n.
  * The resulting matrix has dimensions (n²)×(n²) and represents discretized Laplacian
- * operator. Each interior point connects to its 4 neighbors with value -1.0 and
- * has a center value of -4.0. Boundary conditions are handled naturally.
+ * operator plus a unit mass term. Each interior point connects to its 4 neighbors with value -1.0
+ * and has a center value of 5.0, which keeps the condition number below 9.
  * @param n Grid dimension (creates n×n grid, resulting in n²×n² matrix)
  * @param filename Output file path for Matrix Market format
  * @return 0 on success, non-zero on error
