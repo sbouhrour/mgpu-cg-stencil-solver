@@ -6,7 +6,7 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 
 ## Requirements
 
-- **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Hopper)
+- **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper)
 - **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries
 - **MPI Implementation**: OpenMPI ≥ 4.0 or MPICH ≥ 3.3
 - **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
@@ -37,8 +37,8 @@ Without MPI, only the SpMV benchmark runs — the CG (single- and multi-GPU) and
 **Toolchain that produced the published Key Numbers** (8× A100-SXM4-80GB):
 
 - CUDA 12.8, Driver 575.57
-- OpenMPI: version not recorded in repo — to be confirmed
-- AmgX: release/tag not recorded in repo — to be confirmed
+- OpenMPI: version not recorded
+- AmgX: `main` branch at build time, revision not recorded (see the version note below)
 
 ## Quick smoke test
 
@@ -93,7 +93,7 @@ Outputs:
 - `results/json/` — structured JSON (timings parsed by the summary table).
 - `results/3d/` — 3D benchmark JSON, raw logs, and a `summary_<timestamp>.txt`.
 
-AmgX auto-detection: if AmgX is not installed, benchmarks 4 and 5 are skipped and the summary shows custom-solver timings without the AmgX comparison.
+AmgX auto-detection: if AmgX is not installed, the AmgX runs are skipped and the summary shows custom-solver timings without the AmgX comparison.
 
 ## AmgX comparison setup
 
@@ -159,7 +159,7 @@ Each row maps a published number to the exact command that produces it. Expected
 
 | Key Number | Source | Command | What to check |
 |---|---|---|---|
-| SpMV vs cuSPARSE CSR (A100, 20k×20k): **2.08×** against the cuSPARSE of CUDA 12.8 | [Results](results.md#2d-spmv-format-comparison) | `./bin/generate_matrix 20000 matrix/stencil_20000x20000.mtx`<br>`./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=cusparse-csr,stencil5-csr` | `Execution time` of `stencil5-csr` (12.86 ms) vs `cusparse-csr` (26.77 ms) → 2.08×. `spmv_bench` prints no ratio; for a precise figure run each mode separately. The ratio depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench \| grep cusparse`): 1.84× with CUDA 13.0. |
+| SpMV vs cuSPARSE CSR (A100-SXM4-80GB, 20k×20k): **2.08×** against the cuSPARSE of CUDA 12.8 | [Results](results.md#2d-spmv-format-comparison) | `./bin/generate_matrix 20000 matrix/stencil_20000x20000.mtx`<br>`./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=cusparse-csr,stencil5-csr` | `Execution time` of `stencil5-csr` (12.86 ms) vs `cusparse-csr` (26.77 ms) → 2.08×. `spmv_bench` prints no ratio; for a precise figure run each mode separately. The ratio depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench \| grep cusparse`): 1.84× with CUDA 13.0. |
 | CG single-GPU vs AmgX (20k×20k): **1.40×** | [Results](results.md#2d-custom-cg-vs-nvidia-amgx) | `./scripts/run_all.sh --size=20000` (AmgX build required) | `PERFORMANCE SUMMARY`: Custom CG (1 GPU) 531.4 ms vs AmgX (1 GPU) 746.7 ms → 1.40× |
 | CG 8-GPU vs AmgX (20k×20k): **1.44×** | [Results](results.md#2d-custom-cg-vs-nvidia-amgx) | `./scripts/run_all.sh --size=20000` on an 8-GPU node (AmgX build required) | `PERFORMANCE SUMMARY`: Custom CG (8 GPUs) 71.0 ms vs AmgX (8 GPUs) 102.3 ms → 1.44× |
 | 27pt overlap gain (256³, 8 GPUs): **1.45×** | [Results](results.md#3d-27-point-stencil-sync-vs-overlap) | `echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx`<br>`mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27`<br>`mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap` | Median of sync run (294.0 ms) ÷ median of overlap run (203.5 ms) → 1.45× |

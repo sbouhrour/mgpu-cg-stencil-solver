@@ -2,14 +2,14 @@
 
 This document explains **why** the custom CG solver outperforms NVIDIA AmgX, using profiling data from Nsight Systems and Nsight Compute. Both sides run unpreconditioned CG, so the speedup reflects implementation efficiency on the same algorithm, not an algorithmic difference.
 
-> **Hardware note.** Performance numbers in this document (solver timings, kernel breakdowns, SpMV throughput) were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The SpMV roofline in [section 2](#2-spmv-kernel-analysis) was profiled with Nsight Compute on the same GPU model, with DRAM bytes measured per kernel.
+> **Hardware note.** Performance numbers in this document (solver timings, kernel breakdowns, SpMV throughput) were measured on 8× NVIDIA A100-SXM4-80GB (NVLink NV12). The SpMV roofline in [section 2](#2-spmv-kernel-analysis) was profiled with Nsight Compute on the same GPU model, with DRAM bytes measured per kernel. The 4k×4k Nsight Systems timelines in [section 3](#3-multi-gpu-scaling-analysis) come from an earlier run on 2× A100-SXM4-40GB.
 
 ## Executive Summary
 
 | Finding | Impact |
 |---------|--------|
 | AmgX spends **48% of compute time** in generic CSR SpMV | Primary optimization target |
-| Custom stencil SpMV is **2.08× faster** than the cuSPARSE CSR of CUDA 12.8 (1.84× against CUDA 13.0) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
+| Custom stencil SpMV is **2.05-2.08× faster** than the cuSPARSE CSR of CUDA 12.8 (1.84× against CUDA 13.0) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
 | Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
 | Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
@@ -38,7 +38,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | Dot product (cuBLAS) | 16% | cuBLAS ddot |
 | AXPBY | 13% | Scaled vector operations |
 
-*Both breakdowns measured on a single A100 to isolate kernel-level distribution from communication overhead. Multi-GPU scaling is analyzed separately in [section 3](#3-multi-gpu-scaling-analysis).*
+*Both breakdowns measured on a single A100-SXM4-80GB to isolate kernel-level distribution from communication overhead. Multi-GPU scaling is analyzed separately in [section 3](#3-multi-gpu-scaling-analysis).*
 
 ### Observation
 
@@ -87,7 +87,8 @@ the benchmark's own kernel time.
 The cuSPARSE version matters: the same matrix, on the same GPU, runs 11% faster with the cuSPARSE of
 CUDA 13.0 (a shorter partitioning pass and a faster `csrmv` kernel at equal bytes). The stencil kernel
 runs in the same 3.31 ms whichever toolkit compiles it. Times are medians over a rotation of 3 builds ×
-3 GPUs; GPU-to-GPU variation stays below 1%.
+3 GPUs; GPU-to-GPU variation stays below 1%. This is a re-measurement at 10k×10k; the published 2.08× in
+[`results.md`](results.md#2d-spmv-format-comparison) comes from the original run, at 20k×20k.
 
 ### Roofline Analysis (Nsight Compute)
 
@@ -108,7 +109,9 @@ same kernels as the 3D solver, at 256³.
 
 <sub>CUDA 13.0. Kernel times here are Nsight Compute's (`gpu__time_duration`); cuSPARSE rows include its
 partitioning kernel. Under the profiler, write traffic after the first launch varies by up to 9 B/row
-while read traffic is stable to 0.1 B; values are medians over all profiled launches.</sub>
+while read traffic is stable to 0.1 B; values are medians over all profiled launches. For cuSPARSE these
+kernel-only times are shorter than the benchmark's own timing (5.74 against 6.10 ms), hence 71% of peak here
+against 67% in the table above.</sub>
 
 **Key observations:**
 - Every kernel is **memory-bound**, 24-40× below the ridge point (4.8 FLOP/B): no compute unit,
@@ -151,7 +154,7 @@ minimum; cuSPARSE reads 4% above its own.
 
 ### Halo volume in practice (10k×10k on 8 GPUs)
 
-Applying the formula above to a concrete configuration:
+In a concrete configuration:
 - Each GPU owns ~12.5M rows
 - Halo zone = 1 row = 10,000 doubles = 80 KB
 - Two neighbors (top + bottom) = 160 KB total
@@ -160,21 +163,21 @@ Compare to naive AllGather: 100M doubles × 8 bytes = 800 MB (5000× more data).
 
 ### Scaling Efficiency
 
-At 8 GPUs, the custom CG achieves a 6.94× speedup vs AmgX's 6.99× — similar parallel efficiency. The custom solver's **single-GPU advantage (1.40× at 20k×20k) is maintained at scale**, reaching 1.44× at 8 GPUs (also 20k×20k — see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx) for the per-size table).
+At 8 GPUs and 10k×10k, the custom CG achieves a 6.94× speedup vs AmgX's 6.99× — similar parallel efficiency. The custom solver's **single-GPU advantage (1.40× at 20k×20k) is maintained at scale**, reaching 1.44× at 8 GPUs (also 20k×20k — see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx) for the per-size table).
 
 Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx).
 
 ### Timeline Comparison (Nsight Systems)
 
-**Custom CG Solver** (4k×4k, 2 GPUs):
+**Custom CG Solver** (4k×4k, 2× A100-SXM4-40GB):
 
 ![Custom CG Timeline](figures/custom_cg_nsys_profile_4k_2n.png)
 
-**NVIDIA AmgX** (4k×4k, 2 GPUs):
+**NVIDIA AmgX** (4k×4k, 2× A100-SXM4-40GB):
 
 ![AmgX Timeline](figures/amgx_cg_nsys_profile_4k_2n.png)
 
-**Figure** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100 GPU). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Annotations (green arrows, red rectangles) mark key phases: SpMV, halo exchange (DtoH → MPI → HtoD), and one full CG iteration. The AmgX iteration is approximately twice as long as the Custom CG, driven primarily by the longer cuSPARSE CSR SpMV kernel.
+**Figure** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100-SXM4-40GB). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Annotations (green arrows, red rectangles) mark key phases: SpMV, halo exchange (DtoH → MPI → HtoD), and one full CG iteration. The AmgX iteration is approximately twice as long as the Custom CG, driven primarily by the longer cuSPARSE CSR SpMV kernel.
 
 *NVTX ranges denote algorithmic phases and do not necessarily correspond to exact GPU kernel execution time; CUDA HW tracks provide the authoritative timing.*
 
@@ -243,10 +246,11 @@ These commands document the profiling of this specific analysis. For general rep
 
 | Profile | Location | Hardware |
 |---------|----------|----------|
-| Custom 1 GPU (10k) | `profiling/nsys/mpi_1ranks_profile_10000.nsys-rep` | A100 |
-| Custom 2 GPUs (10k) | `profiling/nsys/mpi_2ranks_profile_10000.nsys-rep` | A100 |
-| AmgX 1 GPU (10k) | `profiling/nsys/amgx_1ranks_profile_10000.nsys-rep` | A100 |
-| AmgX 2 GPUs (10k) | `profiling/nsys/amgx_2ranks_profile_10000.nsys-rep` | A100 |
+| Custom 1 GPU (10k) | `profiling/nsys/mpi_1ranks_profile_10000.nsys-rep` | A100-SXM4-80GB |
+| Custom 2 GPUs (10k) | `profiling/nsys/mpi_2ranks_profile_10000.nsys-rep` | A100-SXM4-80GB |
+| AmgX 1 GPU (10k) | `profiling/nsys/amgx_1ranks_profile_10000.nsys-rep` | A100-SXM4-80GB |
+| AmgX 2 GPUs (10k) | `profiling/nsys/amgx_2ranks_profile_10000.nsys-rep` | A100-SXM4-80GB |
+| Custom CG and AmgX timelines (2k/4k/7k, 1 and 2 GPUs) | `profiling/nsys/{custom_cg_full_nvtx_event,amgx_cg}_*_2xa100SXM4.nsys-rep` | A100-SXM4-40GB |
 | SpMV roofline, cuSPARSE and stencil (10k) | `profiling/ncu/spmv_2d_10000_a100.ncu-rep` | A100-SXM4-80GB |
 
 ---
@@ -255,7 +259,7 @@ These commands document the profiling of this specific analysis. For general rep
 
 1. **SpMV is the bottleneck**: 48% of AmgX time, making kernel optimization high-impact
 
-2. **Structure exploitation works**: Eliminating index indirection yields a 2.08× SpMV speedup against the cuSPARSE of CUDA 12.8 (1.84× against CUDA 13.0): about 1.5× fewer bytes times 1.24-1.37× higher achieved bandwidth
+2. **Structure exploitation works**: Eliminating index indirection yields a 2.05-2.08× SpMV speedup against the cuSPARSE of CUDA 12.8 (1.84× against CUDA 13.0): about 1.5× fewer bytes times 1.24-1.37× higher achieved bandwidth
 
 3. **Gains compound at scale**: Single-GPU advantage (1.40×) maintained through 8 GPUs (1.44×)
 
