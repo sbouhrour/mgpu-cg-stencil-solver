@@ -13,7 +13,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
 | Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
-**Key insight**: By exploiting the known 5-point stencil structure, the custom solver removes the index indirection that dominates AmgX's SpMV (the primary source of the 2D solver speedup) and reduces halo communication to one boundary row per neighbor (a design property whose measurable payoff appears at scale — see [`profiling-3d.md`](profiling-3d.md)).
+**Key insight**: By exploiting the known 5-point stencil structure, the custom solver removes the index indirection that dominates AmgX's SpMV (the primary source of the 2D solver speedup) and reduces halo communication to one boundary row per neighbor (a design property whose measurable payoff appears at scale; see [`profiling-3d.md`](profiling-3d.md)).
 
 ---
 
@@ -163,7 +163,7 @@ Compare to naive AllGather: 100M doubles × 8 bytes = 800 MB (5000× more data).
 
 ### Scaling Efficiency
 
-At 8 GPUs and 10k×10k, the custom CG achieves a 6.94× speedup vs AmgX's 6.99× — similar parallel efficiency. The custom solver's **single-GPU advantage (1.40× at 20k×20k) is maintained at scale**, reaching 1.44× at 8 GPUs (also 20k×20k — see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx) for the per-size table).
+At 8 GPUs and 10k×10k, the custom CG achieves a 6.94× speedup vs AmgX's 6.99×: similar parallel efficiency. The custom solver's **single-GPU advantage (1.40× at 20k×20k) is maintained at scale**, reaching 1.44× at 8 GPUs (also 20k×20k; see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx) for the per-size table).
 
 Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx).
 
@@ -177,7 +177,7 @@ Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`res
 
 ![AmgX Timeline](figures/amgx_cg_nsys_profile_4k_2n.png)
 
-**Figure** — Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100-SXM4-40GB). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Annotations (green arrows, red rectangles) mark key phases: SpMV, halo exchange (DtoH → MPI → HtoD), and one full CG iteration. The AmgX iteration is approximately twice as long as the Custom CG, driven primarily by the longer cuSPARSE CSR SpMV kernel.
+**Figure.** Nsight Systems timeline of one Conjugate Gradient iteration (2 MPI ranks, A100-SXM4-40GB). Top: custom CG using stencil-optimized CSR SpMV; bottom: NVIDIA AmgX under the same configuration. CUDA HW tracks show actual GPU kernel execution; MPI tracks highlight halo exchange phases. Annotations (green arrows, red rectangles) mark key phases: SpMV, halo exchange (DtoH → MPI → HtoD), and one full CG iteration. The AmgX iteration is approximately twice as long as the Custom CG, driven primarily by the longer cuSPARSE CSR SpMV kernel.
 
 *NVTX ranges denote algorithmic phases and do not necessarily correspond to exact GPU kernel execution time; CUDA HW tracks provide the authoritative timing.*
 
@@ -187,10 +187,10 @@ Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`res
 
 ## Speedup Attribution
 
-The custom CG's single-GPU advantage over AmgX (**1.41× at 10k×10k**, the size of the kernel breakdowns above; the headline **1.40×** refers to 20k×20k — see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx)) comes from two measurable sources, not one:
+The custom CG's single-GPU advantage over AmgX (**1.41× at 10k×10k**, the size of the kernel breakdowns above; the headline **1.40×** refers to 20k×20k; see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx)) comes from two measurable sources, not one:
 
-- **SpMV specialization (primary)** — The custom stencil SpMV runs **1.65× faster in-solver** than AmgX's cuSPARSE CSR SpMV (derived from the kernel breakdowns: 41% of custom time vs 48% of AmgX time, normalized by the 1.41× overall speedup). The isolated microbenchmark shows a larger 2.05× gain with the same CUDA 12.8 cuSPARSE; the in-solver figure is lower because cache state, launch patterns, and co-running operations differ from the isolated case.
-- **A faster rest-of-solver (secondary)** — The non-SpMV operations (AXPY, dot, AXPBY) are collectively **1.24× faster in-solver**. This is consistent with operating on partitioned local vectors with coalesced access rather than AmgX's library-level operations on global vectors, though this contribution is not isolated to a single mechanism in the current measurements.
+- **SpMV specialization (primary).** The custom stencil SpMV runs **1.65× faster in-solver** than AmgX's cuSPARSE CSR SpMV (derived from the kernel breakdowns: 41% of custom time vs 48% of AmgX time, normalized by the 1.41× overall speedup). The isolated microbenchmark shows a larger 2.05× gain with the same CUDA 12.8 cuSPARSE; the in-solver figure is lower because cache state, launch patterns, and co-running operations differ from the isolated case.
+- **A faster rest-of-solver (secondary).** The non-SpMV operations (AXPY, dot, AXPBY) are collectively **1.24× faster in-solver**. This is consistent with operating on partitioned local vectors with coalesced access rather than AmgX's library-level operations on global vectors, though this contribution is not isolated to a single mechanism in the current measurements.
 
 Communication volume is a design property of the stencil-aware halo exchange (one boundary row per neighbor vs generic patterns), but at the single-GPU and small-multi-GPU sizes profiled here it is not a measurable driver of the 2D speedup. Its impact appears at larger scale and is the central mechanism of the 3D overlap solver (see [`profiling-3d.md`](profiling-3d.md)).
 
@@ -202,7 +202,7 @@ Using Amdahl's Law with SpMV at 48% of AmgX time and the isolated 2× SpMV speed
 Theoretical (SpMV-only) speedup = 1 / (0.48/2 + 0.52) = 1.32×
 ```
 
-The observed 1.41× exceeds this SpMV-only prediction. The gap is not measurement noise: it reflects the faster rest-of-solver quantified above (1.24× in-solver). In other words, the speedup has two contributors — a large gain on SpMV and a smaller but real gain on the BLAS1 operations — and the simple SpMV-only Amdahl model captures only the first.
+The observed 1.41× exceeds this SpMV-only prediction. The gap is not measurement noise: it reflects the faster rest-of-solver quantified above (1.24× in-solver). In other words, the speedup has two contributors (a large gain on SpMV and a smaller but real gain on the BLAS1 operations), and the simple SpMV-only Amdahl model captures only the first.
 
 ---
 

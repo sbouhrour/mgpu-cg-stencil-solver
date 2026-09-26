@@ -20,15 +20,15 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 ## Where to Go Next
 
-**[Results](results.md)** — All benchmark tables in one place: 2D strong scaling, detailed 1/2/4/8-GPU breakdowns, SpMV format comparison, AmgX comparison, and 3D 7-point/27-point overlap results.
+**[Results](results.md)**. All benchmark tables in one place: 2D strong scaling, detailed 1/2/4/8-GPU breakdowns, SpMV format comparison, AmgX comparison, and 3D 7-point/27-point overlap results.
 
-**[Why It's Faster — 2D Analysis](profiling-2d.md)** — Kernel-level profiling that explains the speedup over NVIDIA AmgX: SpMV kernel breakdown, roofline analysis, and speedup attribution.
+**[Why It's Faster: 2D Analysis](profiling-2d.md)**. Kernel-level profiling that explains the speedup over NVIDIA AmgX: SpMV kernel breakdown, roofline analysis, and speedup attribution.
 
-**[Compute-Communication Overlap — 3D Analysis](profiling-3d.md)** — How interior/boundary decomposition and dual-stream execution hide MPI halo exchange behind GPU computation, reaching 88% strong scaling efficiency on 8 GPUs.
+**[Compute-Communication Overlap: 3D Analysis](profiling-3d.md)**. How interior/boundary decomposition and dual-stream execution hide MPI halo exchange behind GPU computation, reaching 88% strong scaling efficiency on 8 GPUs.
 
-**[Reproducing the Results](reproducing.md)** — Build the solver, run the benchmark suite, and profile on your own hardware.
+**[Reproducing the Results](reproducing.md)**. Build the solver, run the benchmark suite, and profile on your own hardware.
 
-**[Methodology](methodology.md)** — Measurement protocol: timing scope, statistical approach, reproducibility conditions, profiling tools.
+**[Methodology](methodology.md)**. Measurement protocol: timing scope, statistical approach, reproducibility conditions, profiling tools.
 
 ## At a Glance
 
