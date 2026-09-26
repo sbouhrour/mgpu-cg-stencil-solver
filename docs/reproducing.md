@@ -155,15 +155,55 @@ Notes:
 
 ## Reproducing specific results
 
-Each row maps a published number to the exact command that produces it. Expected values are the published figures in [`results.md`](results.md); they were measured on 8× A100-SXM4-80GB and will differ on other hardware.
+Each section maps a published number to the commands that produce it. Expected values are the published figures in [`results.md`](results.md); they were measured on 8× A100-SXM4-80GB and will differ on other hardware.
 
-| Key Number | Source | Command | What to check |
-|---|---|---|---|
-| SpMV vs cuSPARSE CSR (A100-SXM4-80GB, 20k×20k): **2.08×** against the cuSPARSE of CUDA 12.8 | [Results](results.md#2d-spmv-format-comparison) | `./bin/generate_matrix 20000 matrix/stencil_20000x20000.mtx`<br>`./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=cusparse-csr,stencil5-csr` | `Execution time` of `stencil5-csr` (12.86 ms) vs `cusparse-csr` (26.77 ms) → 2.08×. `spmv_bench` prints no ratio; for a precise figure run each mode separately. The ratio depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench \| grep cusparse`): 1.84× with CUDA 13.0. |
-| CG single-GPU vs AmgX (20k×20k): **1.40×** | [Results](results.md#2d-custom-cg-vs-nvidia-amgx) | `./scripts/run_all.sh --size=20000` (AmgX build required) | `PERFORMANCE SUMMARY`: Custom CG (1 GPU) 531.4 ms vs AmgX (1 GPU) 746.7 ms → 1.40× |
-| CG 8-GPU vs AmgX (20k×20k): **1.44×** | [Results](results.md#2d-custom-cg-vs-nvidia-amgx) | `./scripts/run_all.sh --size=20000` on an 8-GPU node (AmgX build required) | `PERFORMANCE SUMMARY`: Custom CG (8 GPUs) 71.0 ms vs AmgX (8 GPUs) 102.3 ms → 1.44× |
-| 27pt overlap gain (256³, 8 GPUs): **1.45×** | [Results](results.md#3d-27-point-stencil-sync-vs-overlap) | `echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx`<br>`mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27`<br>`mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap` | Median of sync run (294.0 ms) ÷ median of overlap run (203.5 ms) → 1.45× |
-| 27pt scaling efficiency (512³, 8 GPUs, overlap): **88%** | [Results](results.md#3d-strong-scaling-efficiency-overlap-solver) | `echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx`<br>`mpirun -np 1 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --stencil=27`<br>`mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --stencil=27 --overlap` | 1-GPU sync median (22016 ms) ÷ 8-GPU overlap median (3110 ms) = 7.08× → 7.08/8 = 88% |
+### SpMV vs cuSPARSE CSR: 2.08× (20k×20k, cuSPARSE of CUDA 12.8)
+
+[Results](results.md#2d-spmv-format-comparison)
+
+```bash
+./bin/generate_matrix 20000 matrix/stencil_20000x20000.mtx
+./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=cusparse-csr
+./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=stencil5-csr
+```
+
+Check: `Execution time` of the two runs, 26.77 ms (cuSPARSE) and 12.86 ms (stencil), gives 2.08×. The ratio
+depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench | grep cusparse`): 1.84× with CUDA 13.0.
+
+### CG vs AmgX: 1.40× on 1 GPU, 1.44× on 8 GPUs (20k×20k)
+
+[Results](results.md#2d-custom-cg-vs-nvidia-amgx) · requires the AmgX build
+
+```bash
+./scripts/run_all.sh --size=20000
+```
+
+Check, in `PERFORMANCE SUMMARY`: Custom CG 531.4 ms against AmgX 746.7 ms on 1 GPU (1.40×), 71.0 ms against
+102.3 ms on 8 GPUs (1.44×, needs an 8-GPU node).
+
+### 27-point overlap gain: 1.45× (256³, 8 GPUs)
+
+[Results](results.md#3d-27-point-stencil-sync-vs-overlap)
+
+```bash
+echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx
+mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27
+mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap
+```
+
+Check: median of the sync run (294.0 ms) divided by median of the overlap run (203.5 ms) gives 1.45×.
+
+### 27-point scaling efficiency: 88% (512³, 8 GPUs, overlap)
+
+[Results](results.md#3d-strong-scaling-efficiency-overlap-solver)
+
+```bash
+echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx
+mpirun -np 1 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --stencil=27
+mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --stencil=27 --overlap
+```
+
+Check: 1-GPU sync median (22016 ms) divided by 8-GPU overlap median (3110 ms) gives 7.08×, and 7.08 / 8 = 88%.
 
 ### 27-point matrix files
 
