@@ -96,7 +96,7 @@ ax.text(0.02, 1.1, 'Custom Faster →', transform=ax.transData,
         fontsize=10, style='italic', color='green', alpha=0.7)
 
 # Key findings as subtitle annotation (no overlap with legend)
-ax.text(0.98, 0.97, 'All custom implementations outperform industry references',
+ax.text(0.98, 0.97, 'Speedup over the reference library for each operation',
         transform=ax.transAxes, fontsize=10, fontstyle='italic',
         verticalalignment='top', horizontalalignment='right',
         color='#555555')
