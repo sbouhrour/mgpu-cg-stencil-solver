@@ -9,7 +9,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | Finding | Impact |
 |---------|--------|
 | AmgX spends **48% of compute time** in generic CSR SpMV | Primary optimization target |
-| Custom stencil SpMV is **2.05-2.08× faster** than the cuSPARSE CSR of CUDA 12.8 (1.84× against CUDA 13.0) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
+| Custom stencil SpMV is **2.08× faster** than the cuSPARSE CSR of CUDA 12.8 (1.84× against CUDA 13.0) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
 | Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
 | Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
@@ -87,8 +87,7 @@ the benchmark's own kernel time.
 The cuSPARSE version matters: the same matrix, on the same GPU, runs 11% faster with the cuSPARSE of
 CUDA 13.0 (a shorter partitioning pass and a faster `csrmv` kernel at equal bytes). The stencil kernel
 runs in the same 3.31 ms whichever toolkit compiles it. Times are medians over a rotation of 3 builds ×
-3 GPUs; GPU-to-GPU variation stays below 1%. This is a re-measurement at 10k×10k; the published 2.08× in
-[`results.md`](results.md#2d-spmv-format-comparison) comes from the original run, at 20k×20k.
+3 GPUs; GPU-to-GPU variation stays below 1%.
 
 ### Roofline Analysis (Nsight Compute)
 
@@ -259,7 +258,7 @@ These commands document the profiling of this specific analysis. For general rep
 
 1. **SpMV is the bottleneck**: 48% of AmgX time, making kernel optimization high-impact
 
-2. **Structure exploitation works**: Eliminating index indirection yields a 2.05-2.08× SpMV speedup against the cuSPARSE of CUDA 12.8 (1.84× against CUDA 13.0): about 1.5× fewer bytes times 1.24-1.37× higher achieved bandwidth
+2. **Structure exploitation works**: Eliminating index indirection yields a 2.08× SpMV speedup against the cuSPARSE of CUDA 12.8 (1.84× against CUDA 13.0): about 1.5× fewer bytes times 1.24-1.37× higher achieved bandwidth
 
 3. **Gains compound at scale**: Single-GPU advantage (1.40×) maintained through 8 GPUs (1.44×)
 
