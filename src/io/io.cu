@@ -694,7 +694,7 @@ int write_matrix_market_stencil7(int N, const char* filename) {
                     fflush(stdout);
                 }
 
-                // Center (Laplacian with mass term: 6.0)
+                // Center (3D Laplacian: 6.0)
                 fprintf(f, "%lld %lld 6.0\n", row_1based, row_1based);
 
                 // -x neighbor (i-1, j, k)

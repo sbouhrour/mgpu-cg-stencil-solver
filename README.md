@@ -46,7 +46,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 - **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, both unpreconditioned CG to the same tolerance)
 - **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
 - **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
-- **Same iteration count everywhere**: every 2D configuration converges in 14 iterations. The 2D matrix is a 5-point Laplacian plus a unit mass term (condition number below 9), so the count does not grow with the grid and the 2D timings measure per-iteration cost; the 3D matrices are plain Laplacians, whose counts grow with the grid
+- **Same iteration count everywhere**: every 2D configuration converges in 14 iterations; the iteration count depends on the matrix values, not on the kernels, so the 2D timings measure the cost of an iteration.
 - **Efficiency improves with problem size**: 86.8% (10k) → 93.5% (20k)
 
 **Key insight**: Generic solvers cannot exploit known stencil structure for memory access, leaving systematic per-iteration overhead even when they scale efficiently.
