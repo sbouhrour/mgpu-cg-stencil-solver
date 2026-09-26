@@ -43,10 +43,8 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | 4    | 136.3     | 3.90×   | 97.5%      |
 | 8    | 71.0      | **7.48×** | **93.5%**  |
 
-<sub>Convergence: 14 iterations across all configurations. The 2D matrix is the 5-point Laplacian plus a unit
-mass term (diagonal 5, off-diagonals −1), so its condition number stays below 9 and the iteration count does
-not grow with the grid: these timings measure the cost of an iteration. The 3D matrices below are plain
-Laplacians, and their iteration counts grow with the grid.</sub>
+<sub>Convergence: 14 iterations in every configuration. The 2D matrix is well conditioned, so the iteration count
+does not grow with the grid; the 3D matrices are plain Laplacians, and their iteration counts grow with the grid.</sub>
 
 ## 2D: SpMV Format Comparison
 
