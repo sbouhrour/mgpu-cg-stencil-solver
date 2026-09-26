@@ -9,16 +9,16 @@ High-performance multi-GPU Conjugate Gradient solver for large-scale sparse line
 
 This project evaluates GPU sparse matrix–vector multiplication strategies and their impact on iterative solvers, with a focus on stencil-structured workloads common in scientific computing (PDE discretizations, CFD, FEM).
 
-*Built by [Stéphane Bouhrour](https://github.com/sbouhrour) — GPU & parallel performance engineer, available for freelance missions ([contact](#contact)).*
+*Built by [Stéphane Bouhrour](https://github.com/sbouhrour), GPU & parallel performance engineer, available for freelance missions ([contact](#contact)).*
 
 📖 **[Full documentation site →](https://sbouhrour.github.io/mgpu-cg-stencil-solver/)**
 
-## TL;DR — Key Numbers
+## Key Numbers
 
 | Metric | Result |
 |--------|--------|
 | **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
-| **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100 80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
+| **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100-SXM4-80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
 | **3D overlap (7pt/27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
@@ -46,7 +46,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 - **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, both unpreconditioned CG to the same tolerance)
 - **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
 - **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
-- **Deterministic convergence**: all configurations converge in exactly 14 iterations
+- **Same iteration count everywhere**: every 2D configuration converges in 14 iterations. The 2D matrix is a 5-point Laplacian plus a unit mass term (condition number below 9), so the count does not grow with the grid and the 2D timings measure per-iteration cost; the 3D matrices are plain Laplacians, whose counts grow with the grid
 - **Efficiency improves with problem size**: 86.8% (10k) → 93.5% (20k)
 
 **Key insight**: Generic solvers cannot exploit known stencil structure for memory access, leaving systematic per-iteration overhead even when they scale efficiently.
@@ -78,7 +78,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 3. Coalesced memory accesses for contiguous elements
 4. **Granularity-matched parallelism** (see below)
 
-**Kernel design choice — registers over shared memory:**
+**Kernel design choice: registers over shared memory**
 
 With only 5 non-zeros per row, the kernel uses **one thread per row with register-only computation**:
 ```
@@ -94,7 +94,7 @@ cuSPARSE must handle arbitrary sparsity (1-1000+ nnz/row), so it uses warp-per-r
 
 > *Low per-row workload → registers beat shared memory.*
 
-**Format choice — CSR over diagonal formats:**
+**Format choice: CSR over diagonal formats**
 
 The stencil optimization operates directly on CSR without converting to DIA/ELL/SELL formats. While diagonal formats can be efficient for regular matrices on single-GPU, they become impractical under multi-GPU domain decomposition:
 
@@ -113,7 +113,7 @@ See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV f
 
 ## Comparison with NVIDIA AmgX
 
-AmgX is NVIDIA's production-grade multi-GPU solver library, used here as reference implementation. Both solvers run unpreconditioned CG — AmgX is configured as plain CG (not multigrid) — so this is an iso-algorithm comparison. To run AmgX benchmarks: `./scripts/setup/full_setup.sh --amgx` (see [AmgX build instructions](external/benchmarks/amgx/README.md)).
+AmgX is NVIDIA's production-grade multi-GPU solver library, used here as reference implementation. Both solvers run unpreconditioned CG (AmgX is configured as plain CG, not multigrid), so this is an iso-algorithm comparison. To run AmgX benchmarks: `./scripts/setup/full_setup.sh --amgx` (see [AmgX build instructions](external/benchmarks/amgx/README.md)).
 
 **Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57 (same configuration for both solvers)
 
@@ -121,7 +121,7 @@ AmgX is NVIDIA's production-grade multi-GPU solver library, used here as referen
   <img src="docs/figures/custom_vs_amgx_overview.png" alt="Custom CG vs NVIDIA AmgX Comparison" width="100%">
 </p>
 
-See [`results.md`](docs/results.md#2d--custom-cg-vs-nvidia-amgx) for the full comparison table (10k/15k/20k × Custom CG / AmgX × 1/8 GPUs).
+See [`results.md`](docs/results.md#2d-custom-cg-vs-nvidia-amgx) for the full comparison table (10k/15k/20k × Custom CG / AmgX × 1/8 GPUs).
 
 **Key Findings:**
 - **~40% faster at every scale**: Custom CG outperforms AmgX on both single-GPU and 8 GPUs
@@ -134,7 +134,7 @@ See [`results.md`](docs/results.md#2d--custom-cg-vs-nvidia-amgx) for the full co
 
 Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. By exploiting the known 5-point stencil structure, the custom kernel achieves 2× higher throughput. This SpMV specialization is the primary contributor to the 1.4× solver speedup, with a faster rest-of-solver (the surrounding BLAS1 vector operations) accounting for the remainder.
 
-These gains come from a more efficient SpMV kernel and faster vector operations—not from compute-communication overlap (the 2D solver's halo exchange is synchronous). The stencil-aware halo exchange does reduce communication volume, but that is a design property whose payoff appears at larger scale and in the 3D overlap solver; at the sizes profiled here it is not a measurable driver of the 2D speedup. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
+These gains come from a more efficient SpMV kernel and faster vector operations, not from compute-communication overlap (the 2D solver's halo exchange is synchronous). The stencil-aware halo exchange does reduce communication volume, but that is a design property whose payoff appears at larger scale and in the 3D overlap solver; at the sizes profiled here it is not a measurable driver of the 2D speedup. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
 
 See [Profiling Analysis (2D)](docs/profiling-2d.md) for the Nsight Systems timeline comparison, roofline analysis, and kernel-level breakdown.
 
@@ -146,7 +146,7 @@ See [Profiling Analysis (2D)](docs/profiling-2d.md) for the Nsight Systems timel
 
 The solver is extended to realistic 3D stencils (7-point and 27-point) with compute-communication overlap. Each SpMV is split into interior rows (independent of halo data, computed on `stream_compute`) and boundary rows (computed after halo arrival). Halo exchange (D2H + MPI + H2D) runs concurrently on `stream_comm`.
 
-Best results: **1.45× overlap gain** (27pt, 256³, 8 GPUs) and **1.36×** (7pt, 512³, 8 GPUs). Larger grids and the higher-arithmetic-intensity 27-point stencil benefit most from the overlap (more interior work to hide behind communication).
+Best results: **1.45× overlap gain** (27pt, 256³, 8 GPUs) and **1.36×** (7pt, 512³, 8 GPUs). The gain depends on how much interior work is available to hide the halo exchange: it vanishes when the per-GPU slab is too thin (7-point, 128³ on 8 GPUs: 0.96×), and it is not monotonic in grid size (27-point on 8 GPUs: 1.45× at 256³, 1.23× at 512³).
 
 See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables across all configurations (7pt/27pt × 128³/256³/512³ × 1/2/4/8 GPUs), strong scaling efficiency analysis, and key observations.
 
@@ -227,7 +227,7 @@ GPU 1: rows [12.5M, 25M)     │
 GPU 2: rows [25M, 37.5M)     │  Halo exchange:
 GPU 3: rows [37.5M, 50M)     │  - 160 KB per GPU
 GPU 4: rows [50M, 62.5M)     │  - MPI_Isend/Irecv
-GPU 5: rows [62.5M, 75M)     │  - ~2 ms latency
+GPU 5: rows [62.5M, 75M)     │  - host-staged (D2H/H2D)
 GPU 6: rows [75M, 87.5M)     │
 GPU 7: rows [87.5M, 100M)    ┘
 ```
@@ -310,8 +310,8 @@ behind useful computation.
 
 ## Documentation
 
-- **[Results](docs/results.md)**: All benchmark tables — 2D scaling, SpMV comparison, AmgX comparison, 3D overlap
-- **[Profiling Analysis (2D)](docs/profiling-2d.md)**: Why stencil specialization wins — kernel breakdown, roofline analysis, speedup attribution
+- **[Results](docs/results.md)**: All benchmark tables: 2D scaling, SpMV comparison, AmgX comparison, 3D overlap
+- **[Profiling Analysis (2D)](docs/profiling-2d.md)**: Why stencil specialization wins: kernel breakdown, roofline analysis, speedup attribution
 - **[Profiling Analysis (3D)](docs/profiling-3d.md)**: Compute-communication overlap, interior/boundary decomposition
 - **[Methodology](docs/methodology.md)**: Measurement protocol, statistical approach, profiling tools
 - **[Reproducing the Results](docs/reproducing.md)**: Build, run, and profile on your own hardware

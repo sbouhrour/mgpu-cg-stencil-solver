@@ -8,15 +8,15 @@ This document presents the 3D extension of the multi-GPU CG solver (7-point and 
 
 This section extends the solver to realistic 3D stencils (7-point and 27-point) with compute-communication overlap via interior/boundary decomposition and dual-stream execution. Each SpMV is split into interior rows (independent of halo data) computed on `stream_compute`, while halo exchange (D2H + MPI + H2D) runs concurrently on `stream_comm`. Boundary rows are computed after halo arrival.
 
-#### Nsight Systems Timeline — Sync vs Overlap
+#### Nsight Systems Timeline: Sync vs Overlap
 
 ![Sync timeline](figures/profiling_nsys_timeline_synch_512_3d_7pt_4n_a100_nv12.png)
 
-*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms). The red rectangle marks the halo exchange phase: the [All Streams] row is empty during this 1.57 ms window — the GPU sits idle while waiting for MPI communication to complete.*
+*7-point stencil, 512³, 4 GPUs, Rank 2. One CG iteration takes 4.82 ms. The sequence is strictly serial: SpMV kernel, dot products, then `Halo_Exchange_MPI_3D` (1.57 ms). The red rectangle marks the halo exchange phase: the [All Streams] row is empty during this 1.57 ms window: the GPU sits idle while waiting for MPI communication to complete.*
 
 ![Overlap timeline](figures/profiling_nsys_timeline_overlap_512_3d_7pt_4n_a100_nv12.png)
 
-*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). The red rectangle marks the overlap phase: the interior SpMV kernel (`stencil7_overlap_subrange_kernel_3d`) runs concurrently with halo D2H memcpy, MPI interprocess communication (`process_vm_readv` on the OS runtime libraries row), and `MPI_Waitall` — all visible inside the rectangle. After the rectangle, H2D memcpy completes and small boundary SpMV kernels execute. The 4.82 → 3.76 ms reduction matches the 7-point 512³/4-GPU result in [`results.md`](results.md#3d-7-point-stencil-sync-vs-overlap).*
+*Same configuration with `--overlap`. One CG iteration takes 3.76 ms (1.28× faster). The red rectangle marks the overlap phase: the interior SpMV kernel (`stencil7_overlap_subrange_kernel_3d`) runs concurrently with halo D2H memcpy, MPI interprocess communication (`process_vm_readv` on the OS runtime libraries row), and `MPI_Waitall`, all visible inside the rectangle. After the rectangle, H2D memcpy completes and small boundary SpMV kernels execute. The 4.82 → 3.76 ms reduction matches the 7-point 512³/4-GPU result in [`results.md`](results.md#3d-7-point-stencil-sync-vs-overlap).*
 
 ```
 stream_compute: |--- interior SpMV ---|                  |-- boundary SpMV --|
@@ -24,7 +24,7 @@ stream_comm:    |-- D2H --|-- MPI --|-- H2D --|
                                               ↑ sync point
 ```
 
-### 7-Point Stencil — Sync vs Overlap
+### 7-Point Stencil: Sync vs Overlap
 
 Representative results (full table for all 12 configurations in [`results.md`](results.md#3d-7-point-stencil-sync-vs-overlap)):
 
@@ -34,9 +34,9 @@ Representative results (full table for all 12 configurations in [`results.md`](r
 | 256³ | 4 | 409.0 | 318.0 | 1.29× |
 | 128³ | 8 | 47.8 | 49.7 | 0.96× |
 
-Best gain: 1.36× (512³, 8 GPUs). The 128³/8-GPU case shows slight overhead — per-GPU workload too small for dual-stream to pay off.
+Best gain: 1.36× (512³, 8 GPUs). The 128³/8-GPU case shows slight overhead: the per-GPU workload is too small for dual-stream execution to pay off.
 
-### 27-Point Stencil — Sync vs Overlap
+### 27-Point Stencil: Sync vs Overlap
 
 Representative results (full table for all 12 configurations in [`results.md`](results.md#3d-27-point-stencil-sync-vs-overlap)):
 
@@ -58,11 +58,11 @@ Full per-grid efficiency tables (7-point and 27-point, all GPU counts) are in [`
 
 ### Key Observations
 
-Overlap gain scales with both GPU count and problem size. Larger grids have a larger interior region relative to the halo boundary, giving `stream_compute` more work to hide behind halo exchange. The 27-point stencil benefits more than the 7-point stencil at the same grid size because it is more compute-intensive (27 vs 7 loads per row), which extends interior computation time and increases the fraction of communication that can be masked. Best overlap gains are 1.45× (27pt, 256³, 8 GPUs) and 1.36× (7pt, 512³, 8 GPUs).
+Overlap gain generally grows with GPU count and problem size: larger grids have a larger interior region relative to the halo boundary, giving `stream_compute` more work to hide behind halo exchange. It is not monotonic, though. At 128³ the 7-point gain falls as GPUs are added (1.20× on 2 GPUs, 0.96× on 8), and on 8 GPUs the 27-point gain is higher at 256³ (1.45×) than at 512³ (1.23×); that last drop has not been profiled. At 128³ and 256³ the 27-point stencil benefits more than the 7-point stencil, because its interior SpMV is longer (27 vs 7 coefficients per row) and hides a larger fraction of the halo exchange. Best overlap gains are 1.45× (27pt, 256³, 8 GPUs) and 1.36× (7pt, 512³, 8 GPUs).
 
 Small workloads show diminishing returns. At 128³ on 8 GPUs the per-GPU workload is too brief to mask halo exchange latency, and the 7pt/128³/8GPU case incurs slight overhead (0.96×) from dual-stream management. 1-GPU runs confirm zero overhead: sync and overlap times are equivalent with no communication to hide.
 
-The best scaling result — 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap) — comes from combining kernel specialization with communication hiding. The Nsight timelines above show how a 4.82 ms synchronous iteration (GPU idle during halo exchange) becomes a 3.76 ms overlapped iteration — a 1.28× gain (see the 7-point 512³/4-GPU row in [`results.md`](results.md#3d-7-point-stencil-sync-vs-overlap)).
+The best scaling result, 88% parallel efficiency on 8 GPUs (27pt, 512³, overlap), comes from combining kernel specialization with communication hiding. The Nsight timelines above show how a 4.82 ms synchronous iteration (GPU idle during halo exchange) becomes a 3.76 ms overlapped iteration, a 1.28× gain (see the 7-point 512³/4-GPU row in [`results.md`](results.md#3d-7-point-stencil-sync-vs-overlap)).
 
 ### Reproducing these results
 

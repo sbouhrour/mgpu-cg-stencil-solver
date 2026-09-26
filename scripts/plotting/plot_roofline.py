@@ -67,8 +67,8 @@ def point(k, impl):
 
 # Label offsets in points, per (operator, implementation), for the zoomed panel
 OFFSET = {
-    ("2D 5-point", "custom"): (9, -4), ("3D 7-point", "custom"): (-14, -22),
-    ("3D 27-point", "custom"): (10, -4), ("2D 5-point", "cusparse"): (-12, -22),
+    ("2D 5-point", "custom"): (9, -4), ("3D 7-point", "custom"): (-10, -4),
+    ("3D 27-point", "custom"): (10, -4), ("2D 5-point", "cusparse"): (-10, -4),
     ("3D 7-point", "cusparse"): (8, -16), ("3D 27-point", "cusparse"): (8, 2),
 }
 SHORT = {"2D 5-point": "2D 5-pt", "3D 7-point": "3D 7-pt", "3D 27-point": "3D 27-pt"}
@@ -80,7 +80,9 @@ def draw_roof(ax, ai_lo, ai_hi):
 
 
 def style(ax):
-    ax.grid(True, which="both", color=GRID, linewidth=0.6)
+    # Major grid only: across four decades of a log axis the minor lines bunch up toward each
+    # power of ten and read as noise. The zoom panel places its own ticks.
+    ax.grid(True, which="major", color=GRID, linewidth=0.6)
     ax.tick_params(colors=MUTED, labelsize=9, which="both")
     for s in ax.spines.values():
         s.set_color(GRID)
@@ -107,7 +109,7 @@ def main():
     ax.set_ylim(20, 30000)
     ax.set_xlabel("Arithmetic intensity (useful FLOP per DRAM byte)", fontsize=10, color=INK)
     ax.set_ylabel("Performance (GFLOP/s)", fontsize=10, color=INK)
-    ax.set_title("Full roofline: every kernel is 24-40x below the ridge", fontsize=10,
+    ax.set_title("Full roofline: every kernel is 24-40× below the ridge", fontsize=10,
                  color=INK, loc="left")
     style(ax)
 
@@ -121,10 +123,12 @@ def main():
                     ha="right" if OFFSET[(n, i)][0] < 0 else "left")
     az.set_xlim(0.10, 0.22)
     az.set_ylim(130, 420)
+    # Explicit ticks: whether matplotlib labels minor ticks on a log axis depends on its version
     fmt = matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}")
-    for axis in (az.xaxis, az.yaxis):
+    for axis, ticks in ((az.xaxis, np.arange(0.10, 0.2201, 0.02)), (az.yaxis, range(150, 401, 50))):
+        axis.set_major_locator(matplotlib.ticker.FixedLocator(ticks))
+        axis.set_minor_locator(matplotlib.ticker.NullLocator())
         axis.set_major_formatter(fmt)
-        axis.set_minor_formatter(fmt)
     az.set_xlabel("Arithmetic intensity (useful FLOP per DRAM byte)", fontsize=10, color=INK)
     az.set_title("Zoom: % = achieved DRAM bandwidth / 2,039 GB/s peak", fontsize=10, color=INK,
                  loc="left")
@@ -140,7 +144,7 @@ def main():
 
     fig.suptitle("SpMV on A100-SXM4-80GB, FP64: Nsight Compute DRAM bytes and kernel time",
                  fontsize=12, color=INK, x=0.01, ha="left")
-    fig.text(0.99, 0.01, "2D: 10k x 10k grid. 3D: 256^3 grid. CUDA 13.0, Nsight Compute 2025.3.1.",
+    fig.text(0.99, 0.01, "2D: 10k × 10k grid. 3D: 256³ grid. CUDA 13.0, Nsight Compute 2025.3.1.",
              ha="right", fontsize=8, color=MUTED)
     plt.tight_layout(rect=(0, 0.02, 1, 0.95))
     for out in ("docs/figures/roofline_spmv_comparison.png",

@@ -4,7 +4,7 @@ All benchmark results for the multi-GPU CG stencil solver. Measured on 8× NVIDI
 
 For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) (2D, kernel breakdown, roofline) and [`profiling-3d.md`](profiling-3d.md) (3D, compute-communication overlap). For measurement methodology, see [`methodology.md`](methodology.md).
 
-## 2D — Strong Scaling (Custom CG)
+## 2D: Strong Scaling (Custom CG)
 
 **Multi-GPU Strong Scaling** on 8× NVIDIA A100-SXM4-80GB
 
@@ -14,7 +14,7 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | **225M unknowns** (15k×15k stencil) | 300.1 ms | 40.4 ms | 7.43× | 92.9% |
 | **400M unknowns** (20k×20k stencil) | 531.4 ms | 71.0 ms | **7.48×** | **93.5%** |
 
-## 2D — Detailed Scaling (1 / 2 / 4 / 8 GPUs)
+## 2D: Detailed Scaling (1 / 2 / 4 / 8 GPUs)
 
 ### 10000×10000 stencil (100M unknowns)
 
@@ -43,9 +43,12 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | 4    | 136.3     | 3.90×   | 97.5%      |
 | 8    | 71.0      | **7.48×** | **93.5%**  |
 
-<sub>Convergence: 14 iterations across all configurations.</sub>
+<sub>Convergence: 14 iterations across all configurations. The 2D matrix is the 5-point Laplacian plus a unit
+mass term (diagonal 5, off-diagonals −1), so its condition number stays below 9 and the iteration count does
+not grow with the grid: these timings measure the cost of an iteration. The 3D matrices below are plain
+Laplacians, and their iteration counts grow with the grid.</sub>
 
-## 2D — SpMV Format Comparison
+## 2D: SpMV Format Comparison
 
 **Format comparison** on NVIDIA A100-SXM4-80GB
 
@@ -56,11 +59,11 @@ For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) 
 | **20k×20k** (400M unknowns) | CUDA 12.8 | 26.77 ms | 12.86 ms | **2.08×** |
 | **10k×10k** (100M unknowns) | CUDA 13.0 | 6.10 ms | 3.31 ms | **1.84×** |
 
-<sub>Median of 10 runs. DRAM traffic measured with Nsight Compute: 56.0 B/row for the stencil kernel
+<sub>Median of 10 runs. The CUDA 13.0 row comes from a later session on the same GPU model. DRAM traffic measured with Nsight Compute: 56.0 B/row for the stencil kernel
 (1.69-1.74 TB/s, 83-85% of peak), 83.3-83.8 B/row for cuSPARSE. Analysis in
 [`profiling-2d.md`](profiling-2d.md#2-spmv-kernel-analysis).</sub>
 
-## 2D — Custom CG vs NVIDIA AmgX
+## 2D: Custom CG vs NVIDIA AmgX
 
 Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect implementation efficiency on the same algorithm, not an algorithmic difference.
 
@@ -77,7 +80,7 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 | **20k×20k**     | Custom CG       | 531.4 ms |  71.0 ms |   7.48× |      93.5% |
 | (400M unknowns) | NVIDIA AmgX     | 746.7 ms | 102.3 ms |   7.30× |      91.3% |
 
-## 3D — 7-Point Stencil (Sync vs Overlap)
+## 3D: 7-Point Stencil (Sync vs Overlap)
 
 **Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink)
 
@@ -98,7 +101,7 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 
 <sub>1-GPU rows show no overlap gain (no communication to hide). 128³/8GPU shows slight overhead (0.96×): per-GPU workload is too small for dual-stream overhead to pay off.</sub>
 
-## 3D — 27-Point Stencil (Sync vs Overlap)
+## 3D: 27-Point Stencil (Sync vs Overlap)
 
 | Grid | GPUs | Sync (ms) | Overlap (ms) | Overlap Gain | Iterations |
 |------|------|-----------|--------------|--------------|------------|
@@ -115,9 +118,9 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 | 512³ | 4 | 6461 | 5815 | 1.11× | 611 |
 | 512³ | 8 | 3809 | 3110 | 1.23× | 611 |
 
-## 3D — Strong Scaling Efficiency (overlap solver)
+## 3D: Strong Scaling Efficiency (overlap solver)
 
-**7-point stencil** — speedup relative to 1-GPU sync baseline:
+**7-point stencil**: speedup relative to 1-GPU sync baseline:
 
 | Grid | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
 |------|-------|--------|--------|--------|
@@ -127,7 +130,7 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 
 <sub>512³ at 8 GPUs: 6.17× speedup (77% parallel efficiency).</sub>
 
-**27-point stencil** — speedup relative to 1-GPU sync baseline:
+**27-point stencil**: speedup relative to 1-GPU sync baseline:
 
 | Grid | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
 |------|-------|--------|--------|--------|
