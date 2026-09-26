@@ -46,4 +46,4 @@ nvcc -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true
 
 Results are saved to `results/raw/` (TXT) and `results/json/` (structured data).
 
-> **Note**: The showcase results (1.44× vs AmgX, multi-GPU scaling) were measured on 8× NVIDIA A100-SXM4-80GB with 10k-20k matrices. To reproduce those specific results, use `--size=10000` (or larger) on equivalent hardware.
+> **Note**: The published results (1.44× vs AmgX, multi-GPU scaling) were measured on 8× NVIDIA A100-SXM4-80GB with 10k-20k matrices. To reproduce those specific results, use `--size=10000` (or larger) on equivalent hardware.

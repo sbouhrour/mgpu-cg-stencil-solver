@@ -69,7 +69,7 @@ ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.8,
 
 # Styling
 ax.set_xlabel('Implementation Category', fontweight='bold', fontsize=13)
-ax.set_ylabel('Speedup vs Industry Reference', fontweight='bold', fontsize=13)
+ax.set_ylabel('Speedup over the reference library', fontweight='bold', fontsize=13)
 ax.set_title('Custom Implementations: Performance Gains Summary\n' +
              'STENCIL5 vs cuSPARSE CSR | Custom CG vs NVIDIA AmgX',
              fontweight='bold', fontsize=15, pad=20)
@@ -122,7 +122,7 @@ ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.8,
 # Styling
 ax.set_xlabel('Implementation Category', fontweight='bold', fontsize=12)
 ax.set_ylabel('Average Speedup vs Reference', fontweight='bold', fontsize=12)
-ax.set_title('Custom Implementations Outperform Industry Standards\n' +
+ax.set_title('Speedup over cuSPARSE (SpMV) and NVIDIA AmgX (CG)\n' +
              'Average Performance Gains Across All Problem Sizes',
              fontweight='bold', fontsize=14, pad=15)
 ax.set_xticks(x)
@@ -176,9 +176,9 @@ ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, alpha=0.8,
            label='Reference (1.0×)', zorder=0)
 
 # Styling
-ax.set_xlabel('Speedup vs Industry Reference', fontweight='bold', fontsize=12)
-ax.set_title('Custom Implementations: Performance Summary\n' +
-             'Showcase Configuration: 20k×20k (400M unknowns)',
+ax.set_xlabel('Speedup over the reference library', fontweight='bold', fontsize=12)
+ax.set_title('Speedup over cuSPARSE (SpMV) and NVIDIA AmgX (CG)\n' +
+             '20k×20k grid, 400M unknowns, A100-SXM4-80GB',
              fontweight='bold', fontsize=14, pad=15)
 ax.set_yticks(y)
 ax.set_yticklabels(categories_detailed, fontsize=10)
@@ -192,12 +192,12 @@ for i, (bar, speedup) in enumerate(zip(bars, speedups_20k)):
     width = bar.get_width()
     percentage = int((width - 1) * 100)
     ax.text(width + 0.05, bar.get_y() + bar.get_height()/2.,
-            f'{width:.2f}× (+{percentage}%)',
+            f'{width:.2f}×',
             ha='left', va='center', fontsize=11, fontweight='bold')
 
 # Shaded region
 ax.axvspan(1.0, 2.5, alpha=0.1, color='green', zorder=0)
-ax.text(1.05, 2.5, '← Custom Faster', fontsize=10, style='italic',
+ax.text(1.05, 2.5, 'Custom faster →', fontsize=10, style='italic',
         color='green', alpha=0.7, va='center')
 
 plt.tight_layout()

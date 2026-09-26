@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/sbouhrour/mgpu-cg-stencil-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/sbouhrour/mgpu-cg-stencil-solver/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CUDA](https://img.shields.io/badge/CUDA-11.8%20%7C%2012.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![CUDA](https://img.shields.io/badge/CUDA-11.8%20%7C%2012.x%20%7C%2013.0-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://sbouhrour.github.io/mgpu-cg-stencil-solver/)
 
-High-performance multi-GPU Conjugate Gradient solver for large-scale sparse linear systems using CUDA and MPI. Optimized for structured stencil grids with excellent strong scaling efficiency.
+High-performance multi-GPU Conjugate Gradient solver for large-scale sparse linear systems using CUDA and MPI. Optimized for structured stencil grids: 93.5% strong scaling efficiency on 8 GPUs.
 
 This project evaluates GPU sparse matrix–vector multiplication strategies and their impact on iterative solvers, with a focus on stencil-structured workloads common in scientific computing (PDE discretizations, CFD, FEM).
 
@@ -19,7 +19,7 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 |--------|--------|
 | **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100-SXM4-80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
-| **3D overlap (7pt/27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
+| **3D overlap (27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
 
@@ -68,8 +68,8 @@ Exploiting stencil structure enables consistent performance gains over generic s
 
 **Optimization techniques:**
 - **Grouped memory accesses**: W-C-E (stride-1) before N-S (stride grid_size) for cache efficiency
-- **ELLPACK-based storage**: Exploit stencil structure to eliminate col_idx indirection
-- **Interior point fast path**: Direct calculation for 95% of rows (no CSR traversal)
+- **CSR storage, computed indices**: interior rows derive their column indices and CSR offset from the grid coordinates, so `col_idx` and `row_ptr` are never loaded
+- **Interior point fast path**: every row except the grid boundary (99.96% of rows at 10k×10k)
 - **Boundary fallback**: Standard CSR traversal for edge cases
 
 **Why STENCIL5 is faster:**
@@ -82,7 +82,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 
 With only 5 non-zeros per row, the kernel uses **one thread per row with register-only computation**:
 ```
-5 global loads → registers → 5 FMAs → 1 global store
+10 global loads (5 coefficients, 5 vector entries) → registers → 5 FMAs → 1 global store
 ```
 
 This avoids:
@@ -90,7 +90,7 @@ This avoids:
 - **Warp-level reductions**: 27 of 32 lanes would be idle; shuffle latency adds no value
 - **Synchronization barriers**: No `__syncthreads()` needed
 
-cuSPARSE must handle arbitrary sparsity (1-1000+ nnz/row), so it uses warp-per-row with generic reductions. For fixed 5-point stencils, the simpler approach wins.
+cuSPARSE must handle arbitrary sparsity (1 to 1000+ nnz/row), so each SpMV runs a load-balancing partition pass before its compute kernel (both visible in the profiles). For fixed 5-point stencils, the simpler approach wins.
 
 > *Low per-row workload → registers beat shared memory.*
 
@@ -132,7 +132,7 @@ See [`results.md`](docs/results.md#2d-custom-cg-vs-nvidia-amgx) for the full com
 
 > **TL;DR:** SpMV dominates CG performance. A stencil-aware kernel improves memory efficiency, yielding faster iterations without relying on communication overlap.
 
-Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. By exploiting the known 5-point stencil structure, the custom kernel achieves 2× higher throughput. This SpMV specialization is the primary contributor to the 1.4× solver speedup, with a faster rest-of-solver (the surrounding BLAS1 vector operations) accounting for the remainder.
+Profiling reveals that AmgX spends **48% of compute time in generic CSR SpMV**. By exploiting the known 5-point stencil structure, the custom kernel runs the SpMV 2.08× faster. This SpMV specialization is the primary contributor to the 1.4× solver speedup, with a faster rest-of-solver (the surrounding BLAS1 vector operations) accounting for the remainder.
 
 These gains come from a more efficient SpMV kernel and faster vector operations, not from compute-communication overlap (the 2D solver's halo exchange is synchronous). The stencil-aware halo exchange does reduce communication volume, but that is a design property whose payoff appears at larger scale and in the 3D overlap solver; at the sizes profiled here it is not a measurable driver of the 2D speedup. This is not a limitation of AmgX; it correctly handles arbitrary sparse matrices. The gap reflects the benefit of specialization when problem structure is known.
 
@@ -164,7 +164,7 @@ See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables acr
 | Convergence criterion | Relative residual < 1e-6 |
 | Profiling tools | Nsight Systems (timeline), Nsight Compute (roofline) |
 
-Identical test matrices, GPU clocks at default, separate process per configuration. Showcase results measured on 8× NVIDIA A100-SXM4-80GB.
+Identical test matrices, GPU clocks at default, separate process per configuration. Published results measured on 8× NVIDIA A100-SXM4-80GB.
 
 See [`methodology.md`](docs/methodology.md) for full reproducibility conditions, compilation flags, and statistical methodology.
 
@@ -188,7 +188,7 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 
 ### Performance Engineering
 - **Profiling-driven**: Nsight Systems analysis to identify bottlenecks
-- **Numerical stability**: Deterministic results across all GPU counts
+- **Numerical stability**: the same iteration count on 1 to 8 GPUs
 - **Build settings measured, not assumed**: the custom kernels are compiled at `-O2` while AmgX is built at `-O3`; rebuilt at `-O3`, the kernels of the 2D SpMV benchmark and 2D solver produce identical SASS, and JIT from PTX runs the SpMV as fast as native `sm_80` code, so the build asymmetry does not move the SpMV results ([details](docs/methodology.md)). Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
 
 ---
@@ -269,11 +269,7 @@ halo exchange (D2H + MPI + H2D) runs on stream_comm. Boundary rows
 are computed after halo arrival. This hides communication latency
 behind useful computation.
 
-**Performance characteristics:**
-- **SpMV dominates** (~40-50% of total time)
-- **BLAS1 operations** (AXPY, dot products): ~40-45%
-- **Reductions** (MPI_Allreduce): ~10-15%
-- **Halo exchange**: < 5% for large problems
+**Where the time goes** (single GPU, 10k×10k, Nsight Systems): SpMV 41%, AXPY 29%, dot products 16%, AXPBY 13%. See [Profiling Analysis (2D)](docs/profiling-2d.md).
 
 ---
 
@@ -293,7 +289,7 @@ behind useful computation.
 ├── profiling/
 │   ├── nsys/                       # Nsight Systems timeline profiles
 │   ├── ncu/                        # Nsight Compute roofline analysis
-│   └── images/                     # Exported screenshots
+│   └── images/                     # Figures
 ├── src/                            # Source code
 │   ├── main/                       # Entry points
 │   ├── solvers/                    # CG solver implementations

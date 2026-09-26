@@ -70,7 +70,7 @@ Each interior row has exactly 5 non-zeros at fixed offsets: `-grid_size`, `-1`, 
 **Stencil-aware kernel (custom)**:
 - Column indices computed from row index (no lookup)
 - Grouped memory accesses: W-C-E (stride-1) before N-S (stride grid_size)
-- 95% of rows use fast path (interior points)
+- Every row except the grid boundary uses the fast path (99.96% of rows at 10k×10k)
 
 ### Measured Performance (A100-SXM4-80GB)
 
@@ -249,7 +249,6 @@ These commands document the profiling of this specific analysis. For general rep
 | Custom 2 GPUs (10k) | `profiling/nsys/mpi_2ranks_profile_10000.nsys-rep` | A100-SXM4-80GB |
 | AmgX 1 GPU (10k) | `profiling/nsys/amgx_1ranks_profile_10000.nsys-rep` | A100-SXM4-80GB |
 | AmgX 2 GPUs (10k) | `profiling/nsys/amgx_2ranks_profile_10000.nsys-rep` | A100-SXM4-80GB |
-| Custom CG and AmgX timelines (2k/4k/7k, 1 and 2 GPUs) | `profiling/nsys/{custom_cg_full_nvtx_event,amgx_cg}_*_2xa100SXM4.nsys-rep` | A100-SXM4-40GB |
 | SpMV roofline, cuSPARSE and stencil (10k) | `profiling/ncu/spmv_2d_10000_a100.ncu-rep` | A100-SXM4-80GB |
 
 ---

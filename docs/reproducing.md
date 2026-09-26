@@ -70,7 +70,7 @@ To include AmgX in the comparison, run the AmgX setup once before launching:
 
 ```bash
 ./scripts/run_all.sh                 # default 1000×1000
-./scripts/run_all.sh --size=10000    # custom matrix size (e.g. reproduce a showcase point)
+./scripts/run_all.sh --size=10000    # custom matrix size (e.g. reproduce a published point)
 ```
 
 The script auto-detects the environment (GPU count, MPI, AmgX) and runs the applicable subset of:

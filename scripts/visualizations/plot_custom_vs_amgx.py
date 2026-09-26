@@ -54,7 +54,7 @@ bars2 = ax1.bar(x + width/2, amgx_1gpu, width, label='NVIDIA AmgX',
 
 ax1.set_xlabel('Problem Size', fontweight='bold')
 ax1.set_ylabel('Time (ms)', fontweight='bold')
-ax1.set_title('Single-GPU Performance\nCustom 25-41% Faster', fontweight='bold', pad=15)
+ax1.set_title('Single-GPU Performance\nCustom 1.40-1.41× Faster', fontweight='bold', pad=15)
 ax1.set_xticks(x)
 ax1.set_xticklabels(sizes)
 ax1.legend(loc='upper left')
@@ -111,7 +111,7 @@ bars2 = ax1.bar(x + width/2, amgx_speedup, width, label='NVIDIA AmgX',
 ax1.axhline(y=8, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Perfect Scaling (8×)')
 ax1.set_xlabel('Problem Size', fontweight='bold')
 ax1.set_ylabel('Speedup (8 GPUs vs 1 GPU)', fontweight='bold')
-ax1.set_title('Multi-GPU Scaling\nEquivalent Performance', fontweight='bold', pad=15)
+ax1.set_title('Multi-GPU Scaling', fontweight='bold', pad=15)
 ax1.set_xticks(x)
 ax1.set_xticklabels(sizes)
 ax1.legend(loc='lower right')
@@ -200,7 +200,7 @@ bars6 = ax2.bar(x_pos2 + width2/2, amgx_speedup, width2,
 ax2.axhline(y=8, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Perfect Scaling (8×)')
 ax2.set_xlabel('Problem Size', fontweight='bold')
 ax2.set_ylabel('Speedup (8 GPUs)', fontweight='bold')
-ax2.set_title('Multi-GPU Scaling: Equivalent 7.0-7.5× Speedup', fontweight='bold', fontsize=13, pad=10)
+ax2.set_title('Multi-GPU Scaling: 6.9-7.5× on 8 GPUs', fontweight='bold', fontsize=13, pad=10)
 ax2.set_xticks(x_pos2)
 ax2.set_xticklabels(size_labels)
 ax2.legend(loc='lower right', framealpha=0.9)
@@ -223,26 +223,23 @@ ax3.axis('off')
 summary_text = """
 KEY FINDINGS
 
-Single-GPU Performance:
-• Custom 25-41% faster
-• 133-531 ms (Custom)
+Single GPU:
+• Custom CG 1.40-1.41× faster
+• 134-531 ms (Custom)
 • 189-747 ms (AmgX)
 
-Multi-GPU Scaling:
-• Both: 7.0-7.5× speedup
-• Both: 87-94% efficiency
-• Equivalent scaling
+8 GPUs:
+• Custom 6.9-7.5×, AmgX 7.0-7.4×
+• 87-94% efficiency for both
 
-Custom Advantages:
-• Specialized stencil kernels
-• ELLPACK-based storage
-• Optimized MPI staging
-• Direct calculation (no CSR)
+Where the gain comes from:
+• Stencil SpMV: CSR with
+  computed column indices
+• Faster vector operations
 
-Validation:
-✓ Scaling matches NVIDIA ref
-✓ 93.5% efficiency at 8 GPUs
-✓ Performance + scalability
+Same algorithm on both sides:
+• Unpreconditioned CG
+• Same matrix, same tolerance
 """
 
 ax3.text(0.1, 0.95, summary_text, transform=ax3.transAxes,
