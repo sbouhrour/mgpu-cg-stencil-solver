@@ -1,6 +1,6 @@
 # Profiling Data
 
-Nsight Systems and Nsight Compute profiles for performance analysis and showcase.
+Nsight Systems and Nsight Compute profiles behind the performance analysis.
 
 ## Directory Structure
 
@@ -21,8 +21,6 @@ profiling/
 | `mpi_2ranks_profile_10000.nsys-rep`  | Custom CG, 2 GPUs, 10k×10k | A100-SXM4-80GB |
 | `amgx_1ranks_profile_10000.nsys-rep` | AmgX CG, 1 GPU, 10k×10k    | A100-SXM4-80GB |
 | `amgx_2ranks_profile_10000.nsys-rep` | AmgX CG, 2 GPUs, 10k×10k   | A100-SXM4-80GB |
-| `custom_cg_full_nvtx_event_<N>_{1n,2n}_2xa100SXM4.nsys-rep` | Custom CG, 1 and 2 GPUs, N = 2000/4000/7000 (4k timeline in the docs) | A100-SXM4-40GB |
-| `amgx_cg_<N>_{1n,2n}_2xa100SXM4.nsys-rep` | AmgX CG, 1 and 2 GPUs, N = 2000/4000/7000 (4k timeline in the docs) | A100-SXM4-40GB |
 
 ### `ncu/` - Nsight Compute Roofline Analysis
 
