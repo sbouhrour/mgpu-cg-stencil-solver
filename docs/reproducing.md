@@ -170,7 +170,7 @@ Each section maps a published number to the commands that produce it. Expected v
 Check: `Execution time` of the two runs, 26.77 ms (cuSPARSE) and 12.86 ms (stencil), gives 2.08×. The ratio
 depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench | grep cusparse`): 1.84× with CUDA 13.0.
 
-### CG vs AmgX: 1.40× on 1 GPU, 1.44× on 8 GPUs (20k×20k)
+### CG vs AmgX: 1.41× on 1 GPU, 1.44× on 8 GPUs (20k×20k)
 
 [Results](results.md#2d-custom-cg-vs-nvidia-amgx) · requires the AmgX build
 
@@ -178,7 +178,7 @@ depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench | grep cus
 ./scripts/run_all.sh --size=20000
 ```
 
-Check, in `PERFORMANCE SUMMARY`: Custom CG 531.4 ms against AmgX 746.7 ms on 1 GPU (1.40×), 71.0 ms against
+Check, in `PERFORMANCE SUMMARY`: Custom CG 531.4 ms against AmgX 746.7 ms on 1 GPU (1.41×), 71.0 ms against
 102.3 ms on 8 GPUs (1.44×, needs an 8-GPU node).
 
 ### 27-point overlap gain: 1.45× (256³, 8 GPUs)

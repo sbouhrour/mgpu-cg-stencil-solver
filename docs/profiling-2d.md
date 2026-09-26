@@ -11,7 +11,7 @@ This document explains **why** the custom CG solver outperforms NVIDIA AmgX, usi
 | AmgX spends **48% of compute time** in generic CSR SpMV | Primary optimization target |
 | Custom stencil SpMV is **2.08× faster** than the cuSPARSE CSR of CUDA 12.8 (1.84× against CUDA 13.0) | Moves 33% fewer bytes and reaches 83% of DRAM peak |
 | Stencil-aware halo exchange: **one boundary row per neighbor** (N × 8 bytes) | Minimal communication overhead |
-| Overall solver speedup: **1.40× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
+| Overall solver speedup: **1.41× single-GPU, 1.44× multi-GPU** | Consistent advantage at scale |
 
 **Key insight**: By exploiting the known 5-point stencil structure, the custom solver removes the index indirection that dominates AmgX's SpMV (the primary source of the 2D solver speedup) and reduces halo communication to one boundary row per neighbor (a design property whose measurable payoff appears at scale; see [`profiling-3d.md`](profiling-3d.md)).
 
@@ -63,11 +63,13 @@ The 5-point stencil discretization produces a sparse matrix with a **predictable
 Each interior row has exactly 5 non-zeros at fixed offsets: `-grid_size`, `-1`, `0`, `+1`, `+grid_size`.
 
 **Generic CSR (cuSPARSE)**:
+
 - Must read `col_idx[]` array for every non-zero
 - Indirect memory accesses → cache misses
 - Cannot predict next memory location
 
 **Stencil-aware kernel (custom)**:
+
 - Column indices computed from row index (no lookup)
 - Grouped memory accesses: W-C-E (stride-1) before N-S (stride grid_size)
 - Every row except the grid boundary uses the fast path (99.96% of rows at 10k×10k)
@@ -113,6 +115,7 @@ kernel-only times are shorter than the benchmark's own timing (5.74 against 6.10
 against 67% in the table above.</sub>
 
 **Key observations:**
+
 - Every kernel is **memory-bound**, 24-40× below the ridge point (4.8 FLOP/B): no compute unit,
   tensor cores included, can speed up this operation. Only bytes and bandwidth can.
 - The 2D speedup has **two factors that multiply**: the stencil kernel moves **1.49× fewer bytes**
@@ -154,6 +157,7 @@ minimum; cuSPARSE reads 4% above its own.
 ### Halo volume in practice (10k×10k on 8 GPUs)
 
 In a concrete configuration:
+
 - Each GPU owns ~12.5M rows
 - Halo zone = 1 row = 10,000 doubles = 80 KB
 - Two neighbors (top + bottom) = 160 KB total
@@ -162,7 +166,7 @@ Compare to naive AllGather: 100M doubles × 8 bytes = 800 MB (5000× more data).
 
 ### Scaling Efficiency
 
-At 8 GPUs and 10k×10k, the custom CG achieves a 6.94× speedup vs AmgX's 6.99×: similar parallel efficiency. The custom solver's **single-GPU advantage (1.40× at 20k×20k) is maintained at scale**, reaching 1.44× at 8 GPUs (also 20k×20k; see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx) for the per-size table).
+At 8 GPUs and 10k×10k, the custom CG achieves a 6.94× speedup vs AmgX's 6.99×: similar parallel efficiency. The custom solver's **single-GPU advantage (1.41× at 20k×20k) is maintained at scale**, reaching 1.44× at 8 GPUs (also 20k×20k; see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx) for the per-size table).
 
 Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx).
 
@@ -186,7 +190,7 @@ Full Custom CG vs AmgX comparison table (10k/15k/20k, 1 GPU and 8 GPUs) in [`res
 
 ## Speedup Attribution
 
-The custom CG's single-GPU advantage over AmgX (**1.41× at 10k×10k**, the size of the kernel breakdowns above; the headline **1.40×** refers to 20k×20k; see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx)) comes from two measurable sources, not one:
+The custom CG's single-GPU advantage over AmgX (**1.41×** at both 10k×10k, the size of the kernel breakdowns above, and 20k×20k; see [`results.md`](results.md#2d-custom-cg-vs-nvidia-amgx)) comes from two measurable sources, not one:
 
 - **SpMV specialization (primary).** The custom stencil SpMV runs **1.65× faster in-solver** than AmgX's cuSPARSE CSR SpMV (derived from the kernel breakdowns: 41% of custom time vs 48% of AmgX time, normalized by the 1.41× overall speedup). The isolated microbenchmark shows a larger 2.05× gain with the same CUDA 12.8 cuSPARSE; the in-solver figure is lower because cache state, launch patterns, and co-running operations differ from the isolated case.
 - **A faster rest-of-solver (secondary).** The non-SpMV operations (AXPY, dot, AXPBY) are collectively **1.24× faster in-solver**. This is consistent with operating on partitioned local vectors with coalesced access rather than AmgX's library-level operations on global vectors, though this contribution is not isolated to a single mechanism in the current measurements.
@@ -259,6 +263,6 @@ These commands document the profiling of this specific analysis. For general rep
 
 2. **Structure exploitation works**: Eliminating index indirection yields a 2.08× SpMV speedup against the cuSPARSE of CUDA 12.8 (1.84× against CUDA 13.0): about 1.5× fewer bytes times 1.24-1.37× higher achieved bandwidth
 
-3. **Gains compound at scale**: Single-GPU advantage (1.40×) maintained through 8 GPUs (1.44×)
+3. **Gains compound at scale**: Single-GPU advantage (1.41×) maintained through 8 GPUs (1.44×)
 
 4. **Not a limitation of AmgX**: AmgX correctly handles arbitrary sparse matrices; the performance gap reflects the value of specialization when problem structure is known
