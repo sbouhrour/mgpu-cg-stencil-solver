@@ -252,8 +252,7 @@ int csr_run_timed(const double* x, double* y, double* kernel_time_ms) {
     CHECK_CUSPARSE(cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, matA, vecX, &beta,
                                 vecY, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, dBuffer));
 
-    // Stop event right after the call, as for the stencil kernel. A device synchronisation between
-    // the two events counted host-side time for cuSPARSE only (0.36-0.42 ms on a ~6 ms SpMV, A100).
+    // Stop event right after the call, as for the stencil kernel
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&time_ms, start, stop);
