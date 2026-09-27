@@ -85,7 +85,7 @@ Four scripts to evaluate the performance of the multi-GPU CG solver and SpMV.
 # Results in: results_amgx_comparison_[GPU]_[DATE]/
 ```
 
-**Expected results**: Custom CG **1.40× faster** (single-GPU, 20k×20k), **1.44× faster** (8 GPUs, 20k×20k)
+**Expected results**: Custom CG **1.41× faster** (single-GPU, 20k×20k), **1.44× faster** (8 GPUs, 20k×20k)
 
 ---
 

@@ -5,6 +5,7 @@ This guide is for contributors extending the solver: build system, adding new ke
 ### Build System
 
 **Dual build approach** for flexibility:
+
 - **Makefile**: Primary build for CUDA/MPI binaries
 - **CMake**: Testing framework with Google Test
 

@@ -17,7 +17,7 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 | Metric | Result |
 |--------|--------|
-| **Stencil CG vs NVIDIA AmgX** | 1.40× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
+| **Stencil CG vs NVIDIA AmgX** | 1.41× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100-SXM4-80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
 | **3D overlap (27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
@@ -33,7 +33,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 
 | Configuration        | Custom Stencil CG | NVIDIA AmgX CG | Speedup   |
 |----------------------|------------------:|---------------:|----------:|
-| Single-GPU (20k×20k) |          531.4 ms |       746.7 ms | **1.40×** |
+| Single-GPU (20k×20k) |          531.4 ms |       746.7 ms | **1.41×** |
 | 8 GPUs (20k×20k)     |           71.0 ms |       102.3 ms | **1.44×** |
 
 <sub>*Iso-algorithm comparison: both sides run unpreconditioned CG (AmgX as plain CG, not multigrid). Median of 10 runs per configuration; 3 warmup runs discarded.*</sub>
@@ -43,7 +43,7 @@ Exploiting stencil structure enables consistent performance gains over generic s
 </p>
 
 - **SpMV kernel**: 2.08× faster than the cuSPARSE CSR of CUDA 12.8 (single-GPU, 20k×20k); 1.84× against the faster cuSPARSE of CUDA 13.0
-- **CG solver**: 1.40× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, both unpreconditioned CG to the same tolerance)
+- **CG solver**: 1.41× faster than NVIDIA AmgX single-GPU, 1.44× at 8 GPUs (both 20k×20k, both unpreconditioned CG to the same tolerance)
 - **Multi-GPU strong scaling**: 7.48× on 8 GPUs at 20k×20k (93.5% parallel efficiency)
 - **Near-linear 2-GPU scaling**: 1.95–1.97× (97–99% efficiency)
 - **Same iteration count everywhere**: every 2D configuration converges in 14 iterations; the iteration count depends on the matrix values, not on the kernels, so the 2D timings measure the cost of an iteration.
@@ -321,7 +321,7 @@ If you use this code in your research, please cite:
 
 ```bibtex
 @software{mgpu_cg_solver,
-  author = {Bouhrour, Stephane},
+  author = {Bouhrour, St{\'e}phane},
   title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
   year = {2026},
   url = {https://github.com/sbouhrour/mgpu-cg-stencil-solver},
@@ -339,8 +339,6 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 ## Contact
 
-**Stephane Bouhrour**
-Email: bouhrour.stephane@gmail.com
-GitHub: [@sbouhrour](https://github.com/sbouhrour)
+**Stéphane Bouhrour** · [bouhrour.stephane@gmail.com](mailto:bouhrour.stephane@gmail.com) · GitHub [@sbouhrour](https://github.com/sbouhrour)
 
 For questions, issues, or collaboration opportunities, please open an issue on GitHub.
