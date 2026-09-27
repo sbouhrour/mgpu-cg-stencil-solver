@@ -9,7 +9,7 @@ High-performance multi-GPU Conjugate Gradient solver for large-scale sparse line
 
 This project evaluates GPU sparse matrix–vector multiplication strategies and their impact on iterative solvers, with a focus on stencil-structured workloads common in scientific computing (PDE discretizations, CFD, FEM).
 
-*Built by [Stéphane Bouhrour](https://github.com/sbouhrour), GPU & parallel performance engineer, available for freelance missions ([contact](#contact)).*
+*Built by [Stéphane Bouhrour](https://github.com/sbouhrour), GPU & parallel performance engineer, open to remote GPU work, full-time or consulting ([contact](#contact)).*
 
 📖 **[Full documentation site →](https://sbouhrour.github.io/mgpu-cg-stencil-solver/)**
 
