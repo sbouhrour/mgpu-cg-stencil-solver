@@ -27,10 +27,17 @@ else
     NVCCFLAGS := -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true -std=c++11
 endif
 
+# CUDA libraries come from the toolkit of the nvcc in PATH, and the binaries load them from there
+# at run time. libcusparse.so.12 is the soname in CUDA 12.x and 13.0 alike, so a plain -L lets the
+# loader pick another installed toolkit's cuSPARSE. The rpath is a DT_RPATH (--disable-new-dtags):
+# unlike DT_RUNPATH, it is searched before LD_LIBRARY_PATH.
+CUDA_HOME ?= $(patsubst %/bin/nvcc,%,$(shell which $(NVCC) 2>/dev/null))
+CUDA_LIBDIR := $(CUDA_HOME)/lib64
+
 # Base includes and libraries
 INCLUDES := -I$(INC_DIR) -I$(INC_DIR)/solvers
-LDFLAGS := -lcusparse -lcublas
-CUDA_LDFLAGS := -L/usr/local/cuda/lib64 -lcudart
+LDFLAGS := -lcusparse -lcublas -Xlinker --disable-new-dtags -Xlinker -rpath=$(CUDA_LIBDIR)
+CUDA_LDFLAGS := -L$(CUDA_LIBDIR) -lcudart
 
 # Sources / objets
 CU_SRCS := $(shell find $(SRC_DIR) -name '*.cu')

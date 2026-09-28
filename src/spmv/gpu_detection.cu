@@ -39,21 +39,40 @@ static int get_system_ram_gb() {
 }
 
 static void get_nvidia_smi_info(BenchmarkMetrics* metrics) {
+    // Defaults, kept when nvidia-smi is missing or does not report a field
+    metrics->gpu_info.current_temp_c = 0;
+    metrics->gpu_info.max_temp_c = 0;
+    metrics->gpu_info.power_draw_w = 0;
+    metrics->gpu_info.power_limit_w = 0;
+    snprintf(metrics->gpu_info.persistence_mode, sizeof(metrics->gpu_info.persistence_mode),
+             "Unknown");
+    snprintf(metrics->gpu_info.pcie_generation, sizeof(metrics->gpu_info.pcie_generation),
+             "Unknown");
+    metrics->gpu_info.pcie_link_width = 0;
+
     FILE* fp = popen("nvidia-smi "
                      "--query-gpu=temperature.gpu,temperature.memory,power.draw,power.limit,"
                      "persistence_mode --format=csv,noheader,nounits",
                      "r");
     if (fp) {
-        int temp_gpu, temp_mem, power_draw, power_limit;
-        char persistence[16];
-        if (fscanf(fp, "%d, %d, %d, %d, %15s", &temp_gpu, &temp_mem, &power_draw, &power_limit,
-                   persistence) == 5) {
-            metrics->gpu_info.current_temp_c = temp_gpu;
-            metrics->gpu_info.max_temp_c = (temp_mem > temp_gpu) ? temp_mem : temp_gpu;
-            metrics->gpu_info.power_draw_w = power_draw;
-            metrics->gpu_info.power_limit_w = power_limit;
-            strncpy(metrics->gpu_info.persistence_mode, persistence,
-                    sizeof(metrics->gpu_info.persistence_mode) - 1);
+        // Power values are decimals ("62.18") and any field can read "[N/A]", which atoi and
+        // atof turn into 0
+        char line[256];
+        if (fgets(line, sizeof(line), fp)) {
+            char* fields[5];
+            int n = 0;
+            for (char* tok = strtok(line, ",\n"); tok && n < 5; tok = strtok(NULL, ",\n"))
+                fields[n++] = tok + strspn(tok, " ");
+            if (n == 5) {
+                int temp_gpu = atoi(fields[0]);
+                int temp_mem = atoi(fields[1]);
+                metrics->gpu_info.current_temp_c = temp_gpu;
+                metrics->gpu_info.max_temp_c = (temp_mem > temp_gpu) ? temp_mem : temp_gpu;
+                metrics->gpu_info.power_draw_w = (int)atof(fields[2]);
+                metrics->gpu_info.power_limit_w = (int)atof(fields[3]);
+                snprintf(metrics->gpu_info.persistence_mode,
+                         sizeof(metrics->gpu_info.persistence_mode), "%s", fields[4]);
+            }
         }
         pclose(fp);
     }
