@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate multi-GPU scaling plots for 15k×15k stencil (225M unknowns).
+Generate multi-GPU scaling plots for 20k×20k stencil (400M unknowns).
 Outputs: scaling_main_a100.png, scaling_detailed_a100.png
 
 Uses linear x-axis so visual spacing reflects actual GPU count ratios.
@@ -9,12 +9,12 @@ Uses linear x-axis so visual spacing reflects actual GPU count ratios.
 import matplotlib.pyplot as plt
 import numpy as np
 
-# --- Data: 15000×15000 stencil, 14 CG iterations, A100-SXM4-80GB ---
+# --- Data: 20000×20000 stencil, 14 CG iterations, A100-SXM4-80GB (docs/results.md) ---
 gpus = [1, 2, 4, 8]
-times_ms = [300.1, 152.5, 77.7, 40.4]
-speedups = [1.00, 1.97, 3.86, 7.43]
-efficiency = [100.0, 98.4, 96.5, 92.9]
-overhead = [0.0, 100 - 98.4, 100 - 96.5, 100 - 92.9]  # comm overhead %
+times_ms = [531.4, 269.3, 136.3, 71.0]
+speedups = [1.00, 1.97, 3.90, 7.48]
+efficiency = [100.0, 98.7, 97.5, 93.5]
+overhead = [0.0, 100 - 98.7, 100 - 97.5, 100 - 93.5]  # comm overhead %
 iterations = 14
 iter_cost = [t / iterations for t in times_ms]
 
@@ -53,11 +53,11 @@ for i, t in enumerate(times_ms):
              fontsize=10, fontweight='bold')
 ax1.set_xlabel('Number of GPUs', fontweight='bold')
 ax1.set_ylabel('Total Time (ms)', fontweight='bold')
-ax1.set_title('CG Solver Total Time\n15000×15000 stencil, 225M unknowns',
+ax1.set_title('CG Solver Total Time\n20000×20000 stencil, 400M unknowns',
               fontweight='bold')
 ax1.set_xticks(x1_cat)
 ax1.set_xticklabels(gpu_labels)
-ax1.set_ylim(0, 340)
+ax1.set_ylim(0, max(times_ms) * 1.13)
 ax1.grid(axis='y', alpha=0.3, linestyle='--')
 ax1.set_axisbelow(True)
 
@@ -119,7 +119,7 @@ for i, t in enumerate(times_ms):
              ha='center', va='bottom', fontsize=10, fontweight='bold')
 ax1.set_xlabel('Number of GPUs', fontweight='bold')
 ax1.set_ylabel('Total Time (ms)', fontweight='bold')
-ax1.set_title(f'Total Solver Time\n15000×15000 Stencil, {iterations} Iterations',
+ax1.set_title(f'Total Solver Time\n20000×20000 Stencil, {iterations} Iterations',
               fontweight='bold')
 ax1.set_xticks(x_cat)
 ax1.set_xticklabels(gpu_labels)

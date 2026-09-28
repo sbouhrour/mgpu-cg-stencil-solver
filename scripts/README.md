@@ -39,4 +39,5 @@ See [benchmarking/README.md](benchmarking/README.md) for detailed documentation 
 - `benchmark_spmv_comparison.sh` - cuSPARSE CSR vs Stencil CSR
 - `benchmark_problem_sizes.sh` - Strong scaling (1→8 GPUs)
 - `benchmark_weak_scaling.sh` - Weak scaling
-- `benchmark_amgx.sh` - AmgX comparison
+- `benchmark_amgx.sh` - AmgX reference (1-8 ranks)
+- `benchmark_3d_overlap.sh` - 3D sync vs overlap (7-point, 27-point)

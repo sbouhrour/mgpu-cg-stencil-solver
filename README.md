@@ -209,7 +209,7 @@ cd mgpu-cg-stencil-solver
 ./scripts/run_all.sh --quick
 ```
 
-Results are saved to `results/raw/` (TXT), `results/json/` (structured), and `results/figures/` (plots).
+Results are saved to `results/raw/` (TXT) and `results/json/` (structured); `scripts/plotting/plot_results.py` turns the JSON files into plots in `results/figures/`.
 
 See [`reproducing.md`](docs/reproducing.md) for prerequisites, AmgX comparison setup, manual build steps, custom benchmark commands, and profiling instructions.
 

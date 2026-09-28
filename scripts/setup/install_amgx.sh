@@ -14,7 +14,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-AMGX_VERSION="main"  # Latest version compatible with CUDA 12.x/13.x
+AMGX_VERSION="v2.5.0"  # Tag v2.5.0 = commit cc1cebd, the AmgX used for the published comparison
 
 # Determine project root and install location
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -36,16 +36,6 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Detect cloud/container GPU environment (for multi-arch builds)
-detect_cloud_environment() {
-    if [[ -n "$VAST_CONTAINERNAME" ]] || [[ -n "$RUNPOD_POD_ID" ]] || [[ "$PWD" =~ "/workspace" ]] || [[ "$HOME" =~ "/root" ]]; then
-        return 0
-    elif [[ -n "$COLAB_GPU" ]] || [[ -n "$KAGGLE_KERNEL_RUN_TYPE" ]]; then
-        return 0
-    fi
-    return 1
 }
 
 # Check CUDA installation and version
@@ -211,12 +201,11 @@ build_amgx() {
         print_warning "MPI not found - building AmgX without MPI (multi-GPU will not work)"
     fi
 
-    # Add CUDA architecture flags (use CMAKE_CUDA_ARCHITECTURES, standard CMake 3.18+)
-    if detect_cloud_environment; then
-        local cuda_archs=$(get_cuda_architectures)
-        cmake_args+=(-DCMAKE_CUDA_ARCHITECTURES="$cuda_archs")
-        print_status "Using CUDA architectures: $cuda_archs (CUDA $CUDA_VERSION)"
-    fi
+    # Target architectures: AMGX_CUDA_ARCHITECTURES if set (e.g. "80" for A100 only), else the
+    # list for the CUDA version. AmgX's own default (90;100;120) has no code for sm_80 or sm_86/89.
+    local cuda_archs="${AMGX_CUDA_ARCHITECTURES:-$(get_cuda_architectures)}"
+    cmake_args+=(-DCMAKE_CUDA_ARCHITECTURES="$cuda_archs")
+    print_status "Using CUDA architectures: $cuda_archs (CUDA $CUDA_VERSION)"
     
     cmake "${cmake_args[@]}" ..
     
@@ -242,13 +231,7 @@ build_amgx_benchmarks() {
         return
     fi
 
-    print_status "Configuring AmgX benchmarks..."
-
-    # Update AMGX_DIR in Makefile to point to installation
-    sed -i "s|^AMGX_DIR = .*|AMGX_DIR = $INSTALL_PREFIX|g" "$amgx_makefile"
-    print_success "Makefile configured with AmgX path: $INSTALL_PREFIX"
-
-    # Build AmgX benchmarks
+    # The benchmark Makefile finds the installation in external/amgx by itself
     print_status "Building AmgX benchmark binaries..."
     cd "$amgx_benchmark_dir"
 
@@ -289,34 +272,6 @@ verify_installation() {
     fi
     
     print_success "AmgX installation verified"
-}
-
-# Test compilation
-test_compilation() {
-    print_status "Testing AmgX compilation with project..."
-    
-    local project_root
-    project_root=$(cd "$(dirname "$0")/.." && pwd)
-    
-    cd "$project_root"
-    
-    # Try to compile
-    if make clean && make; then
-        print_success "Project compilation successful with AmgX"
-        
-        # Quick functionality test
-        if [[ -f "matrix/test_stencil_32x32.mtx" ]]; then
-            print_status "Running quick AmgX functionality test..."
-            if timeout 30 ./bin/spmv_bench matrix/test_stencil_32x32.mtx --mode=amgx-stencil >/dev/null 2>&1; then
-                print_success "AmgX functionality test passed"
-            else
-                print_warning "AmgX functionality test failed or timed out"
-            fi
-        fi
-    else
-        print_error "Project compilation failed with AmgX"
-        return 1
-    fi
 }
 
 # Cleanup temporary files
@@ -370,12 +325,8 @@ main() {
     echo "  - Headers: $INSTALL_PREFIX/include/"
     echo "  - Libraries: $INSTALL_PREFIX/lib/"
     echo
-    echo "To use AmgX with your project:"
-    echo "  export AMGX_DIR=$INSTALL_PREFIX"
-    echo "  make clean && make"
-    echo
-    echo "Test AmgX integration:"
-    echo "  ./bin/spmv_bench matrix/test.mtx --mode=amgx-stencil"
+    echo "Run the comparison (run_all.sh detects AmgX in external/amgx):"
+    echo "  ./scripts/run_all.sh --quick"
     echo
 }
 

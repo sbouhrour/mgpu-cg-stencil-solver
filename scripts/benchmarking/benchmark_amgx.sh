@@ -1,181 +1,72 @@
 #!/bin/bash
-# Benchmark script for AmgX multi-GPU CG/PCG solver
-# Tests: CG, PCG (with JACOBI, BLOCK_JACOBI)
-# Ranks: 1, 2, 4, 8
-# Outputs: JSON and CSV files per config
+# Benchmark the AmgX CG reference (unpreconditioned, as in the published comparison)
+# on 1, 2, 4 and 8 ranks, keeping the rank counts that fit the GPUs of the node.
+#
+# Usage:
+#   ./scripts/benchmarking/benchmark_amgx.sh matrix/stencil_10000x10000.mtx
+#
+# Output: results_amgx_<GPU>_<matrix>_<date>/ with one JSON and one CSV per rank count,
+# and summary.txt. The Custom-vs-AmgX ratios are printed by ./scripts/run_all.sh.
 
 set -e
 
-# ============================================================
-# CONFIGURATION - EDIT THIS
-# ============================================================
-MATRIX="matrix/3000"  # ← CHANGE THIS TO YOUR MATRIX
+MATRIX="$1"
 RUNS=10
 TOLERANCE="1e-6"
 MAX_ITERS=5000
 
-# ============================================================
-# Auto-detect configuration
-# ============================================================
-# Get GPU architecture (first GPU)
-GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader -i 0 | head -1 | tr -d ' ')
-
-# Extract matrix size from filename
-MATRIX_BASENAME=$(basename "$MATRIX")
-MATRIX_SIZE="${MATRIX_BASENAME}"
-
-# Date for filename
-DATE=$(date +%Y%m%d_%H%M%S)
-
-# Results directory
-RESULTS_DIR="results_amgx_${GPU_NAME}_${MATRIX_SIZE}_${DATE}"
-mkdir -p "$RESULTS_DIR"
-
-echo "============================================================"
-echo "Configuration:"
-echo "  GPU: $GPU_NAME"
-echo "  Matrix: $MATRIX (size: $MATRIX_SIZE)"
-echo "  Tolerance: $TOLERANCE"
-echo "  Max iterations: $MAX_ITERS"
-echo "  Runs per config: $RUNS"
-echo "  Results dir: $RESULTS_DIR"
-echo "============================================================"
-
-# ============================================================
-# Solver configurations to test
-# ============================================================
-# Format: "PRECONDITIONER:LABEL"
-# Note: Code uses PCG for all configs; "none" = no preconditioner (CG equivalent)
-CONFIGS=(
-    "none:pcg-none"
-    "jacobi:pcg-jacobi"
-    "amg:pcg-amg"
-)
-
-# Rank configurations to test
-RANKS=(1 2 4 8)
-
-# Summary file
-SUMMARY_FILE="$RESULTS_DIR/summary.txt"
-
-# ============================================================
-# Helper functions
-# ============================================================
-print_header() {
-    echo ""
-    echo "============================================================"
-    echo "$1"
-    echo "============================================================"
-}
-
-print_section() {
-    echo ""
-    echo "------------------------------------------------------------"
-    echo "$1"
-    echo "------------------------------------------------------------"
-}
-
-# ============================================================
-# Main benchmark loop
-# ============================================================
-print_header "AmgX Multi-GPU Solver Benchmark"
-echo "Start time: $(date)"
-
-# Get git information for reproducibility
-GIT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-GIT_DIRTY=$(git diff-index --quiet HEAD -- 2>/dev/null || echo " (dirty)")
-
-# Initialize summary file
-cat > "$SUMMARY_FILE" <<EOF
-AmgX Multi-GPU Solver Benchmark Results
-========================================
-GPU: $GPU_NAME
-Matrix: $MATRIX (size: $MATRIX_SIZE)
-Tolerance: $TOLERANCE
-Max iterations: $MAX_ITERS
-Runs per config: $RUNS
-Date: $(date)
-
-Git Info (Reproducibility):
-  Commit: $GIT_HASH$GIT_DIRTY
-  Branch: $GIT_BRANCH
-
-EOF
-
-# Executable path
-EXECUTABLE="./external/benchmarks/amgx/amgx_cg_solver_mgpu"
-
-# Check executable exists
-if [ ! -f "$EXECUTABLE" ]; then
-    echo "Error: Executable not found at $EXECUTABLE"
-    echo "Please compile first: cd external/benchmarks/amgx && nvcc ..."
+if [ -z "$MATRIX" ] || [ ! -f "$MATRIX" ]; then
+    echo "Usage: $0 <matrix.mtx>   (e.g. matrix/stencil_10000x10000.mtx, see ./bin/generate_matrix)"
     exit 1
 fi
 
-# Loop over solver configs
-for CONFIG in "${CONFIGS[@]}"; do
-    # Parse config string
-    IFS=':' read -r PRECOND LABEL <<< "$CONFIG"
+EXECUTABLE="./external/benchmarks/amgx/amgx_cg_solver_mgpu"
+if [ ! -f "$EXECUTABLE" ]; then
+    echo "Error: $EXECUTABLE not found. Install AmgX first: ./scripts/setup/full_setup.sh --amgx"
+    exit 1
+fi
 
-    print_header "CONFIG: PCG with precond=$PRECOND"
+GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader -i 0 | head -1 | tr -d ' ')
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+MATRIX_SIZE=$(basename "$MATRIX" .mtx)
+DATE=$(date +%Y%m%d_%H%M%S)
+RESULTS_DIR="results_amgx_${GPU_NAME}_${MATRIX_SIZE}_${DATE}"
+SUMMARY_FILE="$RESULTS_DIR/summary.txt"
+mkdir -p "$RESULTS_DIR"
 
-    # Run benchmarks for each rank count
-    for NP in "${RANKS[@]}"; do
-        print_section "Testing with $NP rank(s)"
+GIT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY=$(git diff-index --quiet HEAD -- 2>/dev/null || echo " (dirty)")
 
-        # Generate output filenames
-        BASE_NAME="${GPU_NAME}_${MATRIX_SIZE}_${LABEL}_np${NP}"
-        JSON_FILE="$RESULTS_DIR/${BASE_NAME}.json"
-        CSV_FILE="$RESULTS_DIR/${BASE_NAME}.csv"
+cat > "$SUMMARY_FILE" <<EOF
+AmgX CG (unpreconditioned) benchmark
+GPU: $GPU_NAME ($NUM_GPUS detected)
+Matrix: $MATRIX
+Tolerance: $TOLERANCE, max iterations: $MAX_ITERS, runs: $RUNS
+Date: $(date)
+Commit: $GIT_HASH$GIT_DIRTY
+EOF
 
-        # Write header to summary
-        echo "" >> "$SUMMARY_FILE"
-        echo "========================================" >> "$SUMMARY_FILE"
-        echo "Solver: PCG | Precond: $PRECOND | Ranks: $NP" >> "$SUMMARY_FILE"
-        echo "Files: ${BASE_NAME}.{json,csv}" >> "$SUMMARY_FILE"
-        echo "========================================" >> "$SUMMARY_FILE"
+echo "AmgX CG benchmark: $MATRIX on $NUM_GPUS x $GPU_NAME, results in $RESULTS_DIR"
 
-        # Build command with proper flags
-        CMD="mpirun --allow-run-as-root -np $NP $EXECUTABLE $MATRIX"
-        CMD="$CMD --precond=$PRECOND"
-        CMD="$CMD --tol=$TOLERANCE --max-iters=$MAX_ITERS --runs=$RUNS"
-        CMD="$CMD --json=$JSON_FILE --csv=$CSV_FILE --timers"
+for NP in 1 2 4 8; do
+    if [ "$NP" -gt "$NUM_GPUS" ]; then
+        echo "Skipping $NP ranks (only $NUM_GPUS GPUs)" | tee -a "$SUMMARY_FILE"
+        continue
+    fi
 
-        # Run benchmark
-        echo "Running: $CMD"
+    BASE_NAME="${GPU_NAME}_${MATRIX_SIZE}_cg_np${NP}"
+    echo "" | tee -a "$SUMMARY_FILE"
+    echo "=== $NP rank(s) ===" | tee -a "$SUMMARY_FILE"
 
-        if $CMD 2>&1 | tee -a "$SUMMARY_FILE"; then
-            echo "✓ Test completed successfully"
-            echo "  JSON: $JSON_FILE"
-            echo "  CSV:  $CSV_FILE"
-        else
-            echo "✗ Test failed (exit code: $?)"
-            echo "FAILED: Precond=$PRECOND, Ranks=$NP" >> "$SUMMARY_FILE"
-        fi
-
-        # Small delay between tests
-        sleep 2
-    done
-
-    echo "✓ Config $LABEL complete"
+    if mpirun --allow-run-as-root -np "$NP" "$EXECUTABLE" "$MATRIX" \
+        --tol="$TOLERANCE" --max-iters="$MAX_ITERS" --runs="$RUNS" \
+        --json="$RESULTS_DIR/${BASE_NAME}.json" --csv="$RESULTS_DIR/${BASE_NAME}.csv" --timers \
+        2>&1 | tee -a "$SUMMARY_FILE"; then
+        echo "Done: $RESULTS_DIR/${BASE_NAME}.{json,csv}"
+    else
+        echo "FAILED: $NP ranks" | tee -a "$SUMMARY_FILE"
+    fi
 done
 
-# Summary
-print_header "Benchmark Complete"
-
 echo ""
-echo "============================================================"
-echo "Summary:"
-echo "  GPU: $GPU_NAME"
-echo "  Matrix: $MATRIX_SIZE"
-echo "  Configs tested: ${#CONFIGS[@]}"
-echo "  Rank configs: ${RANKS[*]}"
-echo "  Total tests: $((${#CONFIGS[@]} * ${#RANKS[@]}))"
-echo ""
-echo "Results directory: $RESULTS_DIR"
-echo "  - Summary: $SUMMARY_FILE"
-echo "  - JSON files: $((${#CONFIGS[@]} * ${#RANKS[@]})) files"
-echo "  - CSV files:  $((${#CONFIGS[@]} * ${#RANKS[@]})) files"
-echo "============================================================"
-echo "End time: $(date)"
+echo "Summary: $SUMMARY_FILE"
