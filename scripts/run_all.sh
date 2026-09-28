@@ -20,6 +20,10 @@
 
 set -e
 
+# The summary formats times with printf/awk, which follow LC_NUMERIC: under a locale with a
+# decimal comma (fr_FR, de_DE, ...) printf rejects "0.117" and set -e stops the script.
+export LC_ALL=C
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 cd "${PROJECT_DIR}"
@@ -245,6 +249,14 @@ fi
 echo "=============================================="
 echo "PERFORMANCE SUMMARY"
 echo "=============================================="
+
+# A solve that stops at the iteration limit still records a time; flag it so that time is not read as a solve
+for json in "${RESULTS_JSON}"/cg_*_${MATRIX_SIZE}_*.json "${RESULTS_JSON}"/amgx_*_${MATRIX_SIZE}.json \
+            "${RESULTS_JSON}"/amgx_*_${MATRIX_SIZE}_*.json; do
+    if [ -f "$json" ] && grep -q '"converged": false' "$json"; then
+        echo "WARNING: $json reports a run that did not converge; its time is not a solve time"
+    fi
+done
 
 # --- SpMV Section ---
 echo ""

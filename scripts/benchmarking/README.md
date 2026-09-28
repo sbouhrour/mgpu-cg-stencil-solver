@@ -1,6 +1,6 @@
 # Benchmark Scripts Guide
 
-Four scripts to evaluate the performance of the multi-GPU CG solver and SpMV.
+Five scripts to evaluate the performance of the multi-GPU CG solver and SpMV.
 
 ---
 
@@ -74,18 +74,33 @@ Four scripts to evaluate the performance of the multi-GPU CG solver and SpMV.
 
 **Script**: `benchmark_amgx.sh`
 
-**Goal**: Compare Custom CG vs NVIDIA AmgX
+**Goal**: Time the NVIDIA AmgX reference (unpreconditioned CG) on 1, 2, 4 and 8 ranks
 
 **Prerequisites**: AmgX installed (`./scripts/setup/full_setup.sh --amgx`)
 
 **Usage**:
 ```bash
-./scripts/benchmarking/benchmark_amgx.sh
+./scripts/benchmarking/benchmark_amgx.sh matrix/stencil_20000x20000.mtx
 
-# Results in: results_amgx_comparison_[GPU]_[DATE]/
+# Results in: results_amgx_[GPU]_[MATRIX]_[DATE]/
 ```
 
-**Expected results**: Custom CG **1.41× faster** (single-GPU, 20k×20k), **1.44× faster** (8 GPUs, 20k×20k)
+Rank counts above the number of GPUs are skipped. The Custom-vs-AmgX ratios (published: **1.41×** single-GPU, **1.44×** on 8 GPUs, 20k×20k) come from `./scripts/run_all.sh --size=20000`, see [`docs/reproducing.md`](../../docs/reproducing.md).
+
+---
+
+## 5. 3D Overlap (Multi-GPU CG, 7-point and 27-point)
+
+**Script**: `benchmark_3d_overlap.sh`
+
+**Goal**: Compare the synchronous and overlap 3D solvers across grid sizes and GPU counts
+
+**Usage**:
+```bash
+./scripts/benchmarking/benchmark_3d_overlap.sh --gpus=1,2,4,8 --grids=128,256 --stencil=7,27
+
+# Results in: results/3d/ (option --output-dir=DIR); --help lists the options
+```
 
 ---
 
@@ -98,8 +113,8 @@ Four scripts to evaluate the performance of the multi-GPU CG solver and SpMV.
 # 2. Strong scaling CG (main showcase)
 ./scripts/benchmarking/benchmark_problem_sizes.sh
 
-# 3. AmgX comparison
-./scripts/benchmarking/benchmark_amgx.sh
+# 3. AmgX reference
+./scripts/benchmarking/benchmark_amgx.sh matrix/stencil_20000x20000.mtx
 ```
 
 ---

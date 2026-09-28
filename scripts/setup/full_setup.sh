@@ -44,11 +44,23 @@ if [ ! -f "Makefile" ] || [ ! -d "src" ]; then
     exit 1
 fi
 
-# 1. Install system dependencies
-echo "Step 1: Installing system dependencies..."
-if command -v apt-get &> /dev/null; then
-    apt-get update -qq
-    apt-get install -y build-essential git cmake openmpi-bin libopenmpi-dev
+# 1. Install system dependencies (only when some are missing; apt-get needs root)
+echo "Step 1: Checking system dependencies..."
+MISSING=""
+for cmd in g++ make cmake git mpic++ mpirun; do
+    command -v "$cmd" &> /dev/null || MISSING="$MISSING $cmd"
+done
+if [ -z "$MISSING" ]; then
+    echo "All found (g++ make cmake git mpic++ mpirun)"
+elif command -v apt-get &> /dev/null; then
+    echo "Missing:$MISSING"
+    APT="apt-get"
+    [ "$(id -u)" -ne 0 ] && APT="sudo apt-get"
+    $APT update -qq
+    $APT install -y build-essential git cmake openmpi-bin libopenmpi-dev
+else
+    echo "Missing:$MISSING. Install them with your package manager, then rerun."
+    exit 1
 fi
 
 # 2. Build main project
