@@ -30,9 +30,10 @@ endif
 # CUDA libraries come from the toolkit of the nvcc in PATH, and the binaries load them from there
 # at run time. libcusparse.so.12 is the soname in CUDA 12.x and 13.0 alike, so a plain -L lets the
 # loader pick another installed toolkit's cuSPARSE. The rpath is a DT_RPATH (--disable-new-dtags):
-# unlike DT_RUNPATH, it is searched before LD_LIBRARY_PATH.
-CUDA_HOME ?= $(patsubst %/bin/nvcc,%,$(shell which $(NVCC) 2>/dev/null))
-CUDA_LIBDIR := $(CUDA_HOME)/lib64
+# unlike DT_RUNPATH, it is searched before LD_LIBRARY_PATH. The directory is derived from nvcc, not
+# from a CUDA_HOME in the environment, which may name another toolkit (override: make CUDA_TOOLKIT_DIR=...).
+CUDA_TOOLKIT_DIR := $(patsubst %/bin/nvcc,%,$(shell which $(NVCC) 2>/dev/null))
+CUDA_LIBDIR := $(CUDA_TOOLKIT_DIR)/lib64
 
 # Base includes and libraries
 INCLUDES := -I$(INC_DIR) -I$(INC_DIR)/solvers
