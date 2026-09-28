@@ -4,7 +4,7 @@ NVIDIA AmgX benchmarks for sparse linear solvers (CG, PCG) on single and multi-G
 
 ## Prerequisites
 
-- **CUDA** (tested with 12.4+)
+- **CUDA** ≥ 12.0 (required by AmgX v2.5.0, the version `scripts/setup/install_amgx.sh` installs)
 - **MPI** (OpenMPI or MPICH) for multi-GPU
 - **AmgX library** (automatically detected)
 
@@ -33,18 +33,20 @@ make amgx_cg_solver_mgpu   # Multi-GPU MPI CG
 
 ## Running
 
+Run from the repository root.
+
 ### Single-GPU CG Solver
 ```bash
-./amgx_cg_solver matrix/stencil_512x512.mtx --runs=10
+./external/benchmarks/amgx/amgx_cg_solver matrix/stencil_512x512.mtx --runs=10
 ```
 
 ### Multi-GPU MPI CG Solver
 ```bash
 # 2 GPUs
-mpirun --allow-run-as-root -np 2 ./amgx_cg_solver_mgpu matrix/stencil_512x512.mtx --runs=10
+mpirun --allow-run-as-root -np 2 ./external/benchmarks/amgx/amgx_cg_solver_mgpu matrix/stencil_512x512.mtx --runs=10
 
 # 4 GPUs
-mpirun --allow-run-as-root -np 4 ./amgx_cg_solver_mgpu matrix/stencil_5000x5000.mtx --runs=10
+mpirun --allow-run-as-root -np 4 ./external/benchmarks/amgx/amgx_cg_solver_mgpu matrix/stencil_5000x5000.mtx --runs=10
 ```
 
 ### Options
@@ -56,28 +58,19 @@ mpirun --allow-run-as-root -np 4 ./amgx_cg_solver_mgpu matrix/stencil_5000x5000.
 
 ## Expected Behavior
 
-### Multi-GPU Checksum Variation (~0.15%)
+### Multi-GPU Checksum Variation
 
-When running with multiple MPI ranks, the solution checksum varies slightly from single-rank execution. **This is expected behavior** for distributed iterative solvers.
+With several MPI ranks, the solution checksum differs from the single-rank one in the last digits: the dot products
+are summed in a different order (`MPI_Allreduce`, domain decomposition), and floating-point addition is not associative.
 
 **Example** (512×512 stencil, tolerance 1e-6):
 ```
-1 rank:  sum=2.608806e+05, norm=509.87, 17 iterations
-2 ranks: sum=2.612679e+05, norm=510.88, 17 iterations  (0.15% diff)
+1 rank:  Sum(x) = 2.6088063330350711e+05, 17 iterations
+2 ranks: Sum(x) = 2.6088063330305996e+05, 17 iterations   (relative difference 1.7e-12)
 ```
 
-**Why this happens:**
-- **Floating-point non-associativity**: `(a+b)+c ≠ a+(b+c)` in double precision
-- **MPI reduction order**: `MPI_Allreduce` for dot products uses implementation-dependent summation order
-- **Domain decomposition**: Distributed matrix-vector products introduce different rounding error accumulation
-
-**Impact:**
-- ✅ Same iteration count (convergence identical)
-- ✅ Tolerance criteria met (residual < 1e-6)
-- ✅ Variation at 8th+ significant digit
-- ✅ Consistent and reproducible
-
-**Status:** Normal for distributed linear solvers. Bit-exact reproducibility would require deterministic reductions (significant performance penalty).
+The iteration count is the same, and the difference stays far below the solver tolerance. Bit-exact
+reproducibility across rank counts would require deterministic reductions.
 
 ## Implementation Notes
 
@@ -85,7 +78,7 @@ When running with multiple MPI ranks, the solution checksum varies slightly from
 **Matrix format**: Local CSR partition with global column indices (`int64_t`), no separate diagonal (plain CSR).
 **Communication**: An explicit `MPI_COMM_WORLD` communicator is passed to `AMGX_resources_create`; `AMGX_matrix_upload_all_global` then performs automatic halo detection and communication setup.
 **Partitioning**: 1D row-band decomposition (equal distribution; the last rank absorbs the remainder).
-**Solver**: Unpreconditioned CG — multi-GPU config uses `solver=CG`, single-GPU uses `solver=PCG, preconditioner=NOSOLVER` (equivalent). Default tolerance 1e-6.
+**Solver**: Unpreconditioned CG. The multi-GPU config uses `solver=CG`, single-GPU uses `solver=PCG, preconditioner=NOSOLVER` (equivalent). Default tolerance 1e-6.
 
 Benchmark results for AmgX (single and multi-GPU, 10k/15k/20k) are in
 the consolidated [results page](../../../docs/results.md).

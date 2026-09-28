@@ -7,7 +7,7 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 ## Requirements
 
 - **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper)
-- **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries
+- **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries; ≥ 12.0 for the AmgX comparison (AmgX v2.5.0 requires it)
 - **MPI Implementation**: OpenMPI ≥ 4.0 or MPICH ≥ 3.3
 - **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
 - **Optional**: Nsight Systems/Compute for profiling
@@ -38,7 +38,7 @@ Without MPI, only the SpMV benchmark runs; the CG (single- and multi-GPU) and 3D
 
 - CUDA 12.8, Driver 575.57
 - OpenMPI: version not recorded
-- AmgX: `main` branch at build time, revision not recorded (see the version note below)
+- AmgX: v2.5.0 (commit `cc1cebd`), see the version note below
 
 ## Quick smoke test
 
@@ -119,8 +119,8 @@ With AmgX present, the `PERFORMANCE SUMMARY` reports the Custom-CG-vs-AmgX ratio
 ```bash
 REPO=$(pwd)
 
-# 1. Clone AmgX (the setup script tracks the main branch; see the version note below)
-git clone --depth 1 --branch main https://github.com/NVIDIA/AMGX.git /tmp/AMGX
+# 1. Clone AmgX v2.5.0, the revision of the published comparison (see the version note below)
+git clone --depth 1 --branch v2.5.0 https://github.com/NVIDIA/AMGX.git /tmp/AMGX
 cd /tmp/AMGX
 git submodule update --init --recursive        # Thrust dependency
 
@@ -141,8 +141,7 @@ make install
 This installs into `external/amgx/`: headers in `external/amgx/include/` (`amgx_c.h`) and the library in `external/amgx/lib/` (`libamgxsh.so` shared, `libamgx.a` static). Then build the comparison binaries against it from the repository root:
 
 ```bash
-export AMGX_DIR="$REPO/external/amgx"
-make -C external/benchmarks/amgx
+make -C external/benchmarks/amgx      # finds external/amgx by itself
 ```
 
 `run_all.sh` auto-detects AmgX via `external/amgx/include/amgx_c.h` (it also accepts `external/amgx-src/include/amgx_c.h`) and enables the reference runs.
@@ -150,8 +149,8 @@ make -C external/benchmarks/amgx
 Notes:
 
 - `-DCMAKE_NO_MPI=0` requires MPI and is needed for the multi-GPU distributed API; without MPI the setup script sets `-DCMAKE_NO_MPI=1` and only single-GPU AmgX works.
-- `install_amgx.sh` only passes `-DCMAKE_CUDA_ARCHITECTURES` automatically in detected cloud/container environments, where it derives the list from the CUDA version (e.g. `70;75;80;86;89;90` for CUDA 12.x). Setting it explicitly as above keeps the build portable across A100/RTX/H100.
-- **Version**: the script clones the moving `main` branch (`AMGX_VERSION="main"`), not a fixed tag or commit, so the exact AmgX revision behind the published Key Numbers is **not pinned** in the repo. The recorded toolchain is CUDA 12.8 / Driver 575.57.
+- `install_amgx.sh` passes `-DCMAKE_CUDA_ARCHITECTURES` derived from the CUDA version (`70;75;80;86;89;90` for CUDA 12.x), or the list in `AMGX_CUDA_ARCHITECTURES` when it is set: `AMGX_CUDA_ARCHITECTURES=80 ./scripts/setup/install_amgx.sh` builds for A100 only. Without the flag, AmgX builds for `90;100;120` only, which has no code for A100 or RTX 30xx/40xx GPUs.
+- **Version**: the published AmgX comparison was measured on 2026-01-14 with AmgX v2.5.0 (commit `cc1cebd`), the head of AmgX `main` on that date, built with CUDA 12.8. `install_amgx.sh` clones this tag (`AMGX_VERSION="v2.5.0"`). The tag builds with CUDA 12.9 and with CUDA 13.0.
 
 ## Reproducing specific results
 
@@ -168,7 +167,13 @@ Each section maps a published number to the commands that produce it. Expected v
 ```
 
 Check: `Execution time` of the two runs, 26.77 ms (cuSPARSE) and 12.86 ms (stencil), gives 2.08×. The ratio
-depends on the cuSPARSE the binary links against (`ldd bin/spmv_bench | grep cusparse`): 1.84× with CUDA 13.0.
+depends on the cuSPARSE the binary loads: 1.84× with CUDA 13.0. The Makefile links the CUDA libraries of the toolkit
+whose `nvcc` is in `PATH` and records that directory as the binary's rpath. The file name is `libcusparse.so.12` in
+CUDA 12.x and 13.0 alike; the resolved path shows the version (it ends in `libcusparse.so.12.6.3.3` with CUDA 13.0):
+
+```bash
+readlink -f $(ldd bin/spmv_bench | awk '/libcusparse/ {print $3}')
+```
 
 ### CG vs AmgX: 1.41× on 1 GPU, 1.44× on 8 GPUs (20k×20k)
 
@@ -237,7 +242,7 @@ make -C external/benchmarks/amgx
 # CG solver (single-GPU)
 mpirun -np 1 ./bin/cg_solver_mgpu_stencil matrix/stencil_1000x1000.mtx
 
-# CG solver (multi-GPU)
+# CG solver (multi-GPU): rank r runs on GPU r, so -np must not exceed the number of GPUs
 mpirun -np 2 ./bin/cg_solver_mgpu_stencil matrix/stencil_1000x1000.mtx
 
 # AmgX comparison (if installed)
