@@ -37,11 +37,12 @@ all: amgx_spmv_bench amgx_cg_solver amgx_cg_solver_mgpu
 amgx_spmv_bench: amgx_spmv_stencil.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
 
-amgx_cg_solver: amgx_cg_solver.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
-
-# The in-memory 3D stencil generators are shared with the custom solver (src/io/io.cu)
+# The in-memory stencil generators are shared with the custom solver (src/io/io.cu)
 SHOWCASE_ROOT := $(CURDIR)/../../..
+
+amgx_cg_solver: amgx_cg_solver.cpp $(SHOWCASE_ROOT)/src/io/io.cu
+	$(CXX) $(CXXFLAGS) -I$(SHOWCASE_ROOT)/include $< $(SHOWCASE_ROOT)/src/io/io.cu -o $@ $(LDFLAGS)
+
 amgx_cg_solver_mgpu: amgx_cg_solver_mgpu.cpp stencil_partition.h amgx_benchmark.h $(SHOWCASE_ROOT)/src/io/io.cu
 	$(CXX) $(MPI_CXXFLAGS) -I$(SHOWCASE_ROOT)/include $< $(SHOWCASE_ROOT)/src/io/io.cu -o $@ $(MPI_LDFLAGS)
 

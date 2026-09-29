@@ -61,37 +61,63 @@ struct MatrixMarket {
 };
 
 MatrixMarket read_matrix_market(const char* filename, int rank) {
-    FILE* f = fopen(filename, "r");
-    if (!f) {
-        fprintf(stderr, "[Rank %d] Failed to open %s\n", rank, filename);
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-
-    // Skip comments
-    char line[1024];
-    while (fgets(line, sizeof(line), f)) {
-        if (line[0] != '%')
-            break;
-    }
-
     MatrixMarket mat;
-    sscanf(line, "%d %d %d", &mat.rows, &mat.cols, &mat.nnz);
+    int* coo_rows;
+    int* coo_cols;
+    double* coo_vals;
 
-    // Temporary storage for COO format
-    int* coo_rows = (int*)malloc(mat.nnz * sizeof(int));
-    int* coo_cols = (int*)malloc(mat.nnz * sizeof(int));
-    double* coo_vals = (double*)malloc(mat.nnz * sizeof(double));
-
-    for (int i = 0; i < mat.nnz; i++) {
-        int ret = fscanf(f, "%d %d %lf", &coo_rows[i], &coo_cols[i], &coo_vals[i]);
-        if (ret != 3) {
-            fprintf(stderr, "[Rank %d] Error reading matrix line %d\n", rank, i);
+    if (matrix_file_is_stub(filename) == 1) {
+        // Header-only file ("% STENCIL_GRID_SIZE n"): the 2D 5-point operator, generated with the
+        // entries, values and order that generate_matrix writes, then converted as a file would be
+        MatrixData g;
+        if (load_matrix_stencil5_2d_from_grid(filename, &g) != 0 || g.nnz > 2147483647LL) {
+            fprintf(stderr, "Cannot build the 5-point operator from %s\n", filename);
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        coo_rows[i]--;  // 1-based to 0-based
-        coo_cols[i]--;
+        mat.rows = g.rows;
+        mat.cols = g.cols;
+        mat.nnz = (int)g.nnz;
+        coo_rows = (int*)malloc(mat.nnz * sizeof(int));
+        coo_cols = (int*)malloc(mat.nnz * sizeof(int));
+        coo_vals = (double*)malloc(mat.nnz * sizeof(double));
+        for (int i = 0; i < mat.nnz; i++) {
+            coo_rows[i] = g.entries[i].row;
+            coo_cols[i] = g.entries[i].col;
+            coo_vals[i] = g.entries[i].value;
+        }
+        free(g.entries);
+    } else {
+        FILE* f = fopen(filename, "r");
+        if (!f) {
+            fprintf(stderr, "[Rank %d] Failed to open %s\n", rank, filename);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+
+        // Skip comments
+        char line[1024];
+        while (fgets(line, sizeof(line), f)) {
+            if (line[0] != '%')
+                break;
+        }
+
+        sscanf(line, "%d %d %d", &mat.rows, &mat.cols, &mat.nnz);
+
+        // Temporary storage for COO format
+        coo_rows = (int*)malloc(mat.nnz * sizeof(int));
+        coo_cols = (int*)malloc(mat.nnz * sizeof(int));
+        coo_vals = (double*)malloc(mat.nnz * sizeof(double));
+
+        for (int i = 0; i < mat.nnz; i++) {
+            int ret = fscanf(f, "%d %d %lf", &coo_rows[i], &coo_cols[i], &coo_vals[i]);
+            if (ret != 3) {
+                fprintf(stderr, "[Rank %d] Error reading matrix line %d\n", rank, i);
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+            coo_rows[i]--;  // 1-based to 0-based
+            coo_cols[i]--;
+        }
+        fclose(f);
     }
-    fclose(f);
 
     // Convert COO to CSR
     mat.row_ptr = (int*)calloc(mat.rows + 1, sizeof(int));
@@ -273,7 +299,9 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "  --json=<file>      Export results to JSON\n");
             fprintf(stderr, "  --csv=<file>       Export results to CSV\n");
             fprintf(stderr,
-                    "  --stencil=7|27     Header-only 3D file: build this rank's rows in memory\n");
+                    "  --stencil=5|7|27   Header-only file: 5 (2D, default) builds the matrix in\n");
+            fprintf(stderr,
+                    "                     memory, 7 or 27 (3D) build this rank's rows\n");
             fprintf(stderr,
                     "  --communicator=MPI|MPI_DIRECT  AmgX halo path: host-staged (default)\n");
             fprintf(stderr, "                     or CUDA-aware MPI on device buffers\n");
@@ -358,13 +386,14 @@ int main(int argc, char* argv[]) {
     int64_t* local_col_idx;
     double* local_values;
 
-    if (matrix_file_is_stub(matrix_file) == 1) {
+    if (stencil != 0 && stencil != 5 && stencil != 7 && stencil != 27) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --stencil must be 5, 7 or 27\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    if (matrix_file_is_stub(matrix_file) == 1 && (stencil == 7 || stencil == 27)) {
         // Header-only 3D stencil file: generate this rank's rows, as the custom solver does
-        if (stencil != 7 && stencil != 27) {
-            if (rank == 0)
-                fprintf(stderr, "Error: %s has no entries; pass --stencil=7 or 27\n", matrix_file);
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
         LocalCsr L;
         if (build_stencil_local_csr(matrix_file, stencil, rank, world_size, &L) != 0)
             MPI_Abort(MPI_COMM_WORLD, 1);
@@ -382,7 +411,7 @@ int main(int argc, char* argv[]) {
             printf("Matrix generated: %d-point, %dx%dx%d, %lld nonzeros\n\n", stencil, grid_size,
                    grid_size, grid_size, global_nnz);
     } else {
-        // Load full matrix (each rank independently)
+        // Load full matrix (each rank independently); a header-only file gives the 2D 5-point one
         mat = read_matrix_market(matrix_file, rank);
         grid_size = (int)sqrt(mat.rows);
         global_nnz = mat.nnz;
