@@ -135,6 +135,16 @@ int load_matrix_stencil7_3d_from_grid(const char* matrix_path, MatrixData* mat, 
                                       int world_size);
 
 /**
+ * @brief Build the full 2D 5-point operator in memory
+ *
+ * Reads only "% STENCIL_GRID_SIZE n" from the header. Produces the entries that
+ * generate_matrix writes and load_matrix_market returns (5 on the diagonal, -1 for each
+ * existing neighbour), in the same order, for all n^2 rows: every rank of the 2D solver
+ * holds the whole matrix, as when it reads the file.
+ */
+int load_matrix_stencil5_2d_from_grid(const char* matrix_path, MatrixData* mat);
+
+/**
  * @brief Convert a CSR matrix to ELLPACK format.
  *
  * @param csr_matrix Pointer to the CSR matrix

@@ -987,7 +987,8 @@ int matrix_file_is_stub(const char* matrix_path) {
         break;
     }
     fclose(f);
-    return seen_size_line && !has_entry;
+    // A stub may stop after the comments ("% STENCIL_GRID_SIZE N" alone) or carry the size line
+    return !has_entry;
 }
 
 int load_matrix_stencil7_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
@@ -1062,6 +1063,63 @@ int load_matrix_stencil7_3d_from_grid(const char* matrix_path, MatrixData* mat, 
     mat->cols = (int)matrix_size;
     mat->nnz = nnz;
     mat->grid_size = N;
+    mat->entries = entries;
+    return 0;
+}
+
+int load_matrix_stencil5_2d_from_grid(const char* matrix_path, MatrixData* mat) {
+    FILE* f = fopen(matrix_path, "r");
+    if (!f) {
+        fprintf(stderr, "Error opening file: %s\n", matrix_path);
+        return 1;
+    }
+    int n = -1;
+    char buffer[MAX_LINE_LENGTH];
+    while (fgets(buffer, MAX_LINE_LENGTH, f) != NULL && buffer[0] == '%') {
+        if (strstr(buffer, "STENCIL_GRID_SIZE") != NULL)
+            sscanf(buffer, "%% STENCIL_GRID_SIZE %d", &n);
+    }
+    fclose(f);
+    if (n <= 0) {
+        fprintf(stderr, "Could not find STENCIL_GRID_SIZE in header of %s\n", matrix_path);
+        return 1;
+    }
+
+    // Interior points have 5 entries; each side of the grid removes one per point on it
+    const long long grid_size = (long long)n * n;
+    const long long nnz = 5 * grid_size - 4LL * n;
+    printf("Generating 5-point stencil in memory: %dx%d grid, %lld nonzeros\n", n, n, nnz);
+    fflush(stdout);
+
+    Entry* entries = (Entry*)malloc(nnz * sizeof(Entry));
+    if (!entries) {
+        fprintf(stderr, "malloc failed for %lld entries (%.1f GB)\n", nnz,
+                (double)nnz * sizeof(Entry) / 1e9);
+        return 1;
+    }
+
+    // Same entries, values and order as write_matrix_market_stencil5 followed by
+    // load_matrix_market (0-based indices), so the CSR built from them is identical
+    long long idx = 0;
+    for (int row = 0; row < n; row++) {
+        for (int col = 0; col < n; col++) {
+            const int i = row * n + col;
+            entries[idx++] = (Entry){i, i, 5.0};
+            if (col > 0)
+                entries[idx++] = (Entry){i, i - 1, -1.0};
+            if (col < n - 1)
+                entries[idx++] = (Entry){i, i + 1, -1.0};
+            if (row > 0)
+                entries[idx++] = (Entry){i, i - n, -1.0};
+            if (row < n - 1)
+                entries[idx++] = (Entry){i, i + n, -1.0};
+        }
+    }
+
+    mat->rows = (int)grid_size;
+    mat->cols = (int)grid_size;
+    mat->nnz = nnz;
+    mat->grid_size = n;
     mat->entries = entries;
     return 0;
 }
