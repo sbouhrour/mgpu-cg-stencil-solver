@@ -171,9 +171,10 @@ PROFILE_LABEL=""
 for S in "${STENCIL_TYPES[@]}"; do
     for GRID in "${GRID_SIZES[@]}"; do
 
-        # Skip 27pt 512³ — requires ~54 GB host RAM
-        if [ "$S" = "27" ] && [ "$GRID" = "512" ]; then
-            echo "[SKIP] 27pt 512³: requires ~54 GB host RAM"
+        # The 1-GPU 27-point 512³ run holds ~54 GB of matrix entries on one rank
+        MEM_AVAIL_GB=$(awk '/MemAvailable/ {print int($2 / 1048576)}' /proc/meminfo 2>/dev/null || echo 0)
+        if [ "$S" = "27" ] && [ "$GRID" = "512" ] && [ "$MEM_AVAIL_GB" -lt 64 ]; then
+            echo "[SKIP] 27pt 512³: needs ~54 GB of host RAM, ${MEM_AVAIL_GB} GB available"
             continue
         fi
 
@@ -218,14 +219,14 @@ for S in "${STENCIL_TYPES[@]}"; do
                 $MPIRUN_CMD $BASE_CMD \
                 || true
 
-            # Overlap run (only if N > 1)
-            if [ "$N" -gt 1 ]; then
-                OVL_JSON="${OUTDIR}/json/3d_${S}pt_${GRID}_${N}gpu_overlap.json"
-                OVL_LOG="${OUTDIR}/raw/3d_${S}pt_${GRID}_${N}gpu_overlap.txt"
-                run_config "overlap" "$OVL_JSON" "$OVL_LOG" \
-                    $MPIRUN_CMD $BASE_CMD --overlap \
-                    || true
+            # Overlap run (on 1 GPU too: there is no halo, the published tables list it)
+            OVL_JSON="${OUTDIR}/json/3d_${S}pt_${GRID}_${N}gpu_overlap.json"
+            OVL_LOG="${OUTDIR}/raw/3d_${S}pt_${GRID}_${N}gpu_overlap.txt"
+            run_config "overlap" "$OVL_JSON" "$OVL_LOG" \
+                $MPIRUN_CMD $BASE_CMD --overlap \
+                || true
 
+            if [ "$N" -gt 1 ]; then
                 # Track largest config for profiling
                 PROFILE_LABEL="${S}pt_${GRID}_${N}gpu"
                 PROFILE_STENCIL="$S"
@@ -278,14 +279,13 @@ SUMMARY_FILE="${OUTPUT_DIR}/summary_${TIMESTAMP}.txt"
                 OVL_JSON="${OUTPUT_DIR}/json/3d_${S}pt_${GRID}_${N}gpu_overlap.json"
 
                 SYNC_T=$(parse_median "$SYNC_JSON")
-                if [ "$N" -gt 1 ]; then
-                    OVL_T=$(parse_median "$OVL_JSON")
-                else
-                    OVL_T="n/a"
-                fi
+                OVL_T=$(parse_median "$OVL_JSON")
 
+                # One GPU has no halo to hide: no gain is reported
                 GAIN="n/a"
-                if [ "$OVL_T" != "n/a" ] && [ "$SYNC_T" != "n/a" ]; then
+                if [ "$N" -eq 1 ]; then
+                    GAIN="-"
+                elif [ "$OVL_T" != "n/a" ] && [ "$SYNC_T" != "n/a" ]; then
                     GAIN=$(python3 -c "print(f'{float('$SYNC_T')/float('$OVL_T'):.2f}×')" 2>/dev/null || echo "n/a")
                 fi
 
