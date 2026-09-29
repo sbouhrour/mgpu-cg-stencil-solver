@@ -55,6 +55,13 @@ mpirun --allow-run-as-root -np 4 ./external/benchmarks/amgx/amgx_cg_solver_mgpu 
 - `--runs=10` : Number of benchmark runs
 - `--json=results.json` : Export JSON results
 - `--csv=results.csv` : Export CSV results
+- `--stencil=5|7|27` (multi-GPU driver): operator of a header-only matrix file (default 5)
+- `--communicator=MPI|MPI_DIRECT` (multi-GPU driver): AmgX halo path, host-staged (default) or CUDA-aware MPI
+
+A header-only matrix file (`% STENCIL_GRID_SIZE n`) is generated in memory instead of read: both drivers
+build the 2D 5-point matrix with the entries that `./bin/generate_matrix` writes, in the same order; the
+multi-GPU driver builds this rank's rows of a 3D 7-point or 27-point operator with `--stencil=7|27`. See
+[Matrix files](../../../docs/reproducing.md#matrix-files).
 
 ## Expected Behavior
 

@@ -54,7 +54,7 @@ for arg in "$@"; do
 done
 
 # Paths
-MATRIX_FILE="matrix/stencil_${MATRIX_SIZE}x${MATRIX_SIZE}.mtx"
+MATRIX_FILE="matrix/stencil_${MATRIX_SIZE}x${MATRIX_SIZE}_stub.mtx"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_RAW="results/raw"
 RESULTS_JSON="results/json"
@@ -102,7 +102,7 @@ echo ""
 # Build
 # =============================================================================
 echo "=== Building ==="
-make -j$(nproc) spmv_bench generate_matrix 2>&1 | tail -3
+make -j$(nproc) spmv_bench 2>&1 | tail -3
 
 if [ "$HAS_MPI" = "1" ]; then
     make -j$(nproc) cg_solver_mgpu_stencil 2>&1 | tail -2
@@ -116,13 +116,13 @@ echo ""
 # =============================================================================
 # Generate Matrix
 # =============================================================================
-echo "=== Generating Matrix ==="
+echo "=== Matrix ==="
+# Header-only file: every binary generates the 5-point matrix in memory, entry for entry as
+# ./bin/generate_matrix would write it, instead of reading a text file (48.5 GB at 20000x20000)
 if [ ! -f "${MATRIX_FILE}" ]; then
-    ./bin/generate_matrix ${MATRIX_SIZE} "${MATRIX_FILE}" 2>&1 | grep -v "^Writing"
-else
-    echo "Matrix exists: ${MATRIX_FILE}"
-    ls -lh "${MATRIX_FILE}"
+    echo "% STENCIL_GRID_SIZE ${MATRIX_SIZE}" > "${MATRIX_FILE}"
 fi
+echo "Matrix: ${MATRIX_FILE} (${MATRIX_SIZE}x${MATRIX_SIZE}, generated in memory)"
 echo ""
 
 # =============================================================================

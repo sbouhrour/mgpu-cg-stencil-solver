@@ -107,7 +107,11 @@ int main(int argc, char* argv[]) {
     // Load the matrix from Matrix Market file into a generic structure (AFTER mode validation)
     printf("\nLoading matrix: %s\n", matrix_file);
     MatrixData mat;  ///< Container for matrix data loaded from file
-    if (load_matrix_market(matrix_file, &mat) != 0) {
+    // A header-only file ("% STENCIL_GRID_SIZE n") is generated in memory, entry for entry as read
+    int load_err = (matrix_file_is_stub(matrix_file) == 1)
+                       ? load_matrix_stencil5_2d_from_grid(matrix_file, &mat)
+                       : load_matrix_market(matrix_file, &mat);
+    if (load_err != 0) {
         fprintf(stderr, "Failed to load matrix %s\n", matrix_file);
         return EXIT_FAILURE;
     }

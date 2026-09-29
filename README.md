@@ -207,6 +207,9 @@ cd mgpu-cg-stencil-solver
 
 # Quick verification (~2 min)
 ./scripts/run_all.sh --quick
+
+# Check iteration counts, --verify, and Custom CG against AmgX (counts, not times)
+./scripts/verify_reproduction.sh
 ```
 
 Results are saved to `results/raw/` (TXT) and `results/json/` (structured); `scripts/plotting/plot_results.py` turns the JSON files into plots in `results/figures/`.

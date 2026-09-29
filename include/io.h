@@ -118,6 +118,33 @@ int load_matrix_stencil27_3d_from_grid(const char* matrix_path, MatrixData* mat,
                                        int world_size);
 
 /**
+ * @brief Whether a Matrix Market file is a header-only stub (no entry lines)
+ * @return 1 stub, 0 file with entries, -1 unreadable
+ */
+int matrix_file_is_stub(const char* matrix_path);
+
+/**
+ * @brief Build this rank's rows of the 3D 7-point Laplacian in memory
+ *
+ * Reads only "% STENCIL_GRID_SIZE N" from the header. Produces the operator that
+ * generate_matrix_3d writes (6 on the diagonal of every row, -1 for each existing
+ * face neighbour), for the Z-slab rows of this rank only: mat->rows is global
+ * (N^3), mat->nnz and mat->entries are local, as in the 27-point loader.
+ */
+int load_matrix_stencil7_3d_from_grid(const char* matrix_path, MatrixData* mat, int rank,
+                                      int world_size);
+
+/**
+ * @brief Build the full 2D 5-point operator in memory
+ *
+ * Reads only "% STENCIL_GRID_SIZE n" from the header. Produces the entries that
+ * generate_matrix writes and load_matrix_market returns (5 on the diagonal, -1 for each
+ * existing neighbour), in the same order, for all n^2 rows: every rank of the 2D solver
+ * holds the whole matrix, as when it reads the file.
+ */
+int load_matrix_stencil5_2d_from_grid(const char* matrix_path, MatrixData* mat);
+
+/**
  * @brief Convert a CSR matrix to ELLPACK format.
  *
  * @param csr_matrix Pointer to the CSR matrix

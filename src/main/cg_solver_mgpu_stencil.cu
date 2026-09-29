@@ -55,7 +55,11 @@ int main(int argc, char** argv) {
         printf("Loading matrix: %s\n", matrix_file);
     }
 
-    if (load_matrix_market(matrix_file, &mat) != 0) {
+    // A header-only file ("% STENCIL_GRID_SIZE n") is generated in memory, entry for entry as read
+    int load_err = (matrix_file_is_stub(matrix_file) == 1)
+                       ? load_matrix_stencil5_2d_from_grid(matrix_file, &mat)
+                       : load_matrix_market(matrix_file, &mat);
+    if (load_err != 0) {
         fprintf(stderr, "[Rank %d] Error loading matrix: %s\n", rank, matrix_file);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
