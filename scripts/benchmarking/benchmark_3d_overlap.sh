@@ -83,13 +83,11 @@ find_bin() {
 }
 
 BIN=$(find_bin cg_solver_mgpu_stencil_3d)
-GEN7=$(find_bin generate_matrix_3d)
 
-if [ -z "$BIN" ] || [ -z "$GEN7" ]; then
+if [ -z "$BIN" ]; then
     echo "Building 3D binaries..."
-    make cg_solver_mgpu_stencil_3d generate_matrix_3d generate_matrix_3d_27pt 2>&1 | tail -5
+    make cg_solver_mgpu_stencil_3d 2>&1 | tail -5
     BIN=$(find_bin cg_solver_mgpu_stencil_3d)
-    GEN7=$(find_bin generate_matrix_3d)
 fi
 
 if [ -z "$BIN" ] || [ ! -f "$BIN" ]; then
@@ -181,11 +179,11 @@ for S in "${STENCIL_TYPES[@]}"; do
 
         # Determine matrix file
         if [ "$S" = "7" ]; then
-            MATRIX="matrix/stencil3d_${GRID}.mtx"
+            MATRIX="matrix/stencil3d_${GRID}_stub.mtx"
             if [ ! -f "$MATRIX" ]; then
-                echo "Generating 7pt ${GRID}³ matrix..."
+                echo "Creating 7pt ${GRID}³ header file (solver generates this rank's rows in memory)..."
                 mkdir -p matrix
-                "$GEN7" "$GRID" "$MATRIX"
+                echo "% STENCIL_GRID_SIZE ${GRID}" > "$MATRIX"
             fi
         else
             MATRIX="matrix/stencil3d_27pt_${GRID}.mtx"
