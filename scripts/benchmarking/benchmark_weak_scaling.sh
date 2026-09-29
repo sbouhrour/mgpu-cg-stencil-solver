@@ -60,12 +60,12 @@ print_section() {
 
 generate_matrix() {
     local size=$1
-    local matrix_file="matrix/${size}"
+    local matrix_file="matrix/stencil_${size}x${size}_stub.mtx"
 
+    # Header-only file: the binaries generate the 5-point matrix in memory (no multi-GB text file)
     if [ ! -f "$matrix_file" ]; then
-        echo "Generating matrix ${size}×${size}..."
-        ./bin/generate_matrix "$size" "$matrix_file"
-        echo "✓ Matrix generated: $matrix_file"
+        echo "% STENCIL_GRID_SIZE ${size}" > "$matrix_file"
+        echo "✓ Matrix stub written: $matrix_file"
     else
         echo "✓ Matrix exists: $matrix_file"
     fi
@@ -142,7 +142,7 @@ for config in "${WEAK_SCALING_CONFIGS[@]}"; do
 
     print_header "GPU COUNT: $NP | Matrix Size: ${SIZE}×${SIZE}"
 
-    MATRIX_FILE="matrix/${SIZE}"
+    MATRIX_FILE="matrix/stencil_${SIZE}x${SIZE}_stub.mtx"
 
     # Generate matrix if needed
     generate_matrix "$SIZE"

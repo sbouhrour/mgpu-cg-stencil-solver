@@ -59,6 +59,7 @@ To include AmgX in the comparison, run the AmgX setup once before launching:
 
 **How to know it worked:**
 
+- `./scripts/verify_reproduction.sh` prints one line per check and `RESULT: N passed, 0 failed`. It compares counts, not times, so it applies on any GPU: iteration counts against [Test matrices](methodology.md#methodology), `--verify`, Custom CG against AmgX, one rank against two, and a matrix file against the same matrix generated in memory.
 - A `PERFORMANCE SUMMARY` block is printed at the end, listing SpMV and CG timings with their ratios.
 - TXT files appear in `results/raw/` (e.g. `spmv_512_<timestamp>.txt`) and JSON files in `results/json/`.
 
@@ -83,7 +84,7 @@ The script auto-detects the environment (GPU count, MPI, AmgX) and runs the appl
 
 Options:
 
-- `--size=N`: use an `N×N` 2D stencil matrix (`matrix/stencil_NxN.mtx`, generated if missing).
+- `--size=N`: use an `N×N` 2D stencil matrix, generated in memory from the header-only file `matrix/stencil_NxN_stub.mtx` (see [Matrix files](#matrix-files)).
 - `--quick`: see [Quick smoke test](#quick-smoke-test).
 - `--help`: prints the option summary.
 
@@ -161,9 +162,9 @@ Each section maps a published number to the commands that produce it. Expected v
 [Results](results.md#2d-spmv-format-comparison)
 
 ```bash
-./bin/generate_matrix 20000 matrix/stencil_20000x20000.mtx
-./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=cusparse-csr
-./bin/spmv_bench matrix/stencil_20000x20000.mtx --mode=stencil5-csr
+echo "% STENCIL_GRID_SIZE 20000" > matrix/stencil_20000x20000_stub.mtx
+./bin/spmv_bench matrix/stencil_20000x20000_stub.mtx --mode=cusparse-csr
+./bin/spmv_bench matrix/stencil_20000x20000_stub.mtx --mode=stencil5-csr
 ```
 
 Check: `Execution time` of the two runs, 26.77 ms (cuSPARSE) and 12.86 ms (stencil), gives 2.08×. The ratio
@@ -210,15 +211,20 @@ mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --ste
 
 Check: 1-GPU sync median (22016 ms) divided by 8-GPU overlap median (3110 ms) gives 7.08×, and 7.08 / 8 = 88%.
 
-### 27-point matrix files
+### Matrix files
 
-The 27-point solver does **not** read matrix entries from disk: it generates them in memory per rank from the grid size in the file header. Only the `% STENCIL_GRID_SIZE N` line is read, so a one-line header file is sufficient:
+`spmv_bench`, `cg_solver_mgpu_stencil`, `cg_solver_mgpu_stencil_3d` and the two AmgX CG drivers accept a header-only file in place of a full Matrix Market file, and then generate the matrix in memory. Only the `% STENCIL_GRID_SIZE N` line is read:
 
 ```bash
-echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx
+echo "% STENCIL_GRID_SIZE 20000" > matrix/stencil_20000x20000_stub.mtx   # 2D, 5-point
+echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_512_stub.mtx           # 3D, 7-point
+echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx           # 3D, 27-point (--stencil=27)
 ```
 
-Generating the full file via `./bin/generate_matrix_3d_27pt 512 matrix/stencil3d_27pt_512.mtx` also works, but writes ~54 GB to disk that the solver ignores. Note that in-memory generation of the 512³ grid requires ~54 GB of host RAM (held on a single rank for the 1-GPU baseline run). The 7-point solver, by contrast, reads the matrix from a full `.mtx` file produced by `generate_matrix_3d`.
+- **2D (5-point)**: `spmv_bench`, `cg_solver_mgpu_stencil` and both AmgX drivers build the entries that `./bin/generate_matrix` writes, with the same values and in the same order, so the matrix is identical to the one read from the file. As with the file, every rank holds the whole matrix: 32 GB of entries at 20000×20000, whose text file would be 48.5 GB.
+- **3D (7-point and 27-point)**: each rank builds only its own Z-slab of rows. The AmgX multi-GPU driver does the same with `--stencil=7` or `--stencil=27`. In-memory generation of the 512³ 27-point grid requires ~54 GB of host RAM on a single rank (1-GPU baseline run).
+
+A full file (`./bin/generate_matrix`, `generate_matrix_3d`, `generate_matrix_3d_27pt`) is still read as before; the 27-point solver reads only its header.
 
 ## Manual build and run
 
@@ -231,8 +237,8 @@ make
 # Build AmgX benchmarks (requires AmgX installed)
 make -C external/benchmarks/amgx
 
-# Generate a 5-point stencil matrix
-./bin/generate_matrix 1000 matrix/stencil_1000x1000.mtx
+# 5-point stencil matrix, generated in memory by each binary (./bin/generate_matrix writes the full file)
+echo "% STENCIL_GRID_SIZE 1000" > matrix/stencil_1000x1000.mtx
 
 # --- Run benchmarks ---
 
@@ -263,11 +269,11 @@ jq '.timing.median_ms' custom.json
 ### 3D solver (manual)
 
 ```bash
-# 7-point: generate the matrix file, then run
-./bin/generate_matrix_3d 256 matrix/stencil3d_256.mtx
+# 7-point: header-only file (see "Matrix files" above), then run
+echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_256.mtx
 mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_256.mtx --overlap
 
-# 27-point: header-only file (see "27-point matrix files" above), then run
+# 27-point: header-only file, then run
 echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx
 mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap
 
