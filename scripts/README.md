@@ -21,6 +21,9 @@
 
 # Custom matrix size
 ./scripts/run_all.sh --size=10000
+
+# Check iteration counts, --verify, Custom CG against AmgX (counts, not times)
+./scripts/verify_reproduction.sh
 ```
 
 ## Directory Structure
