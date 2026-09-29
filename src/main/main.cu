@@ -140,6 +140,8 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < mat.cols; i++)
         x[i] = 1.0;  // Fill input vector with 1.0
 
+    int failed_modes = 0;  // a mode that fails makes the exit status non-zero
+
     // Loop through all requested modes
     for (int mode_idx = 0; mode_idx < num_modes; mode_idx++) {
         const char* current_mode = mode_tokens[mode_idx];
@@ -152,6 +154,7 @@ int main(int argc, char* argv[]) {
         // Initialize the SpMV operator (ELLPACK reused if already built)
         if (op->init(&mat) != 0) {
             fprintf(stderr, "Failed to initialize operator '%s'\n", op->name);
+            failed_modes++;
             continue;
         }
 
@@ -171,6 +174,7 @@ int main(int argc, char* argv[]) {
         if (benchmark_with_stats(op->run_timed, x, y, 10, &bench_stats) != 0) {
             fprintf(stderr, "Statistical benchmark failed for mode '%s'\n", op->name);
             op->free();
+            failed_modes++;
             continue;
         }
 
@@ -268,5 +272,5 @@ int main(int argc, char* argv[]) {
         free(mat.entries);
     }
 
-    return EXIT_SUCCESS;
+    return failed_modes ? EXIT_FAILURE : EXIT_SUCCESS;
 }
