@@ -9,7 +9,6 @@ set -e
 # CONFIGURATION - EDIT THIS
 # ============================================================
 RUNS=10
-BRANCH="main"
 
 # Matrix sizes to test (grid_size for 5-point stencil)
 MATRIX_SIZES=(
@@ -19,7 +18,7 @@ MATRIX_SIZES=(
 )
 
 # Formats to benchmark
-FORMATS=("csr" "stencil5")
+FORMATS=("cusparse-csr" "stencil5-csr")  # spmv_bench --mode values
 
 # ============================================================
 # Auto-detect configuration
@@ -32,7 +31,7 @@ mkdir -p "$RESULTS_DIR"
 echo "============================================================"
 echo "Configuration:"
 echo "  GPU: $GPU_NAME"
-echo "  Branch: $BRANCH"
+echo "  Commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "  Runs per config: $RUNS"
 echo "  Matrix sizes: ${MATRIX_SIZES[*]}"
 echo "  Formats: ${FORMATS[*]}"
@@ -77,14 +76,8 @@ generate_matrix() {
 # ============================================================
 print_header "Setup"
 
-# Checkout target branch
-echo "[1/3] Checking out branch: $BRANCH"
-git checkout "$BRANCH" 2>&1 | grep -E "(Switched|Already on)" || true
-
 # Build binaries
-echo "[2/3] Building binaries..."
-make clean > /dev/null 2>&1 || { echo "✗ make clean failed"; exit 1; }
-
+echo "[1/2] Building binaries (incremental)..."
 if make spmv_bench > /dev/null 2>&1; then
     echo "✓ spmv_bench built"
 else
@@ -93,17 +86,9 @@ else
     exit 1
 fi
 
-if make generate_matrix > /dev/null 2>&1; then
-    echo "✓ generate_matrix built"
-else
-    echo "✗ Build failed, showing errors:"
-    make generate_matrix
-    exit 1
-fi
-
 # Create matrix directory
 mkdir -p matrix
-echo "[3/3] Matrix directory ready"
+echo "[2/2] Matrix directory ready"
 
 # ============================================================
 # Initialize summary file
@@ -112,7 +97,7 @@ cat > "$SUMMARY_FILE" <<EOF
 Single-GPU Format Comparison - CSR vs STENCIL5-OPT
 ==================================================
 GPU: $GPU_NAME
-Branch: $BRANCH
+Commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 Runs per config: $RUNS
 Date: $(date)
 
@@ -155,13 +140,14 @@ for SIZE in "${MATRIX_SIZES[@]}"; do
         print_section "Format: $FORMAT"
 
         # Generate output filenames
-        BASE_NAME="${GPU_NAME}_${SIZE}x${SIZE}_${FORMAT}"
-        JSON_FILE="$RESULTS_DIR/${BASE_NAME}.json"
+        # spmv_bench appends _<mode> to the name given with --json
+        JSON_ARG="$RESULTS_DIR/${GPU_NAME}_${SIZE}x${SIZE}.json"
+        JSON_FILE="$RESULTS_DIR/${GPU_NAME}_${SIZE}x${SIZE}_${FORMAT}.json"
 
         # Run benchmark
-        echo "Running: ./bin/spmv_bench $MATRIX_FILE --mode=$FORMAT --runs=$RUNS --json=$JSON_FILE"
+        echo "Running: ./bin/spmv_bench $MATRIX_FILE --mode=$FORMAT --json=$JSON_ARG"
 
-        if ./bin/spmv_bench "$MATRIX_FILE" --mode="$FORMAT" --runs="$RUNS" --json="$JSON_FILE" 2>&1 | tee -a "$SUMMARY_FILE"; then
+        if (set -o pipefail; ./bin/spmv_bench "$MATRIX_FILE" --mode="$FORMAT" --json="$JSON_ARG" 2>&1 | tee -a "$SUMMARY_FILE"); then
             echo "✓ Test completed successfully"
             echo "  JSON: $JSON_FILE"
 
@@ -195,7 +181,7 @@ echo ""
 echo "============================================================"
 echo "Summary:"
 echo "  GPU: $GPU_NAME"
-echo "  Branch: $BRANCH"
+echo "  Commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "  Matrix sizes tested: ${#MATRIX_SIZES[@]}"
 echo "  Formats tested: ${#FORMATS[@]}"
 echo "  Total tests: $TOTAL_TESTS"
