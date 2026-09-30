@@ -33,6 +33,13 @@ PROBLEM_CONFIGS=(
 # Auto-detect configuration
 # ============================================================
 GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader -i 0 | head -1 | tr -d ' ')
+# GPUs this process may use: the entries of CUDA_VISIBLE_DEVICES when it is set, else every GPU
+# nvidia-smi lists (nvidia-smi ignores CUDA_VISIBLE_DEVICES)
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+else
+    NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
 DATE=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="results_problem_size_scaling_${GPU_NAME}_${DATE}"
 mkdir -p "$RESULTS_DIR"
@@ -130,6 +137,10 @@ for config in "${PROBLEM_CONFIGS[@]}"; do
     # Split config into GPU count and sizes
     NP=$(echo "$config" | cut -d':' -f1)
     SIZES=$(echo "$config" | cut -d':' -f2)
+    if [ "$NP" -gt "$NUM_GPUS" ]; then
+        echo "Skipping $NP GPUs (only $NUM_GPUS available)" | tee -a "$SUMMARY_FILE"
+        continue
+    fi
 
     print_header "GPU COUNT: $NP"
 
