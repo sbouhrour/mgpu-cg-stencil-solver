@@ -320,17 +320,7 @@ behind useful computation.
 
 ## Citation
 
-If you use this code in your research, please cite:
-
-```bibtex
-@software{mgpu_cg_solver,
-  author = {Bouhrour, St{\'e}phane},
-  title = {Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap},
-  year = {2026},
-  url = {https://github.com/sbouhrour/mgpu-cg-stencil-solver},
-  note = {2.08× SpMV vs cuSPARSE (CUDA 12.8); 1.44× CG vs NVIDIA AmgX (iso-algorithm, both unpreconditioned CG; 8× A100, 93.5% scaling); 88% scaling efficiency on 3D 27-point stencil with overlap}
-}
-```
+Citation metadata are in [`CITATION.cff`](CITATION.cff). The **Cite this repository** button in the repository sidebar gives them as BibTeX or APA.
 
 ---
 

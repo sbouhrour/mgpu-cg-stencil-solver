@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Multi-GPU Conjugate Gradient Solver with Stencil-Aware SpMV and Compute-Communication Overlap"
+type: software
+authors:
+  - family-names: "Bouhrour"
+    given-names: "Stéphane"
+version: "1.0.0"
+date-released: "2026-09-30"
+license: MIT
+repository-code: "https://github.com/sbouhrour/mgpu-cg-stencil-solver"
+url: "https://sbouhrour.github.io/mgpu-cg-stencil-solver/"
+abstract: >-
+  Multi-GPU Conjugate Gradient solver (CUDA and MPI) specialized for
+  structured stencil grids: 5-point 2D, 7-point and 27-point 3D. On 8x
+  NVIDIA A100-SXM4-80GB: stencil SpMV 2.08x faster than the cuSPARSE CSR
+  of CUDA 12.8; CG 1.41x faster than NVIDIA AmgX on 1 GPU and 1.44x on 8
+  GPUs at equal algorithm (both unpreconditioned); 93.5% strong scaling
+  efficiency in 2D and 88% in 3D (27-point, compute-communication overlap).
+keywords:
+  - CUDA
+  - MPI
+  - multi-GPU
+  - conjugate gradient
+  - sparse matrix-vector multiplication
+  - stencil
+  - A100
