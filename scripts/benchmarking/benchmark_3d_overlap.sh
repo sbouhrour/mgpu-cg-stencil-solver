@@ -70,7 +70,13 @@ if ! command -v nvcc &>/dev/null; then
 fi
 
 # Detect available GPUs
-NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)
+# GPUs this process may use: the entries of CUDA_VISIBLE_DEVICES when it is set, else every GPU
+# nvidia-smi lists (nvidia-smi ignores CUDA_VISIBLE_DEVICES)
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+else
+    NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
 echo "Detected GPUs: $NUM_GPUS"
 
 # Locate binaries — support both bin/release/ (default) and bin/ (legacy builds)

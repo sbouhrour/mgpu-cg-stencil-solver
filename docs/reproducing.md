@@ -6,7 +6,7 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 
 ## Requirements
 
-- **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper)
+- **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper, Blackwell)
 - **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries; ≥ 12.0 for the AmgX comparison (AmgX v2.5.0 requires it)
 - **MPI Implementation**: OpenMPI ≥ 4.0 or MPICH ≥ 3.3
 - **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
@@ -33,11 +33,11 @@ Without MPI, only the SpMV benchmark runs; the CG (single- and multi-GPU) and 3D
 - NVIDIA A100-SXM4-80GB (8 GPUs): primary development
 - NVIDIA RTX 3090 (2 GPUs): validation
 - NVIDIA H100 NVL (single GPU): compatibility
+- NVIDIA RTX 5090 (2 GPUs, CUDA 13.0): `./scripts/verify_reproduction.sh`, AmgX included
 
 **Toolchain that produced the published Key Numbers** (8× A100-SXM4-80GB):
 
 - CUDA 12.8, Driver 575.57
-- OpenMPI: version not recorded
 - AmgX: v2.5.0 (commit `cc1cebd`), see the version note below
 
 ## Quick smoke test
@@ -168,9 +168,7 @@ echo "% STENCIL_GRID_SIZE 20000" > matrix/stencil_20000x20000_stub.mtx
 ```
 
 Check: `Execution time` of the two runs, 26.77 ms (cuSPARSE) and 12.86 ms (stencil), gives 2.08×. The ratio
-depends on the cuSPARSE the binary loads: 1.84× with CUDA 13.0. The Makefile links the CUDA libraries of the toolkit
-whose `nvcc` is in `PATH` and records that directory as the binary's rpath. The file name is `libcusparse.so.12` in
-CUDA 12.x and 13.0 alike; the resolved path shows the version (it ends in `libcusparse.so.12.6.3.3` with CUDA 13.0):
+depends on the cuSPARSE the binary loads: 1.84× with CUDA 13.0. To see which one (`libcusparse.so.12.6.3.3` with CUDA 13.0):
 
 ```bash
 readlink -f $(ldd bin/spmv_bench | awk '/libcusparse/ {print $3}')
@@ -221,7 +219,7 @@ echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_512_stub.mtx           # 3D, 7
 echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx           # 3D, 27-point (--stencil=27)
 ```
 
-- **2D (5-point)**: `spmv_bench`, `cg_solver_mgpu_stencil` and both AmgX drivers build the entries that `./bin/generate_matrix` writes, with the same values and in the same order, so the matrix is identical to the one read from the file. As with the file, every rank holds the whole matrix: 32 GB of entries at 20000×20000, whose text file would be 48.5 GB.
+- **2D (5-point)**: `spmv_bench`, `cg_solver_mgpu_stencil` and both AmgX drivers build the entries that `./bin/generate_matrix` writes, with the same values and in the same order, so the matrix is identical to the one read from the file. As with the file, every rank holds the whole matrix: 32 GB of entries at 20000×20000, whose text file would be 48.5 GB. Building the CSR structure, `spmv_bench` peaks at about 32 bytes of host memory per non-zero: about 16 GB at 10000×10000, 36 GB at 15000×15000 and 64 GB at 20000×20000, per process.
 - **3D (7-point and 27-point)**: each rank builds only its own Z-slab of rows. The AmgX multi-GPU driver does the same with `--stencil=7` or `--stencil=27`. In-memory generation of the 512³ 27-point grid requires ~54 GB of host RAM on a single rank (1-GPU baseline run).
 
 A full file (`./bin/generate_matrix`, `generate_matrix_3d`, `generate_matrix_3d_27pt`) is still read as before; the 27-point solver reads only its header.
@@ -318,6 +316,10 @@ Used for the SpMV roofline analysis in [`profiling-2d.md`](profiling-2d.md#2-spm
 ncu --set roofline --metrics dram__bytes_read.sum,dram__bytes_write.sum --clock-control none \
     -k regex:"csrmv_v3|csr_partition|stencil5_csr_direct" -o spmv_2d_10000_a100 \
     ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr,stencil5-csr
+
+# DRAM bytes per row = (dram__bytes_read.sum + dram__bytes_write.sum) / rows
+ncu -i spmv_2d_10000_a100.ncu-rep --csv --page raw \
+    --metrics dram__bytes_read.sum,dram__bytes_write.sum,gpu__time_duration.sum
 ```
 
 Read the raw `dram__bytes_*` counts rather than the percentage-of-peak figures, which depend on the clocks Nsight Compute imposes by default.

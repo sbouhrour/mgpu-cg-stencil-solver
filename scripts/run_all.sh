@@ -76,7 +76,13 @@ echo ""
 # GPU info
 echo "=== GPU Configuration ==="
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null || echo "No GPU detected"
-NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l || echo "0")
+# GPUs this process may use: the entries of CUDA_VISIBLE_DEVICES when it is set, else every GPU
+# nvidia-smi lists (nvidia-smi ignores CUDA_VISIBLE_DEVICES)
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+else
+    NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
 echo "Total GPUs:  ${NUM_GPUS}"
 echo ""
 

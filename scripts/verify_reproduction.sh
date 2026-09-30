@@ -28,7 +28,13 @@ DIR="matrix/verify"
 LOG="results/verify"
 mkdir -p "$DIR" "$LOG"
 
-NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+# GPUs this process may use: the entries of CUDA_VISIBLE_DEVICES when it is set, else every GPU
+# nvidia-smi lists (nvidia-smi ignores CUDA_VISIBLE_DEVICES)
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+else
+    NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
 PASS=0
 FAIL=0
 SKIP=0

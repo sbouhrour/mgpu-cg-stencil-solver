@@ -211,39 +211,7 @@ The observed 1.41× exceeds this SpMV-only prediction. The gap is not measuremen
 
 ## Methodology
 
-### Profiling Tools
-
-**Nsight Systems** (timeline analysis):
-```bash
-# Custom CG (1 GPU)
-nsys profile --trace=cuda,nvtx -o custom_1gpu \
-    ./bin/cg_solver_mgpu_stencil matrix/stencil_10000x10000.mtx
-
-# Custom CG (multi-GPU)
-nsys profile --trace=cuda,mpi,nvtx -o custom_mgpu \
-    mpirun -np 4 ./bin/cg_solver_mgpu_stencil matrix/stencil_10000x10000.mtx
-
-# AmgX (1 GPU)
-nsys profile --trace=cuda,nvtx -o amgx_1gpu \
-    ./external/benchmarks/amgx/amgx_cg_solver matrix/stencil_10000x10000.mtx
-```
-
-**Nsight Compute** (kernel analysis):
-```bash
-# Both SpMV implementations in one report, clocks left to the GPU
-ncu --set roofline --metrics dram__bytes_read.sum,dram__bytes_write.sum --clock-control none \
-    -k regex:"csrmv_v3|csr_partition|stencil5_csr_direct" -o spmv_2d_10000_a100 \
-    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr,stencil5-csr
-
-# DRAM bytes per row = (dram__bytes_read.sum + dram__bytes_write.sum) / rows
-ncu -i spmv_2d_10000_a100.ncu-rep --csv --page raw \
-    --metrics dram__bytes_read.sum,dram__bytes_write.sum,gpu__time_duration.sum
-```
-
-Use raw byte counts, not the percentage-of-peak figures: those are computed at the clocks Nsight Compute
-imposes by default (`--clock-control base`), which change time but not bytes.
-
-These commands document the profiling of this specific analysis. For general reproduction of the published numbers, see the [Reproducing](reproducing.md#profiling) page.
+The commands that capture these profiles are on the [Reproducing](reproducing.md#profiling) page.
 
 ### Available Profile Data
 

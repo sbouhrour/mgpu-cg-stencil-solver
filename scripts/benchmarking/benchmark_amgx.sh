@@ -27,7 +27,13 @@ if [ ! -f "$EXECUTABLE" ]; then
 fi
 
 GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader -i 0 | head -1 | tr -d ' ')
-NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+# GPUs this process may use: the entries of CUDA_VISIBLE_DEVICES when it is set, else every GPU
+# nvidia-smi lists (nvidia-smi ignores CUDA_VISIBLE_DEVICES)
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+else
+    NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
 MATRIX_SIZE=$(basename "$MATRIX" .mtx)
 DATE=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="results_amgx_${GPU_NAME}_${MATRIX_SIZE}_${DATE}"
