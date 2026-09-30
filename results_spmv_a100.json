@@ -1,0 +1,52 @@
+{
+  "benchmark_info": {
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "precision": "FP64",
+    "runs": 10,
+    "statistic": "median",
+    "dram_bytes_per_row": {
+      "stencil5": 56.0,
+      "csr_cusparse_cuda_12_8": 83.8,
+      "csr_cusparse_cuda_13_0": 83.3
+    },
+    "dram_bytes_source": "Nsight Compute 2025.3.1, dram__bytes_read.sum + dram__bytes_write.sum, 10k x 10k"
+  },
+  "results": [
+    {
+      "size": 10000,
+      "unknowns": 100000000,
+      "nnz": 499960000,
+      "cusparse": "CUDA 12.8",
+      "csr_time_ms": 6.767,
+      "stencil5_time_ms": 3.249,
+      "speedup": 2.08
+    },
+    {
+      "size": 15000,
+      "unknowns": 225000000,
+      "nnz": 1124940000,
+      "cusparse": "CUDA 12.8",
+      "csr_time_ms": 15.004,
+      "stencil5_time_ms": 7.289,
+      "speedup": 2.06
+    },
+    {
+      "size": 20000,
+      "unknowns": 400000000,
+      "nnz": 1999920000,
+      "cusparse": "CUDA 12.8",
+      "csr_time_ms": 26.767,
+      "stencil5_time_ms": 12.859,
+      "speedup": 2.08
+    },
+    {
+      "size": 10000,
+      "unknowns": 100000000,
+      "nnz": 499960000,
+      "cusparse": "CUDA 13.0",
+      "csr_time_ms": 6.095,
+      "stencil5_time_ms": 3.313,
+      "speedup": 1.84
+    }
+  ]
+}
