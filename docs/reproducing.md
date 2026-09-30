@@ -28,23 +28,6 @@ apt update && apt install -y libopenmpi-dev openmpi-bin
 
 Without MPI, only the SpMV benchmark runs; the CG (single- and multi-GPU) and 3D benchmarks are skipped silently.
 
-If the link fails with `undefined reference to '__nvJitLink...'` (CUDA 13 images that ship cuSPARSE without the
-JIT link library it depends on), install it:
-
-```bash
-apt install -y libnvjitlink-13-0 libnvjitlink-dev-13-0
-```
-
-If `mpirun` hangs at startup, even for `mpirun -np 1 hostname` (seen on vast.ai images, where a web proxy listens
-on the X11 port that hwloc's GL component probes), disable that component:
-
-```bash
-export HWLOC_COMPONENTS=-gl
-```
-
-The scripts run one MPI rank per GPU and count the GPUs from `CUDA_VISIBLE_DEVICES` when it is set, else from
-`nvidia-smi -L`. On a machine shared with other jobs, set `CUDA_VISIBLE_DEVICES` to the GPUs you may use.
-
 **Tested configurations:**
 
 - NVIDIA A100-SXM4-80GB (8 GPUs): primary development
