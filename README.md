@@ -177,7 +177,6 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 - **Row-band partitioning**: 1D decomposition with CSR format and halo zone exchange
 - **Z-slab partitioning (3D)**: 3D grids split along the Z axis into contiguous slabs of XY-planes; each GPU exchanges one boundary XY-plane per neighbor
 - **Compute-communication overlap**: interior/boundary decomposition with dual-stream execution hides halo exchange behind SpMV computation (3D stencils)
-- **Efficient reductions**: cuBLAS dot products replace a naive in-kernel atomic reduction (238× slower in our tests)
 
 ### Algorithm Features
 - **Conjugate Gradient (CG)**: Iterative Krylov method for symmetric positive definite systems
@@ -189,7 +188,7 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 ### Performance Engineering
 - **Profiling-driven**: Nsight Systems analysis to identify bottlenecks
 - **Numerical stability**: the same iteration count on 1 to 8 GPUs
-- **Build settings measured, not assumed**: the custom kernels are compiled at `-O2` while AmgX is built at `-O3`; rebuilt at `-O3`, the kernels of the 2D SpMV benchmark and 2D solver produce identical SASS, and JIT from PTX runs the SpMV as fast as native `sm_80` code, so the build asymmetry does not move the SpMV results ([details](docs/methodology.md)). Test methodology is consistent (identical matrices, same run protocol, median of 10 runs)
+- **Build settings measured**: the `-O2` (custom) against `-O3` (AmgX) build asymmetry and PTX JIT leave the SpMV kernel's speed unchanged ([details](docs/methodology.md))
 
 ---
 

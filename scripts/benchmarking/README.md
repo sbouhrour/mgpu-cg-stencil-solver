@@ -104,13 +104,13 @@ Rank counts above the number of GPUs are skipped. The Custom-vs-AmgX ratios (pub
 
 ---
 
-## Showcase Workflow
+## Workflow for the published results
 
 ```bash
-# 1. SpMV comparison (for the hero section)
+# 1. SpMV comparison
 ./scripts/benchmarking/benchmark_spmv_comparison.sh
 
-# 2. Strong scaling CG (main showcase)
+# 2. Strong scaling CG
 ./scripts/benchmarking/benchmark_problem_sizes.sh
 
 # 3. AmgX reference

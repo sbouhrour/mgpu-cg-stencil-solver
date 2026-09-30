@@ -46,26 +46,7 @@ ncu-ui profiling/ncu/spmv_2d_10000_a100.ncu-rep
 
 ## Generating New Profiles
 
-### Nsight Systems (Timeline)
-
-```bash
-# Profile custom CG (2 GPUs)
-nsys profile --trace=cuda,mpi,nvtx -o profiling/nsys/custom_2gpu \
-    mpirun -np 2 ./bin/cg_solver_mgpu_stencil matrix/stencil_10000x10000.mtx
-
-# Profile AmgX (2 GPUs)
-nsys profile --trace=cuda,mpi,nvtx -o profiling/nsys/amgx_2gpu \
-    mpirun -np 2 ./external/benchmarks/amgx/amgx_cg_solver_mgpu matrix/stencil_10000x10000.mtx
-```
-
-### Nsight Compute (Roofline)
-
-```bash
-# Both SpMV implementations in one report, clocks left to the GPU
-ncu --set roofline --metrics dram__bytes_read.sum,dram__bytes_write.sum --clock-control none \
-    -k regex:"csrmv_v3|csr_partition|stencil5_csr_direct" -o profiling/ncu/spmv_2d_10000_a100 \
-    ./bin/spmv_bench matrix/stencil_10000x10000.mtx --mode=cusparse-csr,stencil5-csr
-```
+The commands are on the [Reproducing](../docs/reproducing.md#profiling) page.
 
 ## Key Observations
 
