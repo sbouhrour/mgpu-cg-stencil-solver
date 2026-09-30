@@ -6,7 +6,7 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 
 ## Requirements
 
-- **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper)
+- **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper, Blackwell)
 - **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries; ≥ 12.0 for the AmgX comparison (AmgX v2.5.0 requires it)
 - **MPI Implementation**: OpenMPI ≥ 4.0 or MPICH ≥ 3.3
 - **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
@@ -28,11 +28,29 @@ apt update && apt install -y libopenmpi-dev openmpi-bin
 
 Without MPI, only the SpMV benchmark runs; the CG (single- and multi-GPU) and 3D benchmarks are skipped silently.
 
+If the link fails with `undefined reference to '__nvJitLink...'` (CUDA 13 images that ship cuSPARSE without the
+JIT link library it depends on), install it:
+
+```bash
+apt install -y libnvjitlink-13-0 libnvjitlink-dev-13-0
+```
+
+If `mpirun` hangs at startup, even for `mpirun -np 1 hostname` (seen on vast.ai images, where a web proxy listens
+on the X11 port that hwloc's GL component probes), disable that component:
+
+```bash
+export HWLOC_COMPONENTS=-gl
+```
+
+The scripts run one MPI rank per GPU and count the GPUs from `CUDA_VISIBLE_DEVICES` when it is set, else from
+`nvidia-smi -L`. On a machine shared with other jobs, set `CUDA_VISIBLE_DEVICES` to the GPUs you may use.
+
 **Tested configurations:**
 
 - NVIDIA A100-SXM4-80GB (8 GPUs): primary development
 - NVIDIA RTX 3090 (2 GPUs): validation
 - NVIDIA H100 NVL (single GPU): compatibility
+- NVIDIA RTX 5090 (2 GPUs, CUDA 13.0): `./scripts/verify_reproduction.sh`, AmgX included
 
 **Toolchain that produced the published Key Numbers** (8× A100-SXM4-80GB):
 
@@ -221,7 +239,7 @@ echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_512_stub.mtx           # 3D, 7
 echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx           # 3D, 27-point (--stencil=27)
 ```
 
-- **2D (5-point)**: `spmv_bench`, `cg_solver_mgpu_stencil` and both AmgX drivers build the entries that `./bin/generate_matrix` writes, with the same values and in the same order, so the matrix is identical to the one read from the file. As with the file, every rank holds the whole matrix: 32 GB of entries at 20000×20000, whose text file would be 48.5 GB.
+- **2D (5-point)**: `spmv_bench`, `cg_solver_mgpu_stencil` and both AmgX drivers build the entries that `./bin/generate_matrix` writes, with the same values and in the same order, so the matrix is identical to the one read from the file. As with the file, every rank holds the whole matrix: 32 GB of entries at 20000×20000, whose text file would be 48.5 GB. Building the CSR structure, `spmv_bench` peaks at about 32 bytes of host memory per non-zero: about 16 GB at 10000×10000, 36 GB at 15000×15000 and 64 GB at 20000×20000, per process.
 - **3D (7-point and 27-point)**: each rank builds only its own Z-slab of rows. The AmgX multi-GPU driver does the same with `--stencil=7` or `--stencil=27`. In-memory generation of the 512³ 27-point grid requires ~54 GB of host RAM on a single rank (1-GPU baseline run).
 
 A full file (`./bin/generate_matrix`, `generate_matrix_3d`, `generate_matrix_3d_27pt`) is still read as before; the 27-point solver reads only its header.
