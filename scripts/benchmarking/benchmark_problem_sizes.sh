@@ -9,7 +9,6 @@ set -e
 # CONFIGURATION - EDIT THIS
 # ============================================================
 RUNS=10
-BRANCH="main"  # Test only stable main branch
 
 # Problem sizes to test per GPU count
 # Format: "gpu_count:matrix_size1,matrix_size2,..."
@@ -41,7 +40,7 @@ mkdir -p "$RESULTS_DIR"
 echo "============================================================"
 echo "Configuration:"
 echo "  GPU: $GPU_NAME"
-echo "  Branch: $BRANCH"
+echo "  Commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "  Runs per config: $RUNS"
 echo "  Results dir: $RESULTS_DIR"
 echo "============================================================"
@@ -84,14 +83,8 @@ generate_matrix() {
 # ============================================================
 print_header "Setup"
 
-# Checkout target branch
-echo "[1/3] Checking out branch: $BRANCH"
-git checkout "$BRANCH" 2>&1 | grep -E "(Switched|Already on)" || true
-
 # Build binaries
-echo "[2/3] Building binaries..."
-make clean > /dev/null 2>&1 || { echo "✗ make clean failed"; exit 1; }
-
+echo "[1/2] Building binaries (incremental)..."
 if make cg_solver_mgpu_stencil > /dev/null 2>&1; then
     echo "✓ cg_solver_mgpu_stencil built"
 else
@@ -100,19 +93,11 @@ else
     exit 1
 fi
 
-if make generate_matrix > /dev/null 2>&1; then
-    echo "✓ generate_matrix built"
-else
-    echo "✗ Build failed, showing errors:"
-    make generate_matrix
-    exit 1
-fi
-
 echo "✓ Build successful"
 
 # Create matrix directory
 mkdir -p matrix
-echo "[3/3] Matrix directory ready"
+echo "[2/2] Matrix directory ready"
 
 # ============================================================
 # Initialize summary file
@@ -121,7 +106,7 @@ cat > "$SUMMARY_FILE" <<EOF
 Multi-GPU CG Solver - Problem Size Scaling Benchmark
 =====================================================
 GPU: $GPU_NAME
-Branch: $BRANCH
+Commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 Runs per config: $RUNS
 Date: $(date)
 
@@ -178,8 +163,8 @@ for config in "${PROBLEM_CONFIGS[@]}"; do
         # Run benchmark
         echo "Running: mpirun -np $NP ./bin/cg_solver_mgpu_stencil $MATRIX_FILE --json=$JSON_FILE --csv=$CSV_FILE"
 
-        if mpirun --allow-run-as-root -np "$NP" ./bin/cg_solver_mgpu_stencil "$MATRIX_FILE" \
-            --json="$JSON_FILE" --csv="$CSV_FILE" 2>&1 | tee -a "$SUMMARY_FILE"; then
+        if (set -o pipefail; mpirun --allow-run-as-root -np "$NP" ./bin/cg_solver_mgpu_stencil "$MATRIX_FILE" \
+            --json="$JSON_FILE" --csv="$CSV_FILE" 2>&1 | tee -a "$SUMMARY_FILE"); then
             echo "✓ Test completed successfully"
             echo "  JSON: $JSON_FILE"
             echo "  CSV:  $CSV_FILE"
@@ -212,7 +197,7 @@ echo ""
 echo "============================================================"
 echo "Summary:"
 echo "  GPU: $GPU_NAME"
-echo "  Branch: $BRANCH"
+echo "  Commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "  GPU counts tested: 1, 2, 4, 8"
 echo "  Total tests: $TOTAL_TESTS"
 echo ""
