@@ -89,6 +89,33 @@ __device__ __forceinline__ double row_generic(const double* v, const int* __rest
 }
 
 /**
+ * @brief Face row of the truncated stencil, columns from the geometry, same order as the CSR row
+ *
+ * @details Valid neighbours are stored in ascending column order, that is in stencil order p,
+ * so entry q of the row is the q-th valid p. Columns need no col_idx load: values and x loads
+ * are independent and issued in batches of UNROLL positions. The pattern of face rows is
+ * checked once by check_pattern_sym_kernel.
+ */
+template <int UNROLL>
+__device__ __forceinline__ double row_face(const double* __restrict__ v,
+                                           const double* __restrict__ x, int r, int i, int j,
+                                           int k, int N) {
+    double sum = 0.0;
+    int q = 0;
+#pragma unroll UNROLL
+    for (int p = 0; p < 27; p++) {
+        const bool ok = (unsigned)(i + p / 9 - 1) < (unsigned)N &&
+                        (unsigned)(j + (p / 3) % 3 - 1) < (unsigned)N &&
+                        (unsigned)(k + p % 3 - 1) < (unsigned)N;
+        if (ok) {
+            sum += v[q] * x[r + entry_offset(p, N)];
+            q++;
+        }
+    }
+    return sum;
+}
+
+/**
  * @brief Row-major CSR SpMV with warp-coalesced staging of the coefficients
  *
  * @details One warp = 32 consecutive rows, whose values form one contiguous span of the CSR
@@ -178,6 +205,9 @@ __host__ __device__ constexpr int sym25d_smem_bytes(int TJ) {
  * Coefficients are staged per warp with 16-byte cp.async: 7 or 8 chunks per row depending on the
  * parity of row_ptr, which touch no 32-byte sector outside entries 13..26 (an extra double at
  * either end shares its 16 bytes with entry 13 or 26). Chunks are XOR-swizzled to spread banks.
+ * The copies of plane i + 1 are issued during plane i, into the same buffer once u[] holds
+ * plane i, and x and row_ptr are loaded two planes ahead: no DRAM latency is waited for inside
+ * the plane that issued the load.
  *
  * Launch: blockDim = TJ * 32, gridDim = (ceil(N / 30), ceil(N / (TJ - 2)), ceil(N / ZC)),
  * dynamic shared memory sym25d_smem_bytes(TJ).
@@ -210,15 +240,34 @@ __global__ void __launch_bounds__(TJ * 32)
     double* const st = stage + w * 32 * 16;
 
     // Interior lanes are consecutive rows of one grid line, each holding 27 entries, so the
-    // row_ptr of the first one gives every other: one row_ptr load per warp and plane, issued
-    // one plane ahead so that it never delays the coefficient copies.
+    // row_ptr of the first one gives every other: one row_ptr load per warp and plane.
     const unsigned colmask = __ballot_sync(kFull, col_inner);
     const int a = colmask ? __ffs(colmask) - 1 : 0;
-    long long rpa_next = (lane == a && col_inner && i0 - 1 > 0 && i0 - 1 < N - 1)
-                             ? row_ptr[(i0 - 1) * NN + col_off]
-                             : 0;
+    auto load_rpa = [&](int ii) -> long long {
+        return (lane == a && col_inner && ii > 0 && ii < N - 1) ? row_ptr[ii * NN + col_off] : 0;
+    };
+    auto plane_mask = [&](int ii) -> unsigned { return (ii > 0 && ii < N - 1) ? colmask : 0u; };
+    // Coefficients 13..26 of the interior rows of plane ii, 16-byte copies into st
+    auto issue_copies = [&](long long rpb, unsigned m) {
+        if (!m)
+            return;
+#pragma unroll
+        for (int c = 0; c < 8; c++) {
+            const int e = c * 32 + lane, src = e >> 3, q = e & 7;
+            if ((m >> src) & 1u) {
+                const long long rps = rpb + 27LL * (src - a);
+                const long long d = ((rps + 13) & ~1LL) + 2 * q;
+                if (d < rps + 27)
+                    cp_async16(st + src * 16 + ((q ^ (src & 7)) << 1), values + d);
+            }
+        }
+    };
 
+    long long rpa_cur = __shfl_sync(kFull, load_rpa(i0 - 1), a);
+    issue_copies(rpa_cur, plane_mask(i0 - 1));
+    long long rpa_n1 = load_rpa(i0);  // held by lane a until shuffled
     double xc = (col_in && i0 >= 1) ? x[(i0 - 1) * NN + col_off] : 0.0;
+    double xn = (col_in && i0 < N) ? x[i0 * NN + col_off] : 0.0;
     double P = 0.0;  // products received from plane i - 1
 
     for (int i = i0 - 1; i < i1; ++i) {
@@ -226,28 +275,20 @@ __global__ void __launch_bounds__(TJ * 32)
         const bool plane_inner = i > 0 && i < N - 1;
         const bool interior = col_inner && plane_inner;
         const int r = i * NN + col_off;
-        const unsigned imask = plane_inner ? colmask : 0u;
-        const long long rpa = __shfl_sync(kFull, rpa_next, a);
-        rpa_next = (lane == a && col_inner && i + 1 > 0 && i + 1 < N - 1) ? row_ptr[r + NN] : 0;
-        const double xn = (col_in && i + 1 < N) ? x[r + NN] : 0.0;
+        const unsigned imask = plane_mask(i);
+        const long long rpa = rpa_cur;
+        const long long rpa_n2 = load_rpa(i + 2);
+        const double xnn = (col_in && i + 2 < N) ? x[r + 2 * NN] : 0.0;
+        // Face rows: row_ptr issued now, used after the barrier
+        const long long rpf = (i >= i0 && out_col && !interior) ? row_ptr[r] : 0;
 
-        // Coefficients 13..26 of the interior rows of this warp
+        // Coefficients of this plane (copies issued one plane earlier)
         double u[14];
         long long rp = 0;
+        cp_async_wait_all();
+        __syncwarp();
         if (imask) {
             rp = rpa + 27LL * (lane - a);
-#pragma unroll
-            for (int c = 0; c < 8; c++) {
-                const int e = c * 32 + lane, src = e >> 3, q = e & 7;
-                if ((imask >> src) & 1u) {
-                    const long long rps = rpa + 27LL * (src - a);
-                    const long long d = ((rps + 13) & ~1LL) + 2 * q;
-                    if (d < rps + 27)
-                        cp_async16(st + src * 16 + ((q ^ (src & 7)) << 1), values + d);
-                }
-            }
-            cp_async_wait_all();
-            __syncwarp();
             const int par = (int)((rp + 13) & 1);
 #pragma unroll
             for (int p = 0; p < 14; p++) {
@@ -259,7 +300,12 @@ __global__ void __launch_bounds__(TJ * 32)
             for (int p = 0; p < 14; p++)
                 u[p] = 0.0;
         }
-        Xs[s_next * T + tid] = xn;  // after the copies are in flight
+        __syncwarp();  // st is free: start the copies of plane i + 1
+        rpa_cur = __shfl_sync(kFull, rpa_n1, a);
+        if (i + 1 < i1)
+            issue_copies(rpa_cur, plane_mask(i + 1));
+        rpa_n1 = rpa_n2;
+        Xs[s_next * T + tid] = xn;  // loaded one plane earlier
 
         // Products for the rows that hold the transposed couplings, pre-summed along k
         const double sk_in = __shfl_up_sync(kFull, u[1] * xc, 1);
@@ -298,21 +344,22 @@ __global__ void __launch_bounds__(TJ * 32)
                 }
                 s = (y0 + y1) + y2;
             } else {
-                const long long b = row_ptr[r];
-                s = row_generic(values + b, col_idx + b, (int)(row_ptr[r + 1] - b), x);
+                s = row_face<9>(values + rpf, x, r, i, j, k, N);
             }
             y[r] = s;
         }
         if (w >= 1 && w <= TJ - 2)
             P = Aps[buf * T + tid - 32] + A0 + Ams[buf * T + tid + 32];
         xc = xn;
+        xn = xnn;
     }
 }
 
 /**
  * @brief One-time check of the assumptions of the kernels above, one thread per row
  *
- * @details Counts interior rows whose pattern differs from the 27-entry stencil (bad_pattern),
+ * @details Counts rows whose pattern differs from the stencil, 27 entries inside and the
+ * truncated stencil on faces (bad_pattern),
  * and couplings between two interior rows whose two stored copies differ bitwise (bad_sym).
  * csr_staged_kernel needs bad_pattern == 0; sym25d_kernel needs both counts at 0.
  */
@@ -324,9 +371,22 @@ __global__ void check_pattern_sym_kernel(const long long* __restrict__ row_ptr,
     const int n = N * N * N, NN = N * N;
     for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n; r += gridDim.x * blockDim.x) {
         const int i = r / NN, j = (r / N) % N, k = r % N;
-        if (!(i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1))
-            continue;
         const long long rp = row_ptr[r];
+        if (!(i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1)) {
+            // Face row: the valid stencil neighbours, in stencil (= column) order
+            long long q = rp;
+            bool ok = true;
+            for (int p = 0; ok && p < 27; p++) {
+                const int ni = i + p / 9 - 1, nj = j + (p / 3) % 3 - 1, nk = k + p % 3 - 1;
+                if (ni < 0 || ni >= N || nj < 0 || nj >= N || nk < 0 || nk >= N)
+                    continue;
+                ok = q < row_ptr[r + 1] && col_idx[q] == r + entry_offset(p, N);
+                q++;
+            }
+            if (!ok || q != row_ptr[r + 1])
+                atomicAdd(bad_pattern, 1ULL);
+            continue;
+        }
         bool ok = row_ptr[r + 1] - rp == 27;
         for (int p = 0; ok && p < 27; p++)
             ok = col_idx[rp + p] == r + entry_offset(p, N);

@@ -20,7 +20,7 @@ nvidia-smi -q > "$OUT/nvidia-smi.txt" 2>&1 || true
 nvcc --version > "$OUT/nvcc.txt"
 git rev-parse HEAD > "$OUT/commit.txt"
 make bench_spmv_27pt SPMV27_ARCH="$ARCH" 2>&1 | tee "$OUT/build.log"
-BIN=$(ls bin/bench_spmv_27pt bin/*/bench_spmv_27pt 2>/dev/null | head -n 1)
+BIN=$( (ls bin/bench_spmv_27pt bin/*/bench_spmv_27pt 2>/dev/null || true) | head -n 1)
 echo "binary: $BIN"
 
 "$BIN" --sizes="$SIZES" --coeffs=const --csv="$OUT/timings.csv" | tee "$OUT/1_const.txt"
