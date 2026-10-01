@@ -28,8 +28,8 @@ echo "binary: $BIN"
 for g in 32 64 128; do
     "$BIN" --sizes=256,384 --l2fetch="$g" --csv="$OUT/timings.csv" | tee "$OUT/3_l2fetch_$g.txt"
 done
-for zc in 16 64 128; do
-    "$BIN" --sizes=256 --zc="$zc" --only=cusparse-alg1,cusparse-alg2,sym-tj4,sym-tj8,sym-tj16 \
+for zc in 8 16 24 32; do
+    "$BIN" --sizes=256 --zc="$zc" --only=cusparse-alg1,cusparse-alg2,sym-tj8,sym-tj16,sym-pad-tj8,sym-pad-tj16 \
         --csv="$OUT/timings.csv" | tee "$OUT/4_zc_$zc.txt"
 done
 

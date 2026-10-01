@@ -9,6 +9,9 @@
  *   rowmajor                      the kernel of the published solver (one thread per row)
  *   staged                        rowmajor with warp-coalesced cp.async staging of the values
  *   sym-tj4/8/16                  symmetric half-read kernel, 2.5D tile of 30 x (TJ-2) columns
+ *   sym-pad-tj8/16                same kernel on a padded copy of the operator (explicit zeros,
+ *                                 32 entries per interior row): reads one aligned 128-byte line
+ *                                 per interior row; cuSPARSE stays on the unpadded matrix
  *
  * Every variant is checked against a plain CSR reference (one thread per row, CSR order) before
  * its time is reported, and the one-time pattern and symmetry check is timed separately.
@@ -22,7 +25,7 @@
  * DRAM bytes actually moved come from Nsight Compute (ncu_bytes.sh), which profiles the timed
  * launches only (they run between cudaProfilerStart and cudaProfilerStop).
  *
- * Usage: bench_spmv_27pt [--sizes=128,256,384] [--coeffs=const|var] [--reps=30] [--zc=32]
+ * Usage: bench_spmv_27pt [--sizes=128,256,384] [--coeffs=const|var] [--reps=30] [--zc=12]
  *                        [--only=variant[,variant]] [--l2fetch=32|64|128] [--csv=file]
  */
 
@@ -83,20 +86,14 @@ __device__ inline double coupling(int a, int b) {
     return -(0.5 + (double)(splitmix64((lo << 32) ^ hi) >> 11) * 0x1.0p-53);
 }
 
-__global__ void count_kernel(long long* counts, int N) {
+template <bool PAD> __global__ void count_kernel(long long* counts, int N) {
     const long long n = (long long)N * N * N;
     for (long long r = blockIdx.x * (long long)blockDim.x + threadIdx.x; r <= n;
-         r += (long long)gridDim.x * blockDim.x) {
-        if (r == n) {
-            counts[r] = 0;
-            continue;
-        }
-        const int i = (int)(r / ((long long)N * N)), j = (int)((r / N) % N), k = (int)(r % N);
-        auto f = [N](int a) { return 1 + (a > 0) + (a < N - 1); };
-        counts[r] = (long long)f(i) * f(j) * f(k);
-    }
+         r += (long long)gridDim.x * blockDim.x)
+        counts[r] = r == n ? 0 : stencil27::stencil_row<PAD>((int)r, N, [](int, int, bool) {});
 }
 
+template <bool PAD>
 __global__ void fill_kernel(const long long* __restrict__ row_ptr, int* __restrict__ col,
                             double* __restrict__ val, int N, int variable) {
     const int n = N * N * N, NN = N * N;
@@ -110,16 +107,11 @@ __global__ void fill_kernel(const long long* __restrict__ row_ptr, int* __restri
                     diag -= coupling(r, a * NN + b * N + c);
             }
         }
-        long long q = row_ptr[r];
-        for (int p = 0; p < 27; p++) {
-            const int a = i + p / 9 - 1, b = j + (p / 3) % 3 - 1, c = k + p % 3 - 1;
-            if (a < 0 || a >= N || b < 0 || b >= N || c < 0 || c >= N)
-                continue;
-            const int cc = a * NN + b * N + c;
-            col[q] = cc;
-            val[q] = (p == 13) ? diag : (variable ? coupling(r, cc) : -1.0);
-            q++;
-        }
+        const long long q0 = row_ptr[r];
+        stencil27::stencil_row<PAD>(r, N, [&](int q, int cc, bool zero) {
+            col[q0 + q] = cc;
+            val[q0 + q] = zero ? 0.0 : (cc == r ? diag : (variable ? coupling(r, cc) : -1.0));
+        });
     }
 }
 
@@ -174,16 +166,21 @@ struct Matrix {
     int* rp32 = nullptr;
     int* col = nullptr;
     double* val = nullptr;
+    bool pad = false;
 };
 
-static void build_matrix(Matrix& A, int N, bool variable) {
+static void build_matrix(Matrix& A, int N, bool variable, bool pad) {
     A.N = N;
+    A.pad = pad;
     A.n = N * N * N;
     const long long n = A.n;
     long long* counts;
     CUDA_CHECK(cudaMalloc(&counts, (n + 1) * sizeof(long long)));
     CUDA_CHECK(cudaMalloc(&A.rp64, (n + 1) * sizeof(long long)));
-    count_kernel<<<1024, 256>>>(counts, N);
+    if (pad)
+        count_kernel<true><<<1024, 256>>>(counts, N);
+    else
+        count_kernel<false><<<1024, 256>>>(counts, N);
     size_t tmp_bytes = 0;
     CUDA_CHECK(cub::DeviceScan::ExclusiveSum(nullptr, tmp_bytes, counts, A.rp64, n + 1));
     void* tmp;
@@ -199,7 +196,10 @@ static void build_matrix(Matrix& A, int N, bool variable) {
     CUDA_CHECK(cudaMalloc(&A.col, A.nnz * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&A.val, A.nnz * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&A.rp32, (n + 1) * sizeof(int)));
-    fill_kernel<<<4096, 256>>>(A.rp64, A.col, A.val, N, variable ? 1 : 0);
+    if (pad)
+        fill_kernel<true><<<4096, 256>>>(A.rp64, A.col, A.val, N, variable ? 1 : 0);
+    else
+        fill_kernel<false><<<4096, 256>>>(A.rp64, A.col, A.val, N, variable ? 1 : 0);
     narrow_kernel<<<1024, 256>>>(A.rp64, A.rp32, n + 1);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -223,7 +223,7 @@ struct Args {
     std::vector<int> sizes{128, 256, 384};
     bool variable = false;
     int reps = 30;
-    int zc = 32;
+    int zc = 12;
     int l2fetch = 0;
     std::vector<std::string> only;
     const char* csv = nullptr;
@@ -307,12 +307,22 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaFuncSetAttribute(stencil27::sym25d_kernel<16>,
                                     cudaFuncAttributeMaxDynamicSharedMemorySize,
                                     stencil27::sym25d_smem_bytes(16)));
+    CUDA_CHECK(cudaFuncSetAttribute(stencil27::sym25d_kernel<8, true>,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                    stencil27::sym25d_smem_bytes(8)));
+    CUDA_CHECK(cudaFuncSetAttribute(stencil27::sym25d_kernel<16, true>,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                    stencil27::sym25d_smem_bytes(16)));
     printf("Kernel resources:\n");
     print_attrs("rowmajor", stencil27_csr_partitioned_halo_kernel_3d, 256, 0);
     print_attrs("staged", stencil27::csr_staged_kernel<kStagedWarps>, kStagedWarps * 32, 0);
     print_attrs("sym-tj4", stencil27::sym25d_kernel<4>, 128, stencil27::sym25d_smem_bytes(4));
     print_attrs("sym-tj8", stencil27::sym25d_kernel<8>, 256, stencil27::sym25d_smem_bytes(8));
     print_attrs("sym-tj16", stencil27::sym25d_kernel<16>, 512, stencil27::sym25d_smem_bytes(16));
+    print_attrs("sym-pad-tj8", stencil27::sym25d_kernel<8, true>, 256,
+                stencil27::sym25d_smem_bytes(8));
+    print_attrs("sym-pad-tj16", stencil27::sym25d_kernel<16, true>, 512,
+                stencil27::sym25d_smem_bytes(16));
 
     FILE* csv = nullptr;
     if (args.csv) {
@@ -323,8 +333,8 @@ int main(int argc, char** argv) {
     }
 
     for (int N : args.sizes) {
-        Matrix A;
-        build_matrix(A, N, args.variable);
+        Matrix A, P;
+        build_matrix(A, N, args.variable, false);
         const int n = A.n;
         const long long nnz = A.nnz;
         printf("\nN=%d: %d rows, %lld nnz (%.2f per row), interior %.1f%%\n", N, n, nnz,
@@ -338,8 +348,8 @@ int main(int argc, char** argv) {
         cudaEventCreate(&c0);
         cudaEventCreate(&c1);
         cudaEventRecord(c0);
-        stencil27::check_pattern_sym_kernel<<<prop.multiProcessorCount * 8, 256>>>(
-            A.rp64, A.col, A.val, N, d_bad, d_bad + 1);
+        stencil27::check_pattern_sym_kernel<false>
+            <<<prop.multiProcessorCount * 8, 256>>>(A.rp64, A.col, A.val, N, d_bad, d_bad + 1);
         cudaEventRecord(c1);
         CUDA_CHECK(cudaEventSynchronize(c1));
         float check_ms = 0;
@@ -349,6 +359,40 @@ int main(int argc, char** argv) {
         const bool pattern_ok = bad[0] == 0, sym_ok = bad[0] == 0 && bad[1] == 0;
         printf("Pattern/symmetry check: %.3f ms, bad pattern rows %llu, asymmetric pairs %llu\n",
                check_ms, bad[0], bad[1]);
+
+        // Padded copy of the same operator, for the sym-pad variants only
+        const bool want_pad =  // the padded face rows need N - 2 > 14
+            N >= 17 && (args.only.empty() ||
+                        std::find_if(args.only.begin(), args.only.end(), [](const std::string& s) {
+                            return s.rfind("sym-pad", 0) == 0;
+                        }) != args.only.end());
+        bool pad_ok = false;
+        if (want_pad) {
+            cudaEventRecord(c0);
+            build_matrix(P, N, args.variable, true);
+            cudaEventRecord(c1);
+            CUDA_CHECK(cudaEventSynchronize(c1));
+            float build_ms = 0;
+            cudaEventElapsedTime(&build_ms, c0, c1);
+            CUDA_CHECK(cudaMemset(d_bad, 0, 3 * sizeof(unsigned long long)));
+            cudaEventRecord(c0);
+            stencil27::check_pattern_sym_kernel<true>
+                <<<prop.multiProcessorCount * 8, 256>>>(P.rp64, P.col, P.val, N, d_bad, d_bad + 1);
+            cudaEventRecord(c1);
+            CUDA_CHECK(cudaEventSynchronize(c1));
+            float pcheck_ms = 0;
+            cudaEventElapsedTime(&pcheck_ms, c0, c1);
+            unsigned long long pbad[3];
+            CUDA_CHECK(cudaMemcpy(pbad, d_bad, sizeof(pbad), cudaMemcpyDeviceToHost));
+            pad_ok = pbad[0] == 0 && pbad[1] == 0;
+            const double bytes_a = 12.0 * A.nnz + 8.0 * (n + 1),
+                         bytes_p = 12.0 * P.nnz + 8.0 * (n + 1);
+            printf("Padded matrix: %lld nnz (+%.1f%%), CSR bytes +%.1f%%, built on the GPU in %.3f "
+                   "ms; "
+                   "check %.3f ms, bad pattern rows %llu, asymmetric pairs %llu\n",
+                   P.nnz, 100.0 * (P.nnz - A.nnz) / A.nnz, 100.0 * (bytes_p - bytes_a) / bytes_a,
+                   build_ms, pcheck_ms, pbad[0], pbad[1]);
+        }
 
         // Vectors
         double *x, *yref, *y, *yrow;
@@ -396,6 +440,8 @@ int main(int argc, char** argv) {
             {"sym-tj4", 136.0 * A.n_interior + 12.0 * face_nnz + vec, true},
             {"sym-tj8", 136.0 * A.n_interior + 12.0 * face_nnz + vec, true},
             {"sym-tj16", 136.0 * A.n_interior + 12.0 * face_nnz + vec, true},
+            {"sym-pad-tj8", 128.0 * A.n_interior + 12.0 * face_nnz + vec, true},
+            {"sym-pad-tj16", 128.0 * A.n_interior + 12.0 * face_nnz + vec, true},
         };
         std::vector<int> active;
         for (int v = 0; v < (int)vars.size(); v++) {
@@ -405,6 +451,8 @@ int main(int argc, char** argv) {
             if (v >= 3 && !pattern_ok)
                 continue;
             if (vars[v].needs_sym && !sym_ok)
+                continue;
+            if (v >= 7 && !pad_ok)
                 continue;
             active.push_back(v);
         }
@@ -426,6 +474,20 @@ int main(int argc, char** argv) {
                     stencil27::csr_staged_kernel<kStagedWarps>
                         <<<(n + rows_per_block - 1) / rows_per_block, rows_per_block>>>(
                             A.rp64, A.col, A.val, x, y, N);
+                    break;
+                }
+                case 7:
+                case 8: {
+                    const int tj = v == 7 ? 8 : 16;
+                    const dim3 grid((N + 29) / 30, (N + tj - 3) / (tj - 2),
+                                    (N + args.zc - 1) / args.zc);
+                    const size_t sm = stencil27::sym25d_smem_bytes(tj);
+                    if (tj == 8)
+                        stencil27::sym25d_kernel<8, true>
+                            <<<grid, 256, sm>>>(P.rp64, P.col, P.val, x, y, N, args.zc);
+                    else
+                        stencil27::sym25d_kernel<16, true>
+                            <<<grid, 512, sm>>>(P.rp64, P.col, P.val, x, y, N, args.zc);
                     break;
                 }
                 default: {
@@ -547,6 +609,8 @@ int main(int argc, char** argv) {
         cudaFree(yref);
         cudaFree(yrow);
         free_matrix(A);
+        if (want_pad)
+            free_matrix(P);
     }
     if (csv)
         fclose(csv);

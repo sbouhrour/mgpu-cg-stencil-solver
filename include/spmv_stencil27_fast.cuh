@@ -69,6 +69,61 @@ __host__ __device__ __forceinline__ int entry_offset(int p, int N) {
     return (p / 9 - 1) * N * N + ((p / 3) % 3 - 1) * N + (p % 3 - 1);
 }
 
+/** @brief Number of valid neighbours along one axis, including the point itself */
+__host__ __device__ __forceinline__ int axis_count(int a, int N) {
+    return 1 + (a > 0) + (a < N - 1);
+}
+
+/**
+ * @brief Padded layout: position of stencil entry p in an interior row of 32 entries
+ *
+ * @details [p0..p11][Z Z Z][p12][p13 = diagonal][p14][Z Z][p15..p26]: the zeros sit at columns
+ * r - 4 .. r - 2 and r + 2, r + 3, which no stencil entry uses, so the row stays sorted. Every
+ * padded row has a multiple of 16 entries, so with 16-byte aligned values (cudaMalloc: 256),
+ * entries 16..31 of an interior row (diagonal, 13 upper couplings, 2 zeros) fill exactly one
+ * aligned 128-byte line, whatever the DRAM fetch granularity.
+ */
+__host__ __device__ constexpr int pad_pos(int p) {
+    return p <= 11 ? p : (p <= 14 ? p + 3 : p + 5);
+}
+
+/**
+ * @brief Entries of row r in CSR order: calls f(position, column, is_padding_zero), returns the
+ * row length
+ *
+ * @details Unpadded: the valid stencil neighbours in stencil (= column) order. Padded: interior
+ * rows follow pad_pos; a face row with L valid neighbours gets z zeros up to a multiple of 16
+ * entries, at columns r + 2 .. r + 1 + z placed before entry p = 15 (or, in the last rows of the
+ * matrix, at columns r - 1 - z .. r - 2 before entry p = 12). Needs N - 2 > 14 when padded.
+ */
+template <bool PAD, typename F> __host__ __device__ int stencil_row(int r, int N, F f) {
+    const int NN = N * N, n = NN * N;
+    const int i = r / NN, j = (r / N) % N, k = r % N;
+    const bool inner = i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1;
+    const int L = axis_count(i, N) * axis_count(j, N) * axis_count(k, N);
+    const int z = PAD && !inner ? ((L + 15) & ~15) - L : 0;
+    const bool up = r + 1 + z < n;
+    int q = 0;
+    for (int p = 0; p < 27; p++) {
+        if (PAD && inner && p == 12)
+            for (int t = 0; t < 3; t++)
+                f(q++, r - 4 + t, true);
+        if (PAD && inner && p == 15)
+            for (int t = 0; t < 2; t++)
+                f(q++, r + 2 + t, true);
+        if (z && up && p == 15)
+            for (int t = 0; t < z; t++)
+                f(q++, r + 2 + t, true);
+        if (z && !up && p == 12)
+            for (int t = 0; t < z; t++)
+                f(q++, r - 1 - z + t, true);
+        const int a = i + p / 9 - 1, b = j + (p / 3) % 3 - 1, c = k + p % 3 - 1;
+        if (a >= 0 && a < N && b >= 0 && b < N && c >= 0 && c < N)
+            f(q++, r + entry_offset(p, N), false);
+    }
+    return q;
+}
+
 /** @brief Interior row: 27 terms in ascending column order, the row-major kernel's exact order */
 __device__ __forceinline__ double row27(const double* v, const double* __restrict__ x, int row,
                                         int N) {
@@ -91,15 +146,21 @@ __device__ __forceinline__ double row_generic(const double* v, const int* __rest
 /**
  * @brief Face row of the truncated stencil, columns from the geometry, same order as the CSR row
  *
- * @details Valid neighbours are stored in ascending column order, that is in stencil order p,
- * so entry q of the row is the q-th valid p. Columns need no col_idx load: values and x loads
- * are independent and issued in batches of UNROLL positions. The pattern of face rows is
- * checked once by check_pattern_sym_kernel.
+ * @details Entry q of the row is the q-th valid p (stencil_row), shifted past the padding zeros
+ * when PAD. Columns need no col_idx load: values and x loads are independent and issued in
+ * batches of UNROLL positions. The pattern of face rows is checked once by
+ * check_pattern_sym_kernel.
  */
-template <int UNROLL>
+template <int UNROLL, bool PAD>
 __device__ __forceinline__ double row_face(const double* __restrict__ v,
-                                           const double* __restrict__ x, int r, int i, int j,
-                                           int k, int N) {
+                                           const double* __restrict__ x, int r, int i, int j, int k,
+                                           int N) {
+    int z = 0, zfrom = 27;
+    if (PAD) {
+        const int L = axis_count(i, N) * axis_count(j, N) * axis_count(k, N);
+        z = ((L + 15) & ~15) - L;
+        zfrom = r + 1 + z < N * N * N ? 15 : 12;
+    }
     double sum = 0.0;
     int q = 0;
 #pragma unroll UNROLL
@@ -108,7 +169,7 @@ __device__ __forceinline__ double row_face(const double* __restrict__ v,
                         (unsigned)(j + (p / 3) % 3 - 1) < (unsigned)N &&
                         (unsigned)(k + p % 3 - 1) < (unsigned)N;
         if (ok) {
-            sum += v[q] * x[r + entry_offset(p, N)];
+            sum += v[q + (p >= zfrom ? z : 0)] * x[r + entry_offset(p, N)];
             q++;
         }
     }
@@ -212,12 +273,13 @@ __host__ __device__ constexpr int sym25d_smem_bytes(int TJ) {
  * Launch: blockDim = TJ * 32, gridDim = (ceil(N / 30), ceil(N / (TJ - 2)), ceil(N / ZC)),
  * dynamic shared memory sym25d_smem_bytes(TJ).
  */
-template <int TJ>
+template <int TJ, bool PAD = false>
 __global__ void __launch_bounds__(TJ * 32)
     sym25d_kernel(const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
                   const double* __restrict__ values, const double* __restrict__ x,
                   double* __restrict__ y, int N, int ZC) {
     constexpr int T = TJ * 32;
+    constexpr int kRow = PAD ? 32 : 27;  // entries per interior row
     extern __shared__ __align__(16) double smem[];
     double* const stage = smem;        // [TJ][32][16]
     double* const Xs = smem + T * 16;  // [3][T]: x of planes, slot = plane % 3
@@ -255,9 +317,9 @@ __global__ void __launch_bounds__(TJ * 32)
         for (int c = 0; c < 8; c++) {
             const int e = c * 32 + lane, src = e >> 3, q = e & 7;
             if ((m >> src) & 1u) {
-                const long long rps = rpb + 27LL * (src - a);
-                const long long d = ((rps + 13) & ~1LL) + 2 * q;
-                if (d < rps + 27)
+                const long long rps = rpb + (long long)kRow * (src - a);
+                const long long d = PAD ? rps + 16 + 2 * q : ((rps + 13) & ~1LL) + 2 * q;
+                if (PAD || d < rps + 27)
                     cp_async16(st + src * 16 + ((q ^ (src & 7)) << 1), values + d);
             }
         }
@@ -288,11 +350,11 @@ __global__ void __launch_bounds__(TJ * 32)
         cp_async_wait_all();
         __syncwarp();
         if (imask) {
-            rp = rpa + 27LL * (lane - a);
-            const int par = (int)((rp + 13) & 1);
+            rp = rpa + (long long)kRow * (lane - a);
+            const int par = PAD ? 0 : (int)((rp + 13) & 1);
 #pragma unroll
             for (int p = 0; p < 14; p++) {
-                const int d = p + par;
+                const int d = PAD ? pad_pos(13 + p) - 16 : p + par;
                 u[p] = interior ? st[lane * 16 + (((d >> 1) ^ (lane & 7)) << 1) + (d & 1)] : 0.0;
             }
         } else {
@@ -339,12 +401,12 @@ __global__ void __launch_bounds__(TJ * 32)
                     for (int p = 0; p < 13; p++) {
                         const int ni = i + p / 9 - 1, nj = j + (p / 3) % 3 - 1, nk = k + p % 3 - 1;
                         if (ni == 0 || nj == 0 || nj == N - 1 || nk == 0 || nk == N - 1)
-                            y0 += values[rp + p] * x[r + entry_offset(p, N)];
+                            y0 += values[rp + (PAD ? pad_pos(p) : p)] * x[r + entry_offset(p, N)];
                     }
                 }
                 s = (y0 + y1) + y2;
             } else {
-                s = row_face<9>(values + rpf, x, r, i, j, k, N);
+                s = row_face<9, PAD>(values + rpf, x, r, i, j, k, N);
             }
             y[r] = s;
         }
@@ -358,49 +420,38 @@ __global__ void __launch_bounds__(TJ * 32)
 /**
  * @brief One-time check of the assumptions of the kernels above, one thread per row
  *
- * @details Counts rows whose pattern differs from the stencil, 27 entries inside and the
- * truncated stencil on faces (bad_pattern),
- * and couplings between two interior rows whose two stored copies differ bitwise (bad_sym).
- * csr_staged_kernel needs bad_pattern == 0; sym25d_kernel needs both counts at 0.
+ * @details Counts rows whose pattern differs from stencil_row<PAD> (columns, length, and padding
+ * entries equal to zero) in bad_pattern, and couplings between two interior rows whose two
+ * stored copies differ bitwise in bad_sym. csr_staged_kernel needs bad_pattern == 0 (unpadded);
+ * sym25d_kernel<TJ, PAD> needs both counts at 0 for the same PAD.
  */
-__global__ void check_pattern_sym_kernel(const long long* __restrict__ row_ptr,
-                                         const int* __restrict__ col_idx,
-                                         const double* __restrict__ values, int N,
-                                         unsigned long long* bad_pattern,
-                                         unsigned long long* bad_sym) {
+template <bool PAD>
+__global__ void
+check_pattern_sym_kernel(const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
+                         const double* __restrict__ values, int N, unsigned long long* bad_pattern,
+                         unsigned long long* bad_sym) {
     const int n = N * N * N, NN = N * N;
     for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n; r += gridDim.x * blockDim.x) {
-        const int i = r / NN, j = (r / N) % N, k = r % N;
-        const long long rp = row_ptr[r];
-        if (!(i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1)) {
-            // Face row: the valid stencil neighbours, in stencil (= column) order
-            long long q = rp;
-            bool ok = true;
-            for (int p = 0; ok && p < 27; p++) {
-                const int ni = i + p / 9 - 1, nj = j + (p / 3) % 3 - 1, nk = k + p % 3 - 1;
-                if (ni < 0 || ni >= N || nj < 0 || nj >= N || nk < 0 || nk >= N)
-                    continue;
-                ok = q < row_ptr[r + 1] && col_idx[q] == r + entry_offset(p, N);
-                q++;
-            }
-            if (!ok || q != row_ptr[r + 1])
-                atomicAdd(bad_pattern, 1ULL);
-            continue;
-        }
-        bool ok = row_ptr[r + 1] - rp == 27;
-        for (int p = 0; ok && p < 27; p++)
-            ok = col_idx[rp + p] == r + entry_offset(p, N);
-        if (!ok) {
+        const long long rp = row_ptr[r], len = row_ptr[r + 1] - rp;
+        bool ok = true;
+        const int q = stencil_row<PAD>(r, N, [&](int pos, int col, bool zero) {
+            ok = ok && pos < len && col_idx[rp + pos] == col && (!zero || values[rp + pos] == 0.0);
+        });
+        if (!ok || q != len) {
             atomicAdd(bad_pattern, 1ULL);
             continue;
         }
+        const int i = r / NN, j = (r / N) % N, k = r % N;
+        if (!(i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1))
+            continue;
         unsigned long long bad = 0;
         for (int p = 14; p < 27; p++) {
             const int nb = r + entry_offset(p, N);
             const int ni = nb / NN, nj = (nb / N) % N, nk = nb % N;
+            const int pp = PAD ? pad_pos(p) : p, pm = PAD ? pad_pos(26 - p) : 26 - p;
             if (ni > 0 && ni < N - 1 && nj > 0 && nj < N - 1 && nk > 0 && nk < N - 1 &&
-                __double_as_longlong(values[rp + p]) !=
-                    __double_as_longlong(values[row_ptr[nb] + 26 - p]))
+                __double_as_longlong(values[rp + pp]) !=
+                    __double_as_longlong(values[row_ptr[nb] + pm]))
                 bad++;
         }
         if (bad)
