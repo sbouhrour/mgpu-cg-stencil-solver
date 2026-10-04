@@ -53,7 +53,9 @@ pin_args() {  # $1 mpirun -> options binding rank i to the cores listed for it i
 # a replayed graph as one opaque range, and the per-iteration kernel counts would read zero.
 profile() {  # $1 name, $2 executable, rest: arguments (RUN: the mpirun, default MPIRUN)
     local name=$1 exe=$2 run="${RUN:-$MPIRUN}"; shift 2
+    # A hung transport must not stall the remaining profiles: RUN_TIMEOUT seconds per capture
     # shellcheck disable=SC2046
+    timeout -s KILL "${RUN_TIMEOUT:-600}" \
     "$run" "${ROOT[@]}" $(pin_args "$run") -np "$NP" nsys profile --trace=cuda,nvtx,osrt --cuda-graph-trace=node \
         --force-overwrite=true \
         -o "$OUT/nsys/${name}_r%q{OMPI_COMM_WORLD_RANK}" "$exe" "$MTX" "$@" \
