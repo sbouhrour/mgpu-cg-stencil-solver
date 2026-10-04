@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Prepares a rented GPU instance for a benchmark session and reports what it can measure.
+# Prepares a rented multi-GPU instance for the communication study and reports what it can measure.
 #
-# Answers three questions before any paid time is spent on measurement:
+# Answers four questions before any paid time is spent on measurement:
 #   1. will Nsight Compute work here (hardware counters), or only timings and nsys?
-#   2. what is the machine — GPU count, model, clocks, theoretical bandwidth?
-#   3. does everything build and run?
+#   2. what is the machine: GPU count, model, clocks?
+#   3. does the 3D solver build and converge on one GPU?
+#   4. can host-staged multi-GPU runs be trusted: MPI between local ranks, and device-to-host copies
+#      with all GPUs copying at once, unpinned and pinned to each GPU's cores?
 #
-# Matrices are not shipped or generated on disk: the 3D 27-point loader reads only the header and
-# builds the operator in memory, so a three-line stub is enough for any grid size.
+# Matrices are not shipped or generated on disk: the 3D loaders read only the header and build the
+# operator in memory, so a three-line stub is enough for any grid size.
 #
-# Usage:  ./scripts/benchmarking/rental_preflight.sh
+# Usage:  ./scripts/benchmarking/rental_preflight.sh       (writes out/rankfile when pinning works)
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 OUT="${OUT_DIR:-out}"
 mkdir -p "$OUT" matrix
+# On some container images a web proxy listens on port 6006; hwloc's GL plugin, loaded by mpirun,
+# takes it for X display :6 and waits forever for an answer. Ranks inherit this setting from mpirun.
+export HWLOC_COMPONENTS="${HWLOC_COMPONENTS:--gl}"
 
 hr() { printf '\n===== %s =====\n' "$1"; }
 
@@ -37,7 +42,7 @@ fi
 hr "2. Hardware"
 nvidia-smi --query-gpu=index,name,compute_cap,memory.total,driver_version --format=csv | tee "$OUT/hw_gpus.csv"
 NGPU=$(nvidia-smi --list-gpus | wc -l)
-CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
+CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0 | tr -d ' .')
 echo "  GPUs: $NGPU   compute capability: sm_${CC}"
 nvidia-smi -q -d CLOCK | grep -A3 "Max Clocks" | head -4 | tee "$OUT/hw_clocks.txt"
 { echo "gpus=$NGPU"; echo "cc=$CC"; echo "date=$(date -Is)"; uname -a; } > "$OUT/hw_info.txt"
@@ -54,64 +59,39 @@ EOS
     exit 1
 fi
 
-hr "4. Matrix headers (operator is built in memory, nnz = (3N-2)^3)"
-# One header line carries the grid size, an optional second one the coefficient contrast. A single
-# leading '%' marks a Matrix Market comment; two would not be recognised by the loader.
-write_header() {                      # $1 = path, $2 = N, $3 = contrast ("" for constant)
+
+hr "4. Matrix headers (operator built in memory)"
+write_header() {                      # $1 = path, $2 = N
     local rows=$(( $2 * $2 * $2 )) k=$(( 3 * $2 - 2 ))
-    {
-        printf '%%%%MatrixMarket matrix coordinate real general\n'
-        printf '%% STENCIL_GRID_SIZE %d\n' "$2"
-        [ -n "$3" ] && printf '%% STENCIL_CONTRAST %s\n' "$3"
-        printf '%d %d %d\n' "$rows" "$rows" $(( k * k * k ))
-    } > "$1"
+    { printf '%%%%MatrixMarket matrix coordinate real general\n'
+      printf '%% STENCIL_GRID_SIZE %d\n' "$2"
+      printf '%d %d %d\n' "$rows" "$rows" $(( k * k * k )); } > "$1"
 }
-for N in 128 192 256 320; do
-    ROWS=$((N*N*N)); K=$((3*N-2))
-    write_header "matrix/stencil3d_27pt_${N}.mtx" "$N" ""
-    printf '  N=%-4s rows=%-12s nnz=%-12s constant\n' "$N" "$ROWS" "$((K*K*K))"
-done
-# Variable-coefficient variants: the only ones that can measure what reduced precision costs, since the
-# constant operator's coefficients are exact in every format down to eight bits.
-for N in 128 192; do
-    for C in 0.1 0.7 3.0; do
-        write_header "matrix/stencil3d_27pt_${N}_var${C}.mtx" "$N" "$C"
-        printf '  N=%-4s contrast=%-5s variable\n' "$N" "$C"
-    done
+for N in 128 256 512; do
+    write_header "matrix/stencil3d_27pt_${N}.mtx" "$N"
+    printf '  N=%-4s rows=%-12s 27-point nnz=%s\n' "$N" $((N*N*N)) $(( (3*N-2)*(3*N-2)*(3*N-2) ))
 done
 
 hr "5. Build"
-# Built separately, and the single-GPU one first. The multi-GPU solver needs MPI; the precision
-# benchmark does not include mpi.h anywhere in its five sources. Building them together made a
-# missing mpirun look like a failure of the whole session, on an instance that bills by the hour
-# and where the single-GPU question was the only one on the programme.
-#
 # Compiled offline for the architecture actually present, rather than left to JIT the embedded PTX
-# of whatever target nvcc defaults to.
-make clean >/dev/null 2>&1
-BUILD_OK=0
-if make -j"$(nproc)" ARCH="$CC" bench_27pt_precision > "$OUT/build.log" 2>&1; then
-    echo "  bench_27pt_precision  OK  (sm_${CC})   -- single-GPU work can proceed"
-    BUILD_OK=1
+# of whatever target nvcc defaults to. comm_setup.sh builds the full toolchain; this build only
+# checks that the solver compiles with what the node has.
+if ! command -v mpirun >/dev/null; then
+    echo "  no mpirun: install MPI (comm_setup.sh does) before multi-GPU work"; exit 1
+fi
+if make -j"$(nproc)" ARCH="$CC" cg_solver_mgpu_stencil_3d > "$OUT/build.log" 2>&1; then
+    echo "  cg_solver_mgpu_stencil_3d  OK  (sm_${CC})"
 else
-    echo "  bench_27pt_precision  FAILED"
+    echo "  cg_solver_mgpu_stencil_3d  FAILED"
     grep -iE 'error|No rule' "$OUT/build.log" | head -10
-    echo "  full log: $OUT/build.log"
+    exit 1
 fi
-if command -v mpirun >/dev/null; then
-    if make -j"$(nproc)" ARCH="$CC" cg_solver_mgpu_stencil_3d >> "$OUT/build.log" 2>&1; then
-        echo "  cg_solver_mgpu_stencil_3d  OK       -- multi-GPU work can proceed"
-    else
-        echo "  cg_solver_mgpu_stencil_3d  FAILED   -- multi-GPU work only; see $OUT/build.log"
-    fi
-else
-    echo "  cg_solver_mgpu_stencil_3d  SKIPPED -- no mpirun. Single-GPU work is unaffected;"
-    echo "                                        install MPI only if this session covers B6."
-fi
-[ "$BUILD_OK" = 1 ] || exit 1
 
-hr "6. Smoke test"
-./bin/bench_27pt_precision matrix/stencil3d_27pt_128.mtx --reps=2 2>&1 | tail -12 | tee "$OUT/smoke.txt"
+hr "6. Smoke test (27-point 128^3, 1 GPU, expect 151 iterations)"
+ROOTOPT=(); [ "$(id -u)" = 0 ] && ROOTOPT=(--allow-run-as-root)
+timeout 300 mpirun "${ROOTOPT[@]}" -np 1 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_128.mtx \
+    --stencil=27 --runs=3 > "$OUT/smoke.txt" 2>&1
+grep -aE 'Converged|Time \(median\)' "$OUT/smoke.txt" | sed 's/^/  /'
 
 hr "7. MPI between two ranks on this node (512 KB, host buffers)"
 # The multi-GPU solvers stage every halo through host memory and hand it to MPI, so a node whose MPI
@@ -169,7 +149,7 @@ fi
 echo "  $MPI_VERDICT"
 printf 'mpi_512k=%s\n' "$MPI_VERDICT" >> "$OUT/hw_info.txt"
 
-hr "8. Device-to-host copies, all GPUs at once (128 KB, pinned)"
+hr "8. Device-to-host copies, all GPUs at once (128 KB, pinned host memory, processes unpinned)"
 # Section 7 moves host buffers only; the staged halo first copies each plane from the GPU. Seen on
 # 2026-09-25: an 8x A100 node passed section 7 at 15 GB/s, copied 128 KB from one GPU in 18.5 us, and
 # took 162 us (0.8 GB/s) when the eight GPUs copied together. Staged 8-GPU CG ran 1.9x slower than
@@ -229,17 +209,49 @@ fi
 echo "  $D2H_VERDICT"
 printf 'd2h_concurrent=%s\n' "$D2H_VERDICT" >> "$OUT/hw_info.txt"
 
+hr "8b. Same copies, each process pinned to its GPU's local cores"
+# Section 8 lets the scheduler place each process. On 2026-09-30 and 2026-10-01 that placement decided
+# the verdict: one node scored 0.07 to 0.18 unpinned and 0.81 pinned, and on another the single-GPU
+# reference moved between 3.7 and 9.5 GB/s depending on the socket it landed on. The solver's ranks
+# have the same exposure, so the runs are pinned too: make_rankfile.sh writes the rankfile they use.
+# This verdict is the one to gate on. A node that hides NUMA (empty local_cpulist, typical of VMs)
+# cannot be pinned and is reported as such.
+D2H_PIN_VERDICT="not tested"
+CPUS=()
+for b in $(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader); do
+    CPUS+=("$(cat /sys/bus/pci/devices/"$(echo "${b: -12}" | tr 'A-Z' 'a-z')"/local_cpulist 2>/dev/null)")
+done
+if [ "$NGPU" -ge 2 ] && [ -x "$OUT/d2h_probe" ] && [ -n "${CPUS[0]:-}" ]; then
+    ./scripts/benchmarking/make_rankfile.sh > "$OUT/rankfile" && sed 's/^/  /' "$OUT/rankfile"
+    ALONE=$(taskset -c "${CPUS[0]}" "$OUT/d2h_probe" 0 1)
+    for g in $(seq 0 $((NGPU - 1))); do taskset -c "${CPUS[$g]}" "$OUT/d2h_probe" "$g" 3 > "$OUT/d2h_pin.$g" & done
+    wait
+    WORST=$(sort -g "$OUT"/d2h_pin.[0-9]* | head -1)
+    rm -f "$OUT"/d2h_pin.[0-9]*
+    if awk -v w="$WORST" -v a="$ALONE" -v r=0.5 'BEGIN{exit !(w >= r * a)}'; then
+        D2H_PIN_VERDICT="OK, ${WORST} GB/s per GPU with ${NGPU} copying (${ALONE} alone) -- run pinned: RANKFILE=$PWD/$OUT/rankfile"
+    else
+        D2H_PIN_VERDICT="SLOW, ${WORST} GB/s per GPU with ${NGPU} copying (${ALONE} alone) -- no staged or AmgX MPI runs, even pinned"
+    fi
+elif [ -z "${CPUS[0]:-}" ]; then
+    D2H_PIN_VERDICT="not tested (no local_cpulist: NUMA hidden, likely a VM)"
+fi
+echo "  $D2H_PIN_VERDICT"
+printf 'd2h_concurrent_pinned=%s\n' "$D2H_PIN_VERDICT" >> "$OUT/hw_info.txt"
+
 hr "Verdict"
 if [ "$NCU_LIKELY" = 1 ] && command -v ncu >/dev/null; then
-    if ncu --metrics dram__bytes.sum ./bin/bench_27pt_precision matrix/stencil3d_27pt_128.mtx --reps=1 2>&1 \
-         | grep -qi ERR_NVGPUCTRPERM; then
-        echo "  ncu: DENIED by host -- timings and nsys only"
+    if ncu --metrics dram__bytes.sum ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_128.mtx \
+         --stencil=27 --max-iters=2 --runs=3 2>&1 | grep -qi ERR_NVGPUCTRPERM; then
+        echo "  ncu:        DENIED by host -- timings and nsys only"
     else
-        echo "  ncu: WORKS -- capture counters too, and note the provider id"
+        echo "  ncu:        WORKS -- counters can be captured"
     fi
 else
-    echo "  ncu: unavailable -- timings and nsys only (expected on container marketplaces)"
+    echo "  ncu:        unavailable -- timings and nsys only"
 fi
-echo "  mpi: $MPI_VERDICT"
-echo "  d2h: $D2H_VERDICT"
-echo "  Ready. Next: ./scripts/benchmarking/rental_session.sh"
+echo "  mpi:        $MPI_VERDICT"
+echo "  d2h:        $D2H_VERDICT"
+echo "  d2h pinned: $D2H_PIN_VERDICT"
+echo "  Next: comm_setup.sh (if not done), then comm_preflight.sh"
+

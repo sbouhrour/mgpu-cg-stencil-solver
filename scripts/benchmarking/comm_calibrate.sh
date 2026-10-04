@@ -16,13 +16,20 @@ cd "$(dirname "$0")/../.."
 OUT="${OUT_DIR:-out}/comm_calibrate"
 mkdir -p "$OUT"
 NT="${NCCL_TESTS:-$HOME/nccl-tests}"
-MPIRUN="${MPIRUN:-mpirun}"
+# nccl-tests is built against the CUDA-aware Open MPI of comm_setup.sh: run it with that mpirun
+MPIRUN="${MPIRUN:-${CUDA_AWARE_MPIRUN:-mpirun}}"
 NGPU=$(nvidia-smi --list-gpus | wc -l)
-CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
+CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0 | tr -d ' .')
 ROOT=()
 [ "$(id -u)" = 0 ] && ROOT=(--allow-run-as-root)
 
 hr() { printf '\n===== %s =====\n' "$1"; }
+pin_args() {  # $1 mpirun -> options binding rank i to the cores listed for it in RANKFILE
+    [ -n "${RANKFILE:-}" ] || return 0
+    if "$1" --version 2>/dev/null | grep -qE 'Open MPI\) [5-9]'; then echo "--map-by rankfile:file=$RANKFILE"
+    else echo "--rankfile $RANKFILE"; fi
+}
+
 
 hr "1. nccl-tests"
 if [ ! -x "$NT/build/all_reduce_perf" ]; then
@@ -37,7 +44,8 @@ fi
 # One process per GPU, as in the solver
 nt() {  # $1 ranks, $2 binary, rest: arguments -> stdout
     local np=$1 bin=$2; shift 2
-    "$MPIRUN" "${ROOT[@]}" -np "$np" "${ENVX[@]}" "$NT/build/$bin" -g 1 -d double -w 20 -n 100 "$@"
+    # shellcheck disable=SC2046
+    "$MPIRUN" "${ROOT[@]}" $(pin_args "$MPIRUN") -np "$np" "${ENVX[@]}" "$NT/build/$bin" -g 1 -d double -w 20 -n 100 "$@"
 }
 ENVX=()
 

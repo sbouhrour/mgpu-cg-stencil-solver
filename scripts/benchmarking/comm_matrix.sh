@@ -20,6 +20,12 @@
 #         SHARED_GPU=1 ...   several ranks per GPU: checks the script runs, times mean nothing
 #         SET=core ...       only what the README figure and main table need (see below)
 #         RUNS=5 ...         timed solves per configuration (default: the solver's 10)
+#         RANKFILE=f ...     bind each rank to its GPU's cores (make_rankfile.sh writes f)
+#
+# Two MPI builds (comm_setup.sh): gpuaware and AmgX MPI_DIRECT need a CUDA-aware MPI and run from
+# bin/cuda-aware and amgx_cg_solver_mgpu_cuda_aware with CUDA_AWARE_MPIRUN; every other
+# configuration runs from the default build with MPIRUN. Without a CUDA-aware build, every
+# configuration uses the default one.
 # Uses the binary as built by comm_preflight.sh (same toolchain), and does not rebuild it.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -41,6 +47,16 @@ BIN=./bin/cg_solver_mgpu_stencil_3d
 AMGX_BIN=./external/benchmarks/amgx/amgx_cg_solver_mgpu
 AMGX="${AMGX:-$([ -x "$AMGX_BIN" ] && echo 1 || echo 0)}"
 MPIRUN="${MPIRUN:-mpirun}"
+CA_BIN="${CUDA_AWARE_BIN:-./bin/cuda-aware/cg_solver_mgpu_stencil_3d}"
+CA_AMGX_BIN="${CUDA_AWARE_AMGX_BIN:-./external/benchmarks/amgx/amgx_cg_solver_mgpu_cuda_aware}"
+CA_MPIRUN="${CUDA_AWARE_MPIRUN:-}"
+if [ -z "$CA_MPIRUN" ] || [ ! -x "$CA_BIN" ]; then CA_BIN=$BIN; CA_AMGX_BIN=$AMGX_BIN; CA_MPIRUN=$MPIRUN; fi
+[ -x "$CA_AMGX_BIN" ] || CA_AMGX_BIN=$AMGX_BIN
+pin_args() {  # $1 mpirun -> options binding rank i to the cores listed for it in RANKFILE
+    [ -n "${RANKFILE:-}" ] || return 0
+    if "$1" --version 2>/dev/null | grep -qE 'Open MPI\) [5-9]'; then echo "--map-by rankfile:file=$RANKFILE"
+    else echo "--rankfile $RANKFILE"; fi
+}
 NGPU=$(nvidia-smi --list-gpus 2>/dev/null | wc -l)
 if [ -z "${RANKS:-}" ]; then
     RANKS=""
@@ -114,7 +130,19 @@ else
         done
     done
 fi
+# SET=core lists every backend; keep those named in BACKENDS (AmgX follows AMGX)
+KEPT=()
+for cfg in "${CONFIGS[@]}"; do
+    be=$(echo "$cfg" | awk '{print $4}')
+    if [ "$be" = amgx ] || [[ " $BACKENDS " == *" $be "* ]] || [ "$(echo "$cfg" | awk '{print $3}')" = 1 ]; then
+        KEPT+=("$cfg")
+    fi
+done
+CONFIGS=("${KEPT[@]}")
 echo "${#CONFIGS[@]} configurations, ${ITERS} iterations each, output in $OUT"
+echo "  default build: $BIN with $MPIRUN"
+echo "  gpuaware and AmgX MPI_DIRECT: $CA_BIN, $CA_AMGX_BIN with $CA_MPIRUN"
+[ -n "${RANKFILE:-}" ] && echo "  ranks bound per $RANKFILE"
 
 for cfg in "${CONFIGS[@]}"; do
     read -r st n np be dots tag <<< "$cfg"
@@ -123,14 +151,16 @@ for cfg in "${CONFIGS[@]}"; do
     [ -s "$OUT/$name.json" ] && { echo "  $name: done, skipped"; continue; }
     envx=()
     [ "$tag" = p2poff ] && envx=(-x NCCL_P2P_DISABLE=1)
+    run="$MPIRUN"
     if [ "$be" = amgx ]; then
         # Same fixed iteration count: a tolerance no run can reach
         exe="$AMGX_BIN"
-        comm=MPI; [ "$tag" = mpidirect ] && comm=MPI_DIRECT
+        comm=MPI; [ "$tag" = mpidirect ] && { comm=MPI_DIRECT; exe="$CA_AMGX_BIN"; run="$CA_MPIRUN"; }
         args=(--stencil="$st" --communicator="$comm" --max-iters="$ITERS" --tol=1e-300 --runs="$RUNS"
               --json="$OUT/$name.json")
     else
         exe="$BIN"
+        [ "$be" = gpuaware ] && { exe="$CA_BIN"; run="$CA_MPIRUN"; }
         args=(--stencil="$st" --comm="$be" --dots="$dots" --max-iters="$ITERS" --runs="$RUNS"
               --json="$OUT/$name.json")
         [ "$dots" = device ] && args+=(--check-every="$CHECK_EVERY")
@@ -141,7 +171,8 @@ for cfg in "${CONFIGS[@]}"; do
     # Under CUDA MPS, NVSHMEM needs the per-process GPU shares to add up to at most 100 %
     [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && envx+=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / np)))
     start=$(date +%s)
-    if "$MPIRUN" "${ROOT[@]}" "${envx[@]}" -np "$np" "$exe" "$(stub "$st" "$n")" "${args[@]}" \
+    # shellcheck disable=SC2046
+    if "$run" "${ROOT[@]}" $(pin_args "$run") "${envx[@]}" -np "$np" "$exe" "$(stub "$st" "$n")" "${args[@]}" \
          > "$OUT/$name.log" 2>&1; then
         printf '  %-40s %4ss  %s\n' "$name" $(($(date +%s) - start)) \
             "$(grep -a -m1 -iE 'Time \(median\)|median' "$OUT/$name.log" | tr -s ' ')"

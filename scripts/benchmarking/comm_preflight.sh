@@ -25,11 +25,21 @@ ITERS="${ITERS:-60}"
 TOL="${TOL:-1e-10}"
 BIN=./bin/cg_solver_mgpu_stencil_3d
 MPIRUN="${MPIRUN:-mpirun}"
+# gpuaware needs a CUDA-aware MPI: comm_setup.sh builds one apart (bin/cuda-aware, CUDA_AWARE_MPIRUN)
+# and the gpuaware runs use it, against a staged reference from the same build. Without it, the
+# default build serves every backend.
+CA_BIN="${CUDA_AWARE_BIN:-./bin/cuda-aware/cg_solver_mgpu_stencil_3d}"
+CA_MPIRUN="${CUDA_AWARE_MPIRUN:-}"
+if [ -n "$CA_MPIRUN" ] && [ -x "$CA_BIN" ]; then CA=1; else CA=0; CA_BIN=$BIN; CA_MPIRUN=$MPIRUN; fi
+cuda_aware() {  # $1 mpirun -> "true" when its Open MPI was built with CUDA support
+    "$(dirname "$(command -v "$1")")/ompi_info" --parsable --all 2>/dev/null |
+        grep -m1 'mpi_built_with_cuda_support:value' | cut -d: -f7
+}
 
 hr() { printf '\n===== %s =====\n' "$1"; }
 
 NGPU=$(nvidia-smi --list-gpus | wc -l)
-CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
+CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0 | tr -d ' .')
 if [ -z "${RANKS:-}" ]; then
     RANKS=""
     for r in 1 2 4 8; do [ "$r" -le "$NGPU" ] && RANKS="$RANKS $r"; done
@@ -57,10 +67,11 @@ if [ -n "$NCCL_H" ]; then
 else
     echo "  NCCL     ABSENT (set NCCL_HOME) -- the nccl backend will be skipped"
 fi
-if command -v ompi_info >/dev/null; then
-    printf '  MPI CUDA support (build): %s\n' \
-        "$(ompi_info --parsable --all 2>/dev/null | grep -m1 'mpi_built_with_cuda_support:value' | cut -d: -f7)"
+printf '  default MPI: %s, CUDA support: %s\n' "$(command -v "$MPIRUN")" "$(cuda_aware "$MPIRUN")"
+if [ "$CA" = 1 ]; then
+    printf '  gpuaware runs: %s with %s, CUDA support: %s\n' "$CA_BIN" "$CA_MPIRUN" "$(cuda_aware "$CA_MPIRUN")"
 fi
+GA_OK=0; [ "$(cuda_aware "$CA_MPIRUN")" = true ] && GA_OK=1
 command -v ucx_info >/dev/null && ucx_info -d 2>/dev/null | grep -E 'Transport: (cuda|gdr)' | sort -u | sed 's/^#/ /'
 
 hr "3. Build"
@@ -69,7 +80,8 @@ hr "3. Build"
 make -B -j"$(nproc)" ARCH="$CC" cg_solver_mgpu_stencil_3d > "$OUT/build.log" 2>&1 \
     || { echo "  build FAILED, see $OUT/build.log"; exit 1; }
 ldd "$BIN" | grep -E 'libmpi\.so|libnccl|libnvshmem' | sed 's/^\s*/  links /'
-ldd "$BIN" | grep -q libnccl || echo "  built WITHOUT NCCL"
+HAS_NCCL=1; ldd "$BIN" | grep -q libnccl || { HAS_NCCL=0; echo "  built WITHOUT NCCL"; }
+HAS_NVSHMEM=1; ldd "$BIN" | grep -q libnvshmem || { HAS_NVSHMEM=0; echo "  built WITHOUT NVSHMEM"; }
 
 # 27-point operator built in memory from a header-only file
 ROWS=$((N * N * N)); K=$((3 * N - 2))
@@ -86,8 +98,10 @@ for v in NVSHMEM_REMOTE_TRANSPORT NVSHMEM_SYMMETRIC_SIZE CUDA_MPS_PIPE_DIRECTORY
     [ -n "${!v:-}" ] && ENVV+=(-x "$v")
 done
 
-run() {  # $1 ranks, $2 backend, $3 dots ("overlap": host dots, overlap solver) -> $OUT/r$1_$2_$3.log
-    local mode=(--dots="$3") mps=()
+run() {  # $1 ranks, $2 backend, $3 dots ("overlap": host dots, overlap solver), $4 log suffix
+    local mode=(--dots="$3") mps=() bin="$BIN" mpirun="$MPIRUN"
+    # gpuaware, and the staged reference it is compared with, come from the CUDA-aware build
+    if [ "$2" = gpuaware ] || [ "${4:-}" = _ca ]; then bin="$CA_BIN"; mpirun="$CA_MPIRUN"; fi
     # Under MPS every run, reference included, gets the same share of the GPU: the share
     # changes how many SMs cuBLAS sees, hence the last bits of its dot products
     [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && mps=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / $1)))
@@ -96,8 +110,8 @@ run() {  # $1 ranks, $2 backend, $3 dots ("overlap": host dots, overlap solver) 
         fused) mode=(--fused-halo) ;;                         # halo written by the p update
         fused_device) mode=(--fused-halo --dots=device) ;;
     esac
-    "$MPIRUN" --oversubscribe "${ENVV[@]}" "${mps[@]}" -np "$1" "$BIN" "$MTX" --stencil=27 --comm="$2" \
-        "${mode[@]}" --max-iters="$ITERS" --verbose=3 > "$OUT/r$1_$2_$3.log" 2>&1
+    "$mpirun" --oversubscribe "${ENVV[@]}" "${mps[@]}" -np "$1" "$bin" "$MTX" --stencil=27 --comm="$2" \
+        "${mode[@]}" --max-iters="$ITERS" --verbose=3 > "$OUT/r$1_$2_$3${4:-}.log" 2>&1
 }
 
 # Compares two hex traces: prints IDENTICAL, or the max relative deviation of r.r
@@ -122,9 +136,22 @@ for np in $RANKS; do
         echo "  $np ranks: only $devs distinct GPUs used -- rank placement is wrong, stop here"; FAIL=1
     fi
     for be in staged gpuaware nccl nvshmem; do
+        ref="$OUT/r${np}_staged_host.log"
         # overlap: the overlap solver must reproduce the synchronous reference bit for bit
         modes="host device overlap"
         [ "$be" = nvshmem ] && modes="$modes fused fused_device"
+        skip=""
+        [ "$be" = gpuaware ] && [ "$GA_OK" = 0 ] && skip="needs a CUDA-aware MPI"
+        [ "$be" = nccl ] && [ "$HAS_NCCL" = 0 ] && skip="built without NCCL"
+        [ "$be" = nvshmem ] && [ "$HAS_NVSHMEM" = 0 ] && skip="built without NVSHMEM"
+        if [ -n "$skip" ]; then
+            printf '  %-6s %-9s %-7s SKIP (%s)\n' "$np" "$be" "all" "$skip"; continue
+        fi
+        if [ "$be" = gpuaware ] && [ "$CA" = 1 ]; then
+            # its own staged reference: two MPI libraries may sum the host dots in different orders
+            run "$np" staged host _ca || { echo "  $np ranks: CUDA-aware reference failed, see $OUT/r${np}_staged_host_ca.log"; FAIL=1; continue; }
+            ref="$OUT/r${np}_staged_host_ca.log"
+        fi
         for dots in $modes; do
             [ "$be/$dots" = staged/host ] && continue
             log="$OUT/r${np}_${be}_${dots}.log"
@@ -137,7 +164,7 @@ for np in $RANKS; do
                 fi
                 continue
             fi
-            res=$(compare "$OUT/r${np}_staged_host.log" "$log")
+            res=$(compare "$ref" "$log")
             verdict=PASS
             case "$res" in
                 IDENTICAL) ;;

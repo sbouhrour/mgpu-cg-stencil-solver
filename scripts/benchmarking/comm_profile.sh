@@ -27,6 +27,10 @@ ITERS="${ITERS:-20}"
 BIN=./bin/cg_solver_mgpu_stencil_3d
 AMGX_BIN=./external/benchmarks/amgx/amgx_cg_solver_mgpu
 MPIRUN="${MPIRUN:-mpirun}"
+# AmgX MPI_DIRECT needs a CUDA-aware MPI: the separate build of comm_setup.sh when present
+CA_AMGX_BIN="${CUDA_AWARE_AMGX_BIN:-./external/benchmarks/amgx/amgx_cg_solver_mgpu_cuda_aware}"
+CA_MPIRUN="${CUDA_AWARE_MPIRUN:-}"
+if [ -z "$CA_MPIRUN" ] || [ ! -x "$CA_AMGX_BIN" ]; then CA_AMGX_BIN=$AMGX_BIN; CA_MPIRUN=$MPIRUN; fi
 ROOT=()
 [ "$(id -u)" = 0 ] && ROOT=(--allow-run-as-root)
 for v in NVSHMEM_REMOTE_TRANSPORT NVSHMEM_SYMMETRIC_SIZE; do
@@ -37,13 +41,20 @@ MTX="matrix/stencil3d_27pt_${N}_stub.mtx"
   printf '%d %d 0\n' $((N * N * N)) $((N * N * N)); } > "$MTX"
 
 hr() { printf '\n===== %s =====\n' "$1"; }
+pin_args() {  # $1 mpirun -> options binding rank i to the cores listed for it in RANKFILE
+    [ -n "${RANKFILE:-}" ] || return 0
+    if "$1" --version 2>/dev/null | grep -qE 'Open MPI\) [5-9]'; then echo "--map-by rankfile:file=$RANKFILE"
+    else echo "--rankfile $RANKFILE"; fi
+}
+
 
 # nsys on every rank (the output name carries the rank); the solver runs its usual protocol with
 # few solves, so the capture stays small. A CUDA graph is traced node by node: by default nsys records
 # a replayed graph as one opaque range, and the per-iteration kernel counts would read zero.
-profile() {  # $1 name, $2 executable, rest: arguments
-    local name=$1 exe=$2; shift 2
-    "$MPIRUN" "${ROOT[@]}" -np "$NP" nsys profile --trace=cuda,nvtx,osrt --cuda-graph-trace=node \
+profile() {  # $1 name, $2 executable, rest: arguments (RUN: the mpirun, default MPIRUN)
+    local name=$1 exe=$2 run="${RUN:-$MPIRUN}"; shift 2
+    # shellcheck disable=SC2046
+    "$run" "${ROOT[@]}" $(pin_args "$run") -np "$NP" nsys profile --trace=cuda,nvtx,osrt --cuda-graph-trace=node \
         --force-overwrite=true \
         -o "$OUT/nsys/${name}_r%q{OMPI_COMM_WORLD_RANK}" "$exe" "$MTX" "$@" \
         > "$OUT/nsys/$name.log" 2>&1 || { echo "  $name: FAILED, see $OUT/nsys/$name.log"; return; }
@@ -62,7 +73,7 @@ profile nvshmem_fused "$BIN" "${common[@]}" --comm=nvshmem --dots=device --check
 
 hr "3. AmgX: where does the halo go?"
 profile amgx_mpi "$AMGX_BIN" --stencil=27 --communicator=MPI --max-iters="$ITERS" --tol=1e-300 --runs=3
-profile amgx_mpidirect "$AMGX_BIN" --stencil=27 --communicator=MPI_DIRECT --max-iters="$ITERS" \
+RUN="$CA_MPIRUN" profile amgx_mpidirect "$CA_AMGX_BIN" --stencil=27 --communicator=MPI_DIRECT --max-iters="$ITERS" \
     --tol=1e-300 --runs=3
 
 hr "Summary per iteration (rank 0)"
