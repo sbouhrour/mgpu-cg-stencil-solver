@@ -38,6 +38,11 @@ typedef struct {
     int verbose;                 ///< Verbosity level (0=silent, 1=summary, 2=per-iter)
     int enable_detailed_timers;  ///< Enable timing breakdown
     int enable_overlap;          ///< Enable compute-communication overlap
+    struct CommContext* comm;    ///< Communication backend (3D sync solvers); NULL = staged MPI
+    int dots_device;             ///< Keep CG scalars on the device (3D sync solvers)
+    int check_every;             ///< Device dots: test convergence every k iterations (>= 1)
+    int use_graph;               ///< Replay check_every iterations as one CUDA graph (nccl, device)
+    int fused_halo;              ///< nvshmem: the p update stores the neighbours' halos itself
 } CGConfigMultiGPU;
 
 /**
