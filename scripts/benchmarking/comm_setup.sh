@@ -103,7 +103,8 @@ NCCL_TESTS_COMMIT=b4d5bee   # nccl-tests 2.20.0
 NT="$PREFIX/src/nccl-tests"
 if [ ! -x "$NT/build/all_reduce_perf" ]; then
     [ -d "$NT/.git" ] || git clone -q https://github.com/NVIDIA/nccl-tests.git "$NT"
-    git -C "$NT" fetch -q origin && git -C "$NT" checkout -q "$NCCL_TESTS_COMMIT"
+    if [ -f "$NT/.git/shallow" ]; then git -C "$NT" fetch -q --unshallow origin; else git -C "$NT" fetch -q origin; fi
+    git -C "$NT" checkout -q "$NCCL_TESTS_COMMIT"
     make -C "$NT" clean > /dev/null 2>&1 || true
     PATH=$CA_PATH make -C "$NT" -j"$J" MPI=1 MPI_HOME="$PREFIX" CUDA_HOME="$CUDA" \
         NVCC_GENCODE="-gencode=arch=compute_${CC},code=sm_${CC}" > "$PREFIX/logs/nccl-tests.log" 2>&1
