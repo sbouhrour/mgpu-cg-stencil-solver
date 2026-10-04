@@ -98,9 +98,14 @@ PATH=$CA_PATH LD_LIBRARY_PATH="$PREFIX/lib:$CUDA/lib64" ompi_info --parsable --a
     grep -m1 mpi_built_with_cuda_support:value || true
 
 stage "nccl-tests"
-if [ ! -x "$PREFIX/src/nccl-tests/build/all_reduce_perf" ]; then
-    git clone -q --depth 1 https://github.com/NVIDIA/nccl-tests.git "$PREFIX/src/nccl-tests"
-    PATH=$CA_PATH make -C "$PREFIX/src/nccl-tests" -j"$J" MPI=1 MPI_HOME="$PREFIX" CUDA_HOME="$CUDA" \
+# Pinned: nccl-tests 2.21.0 (a3d4589) uses NCCL_WIN_GIN_ONLY, which NCCL 2.31.2 does not declare
+NCCL_TESTS_COMMIT=b4d5bee   # nccl-tests 2.20.0
+NT="$PREFIX/src/nccl-tests"
+if [ ! -x "$NT/build/all_reduce_perf" ]; then
+    [ -d "$NT/.git" ] || git clone -q https://github.com/NVIDIA/nccl-tests.git "$NT"
+    git -C "$NT" fetch -q origin && git -C "$NT" checkout -q "$NCCL_TESTS_COMMIT"
+    make -C "$NT" clean > /dev/null 2>&1 || true
+    PATH=$CA_PATH make -C "$NT" -j"$J" MPI=1 MPI_HOME="$PREFIX" CUDA_HOME="$CUDA" \
         NVCC_GENCODE="-gencode=arch=compute_${CC},code=sm_${CC}" > "$PREFIX/logs/nccl-tests.log" 2>&1
 fi
 
