@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs, on a rented multi-GPU node, everything the communication study needs: CUDA 12.8 (the
 # toolkit, cuBLAS and cuSPARSE the published results were measured with), NCCL 2.31.2, NVSHMEM
-# 3.7.2, the system Open MPI, UCX 1.18.1 + Open MPI 5.0.8 built with CUDA, nccl-tests, and AmgX
+# 3.7.2, Nsight Systems, the system Open MPI, UCX 1.18.1 + Open MPI 5.0.8 built with CUDA, nccl-tests, and AmgX
 # (commit cc1cebd). Then builds the solver and the AmgX driver twice and writes two environment
 # files:
 #
@@ -53,6 +53,7 @@ pkg_ok libnccl2 "$NCCL_PKG" || PKGS+=("libnccl2=$NCCL_PKG" "libnccl-dev=$NCCL_PK
 pkg_ok libnvshmem3-static-cuda-12 3.7.2-1 ||
     PKGS+=(libnvshmem3-cuda-12=3.7.2-1 libnvshmem3-dev-cuda-12=3.7.2-1 libnvshmem3-static-cuda-12=3.7.2-1)
 command -v mpicxx >/dev/null || PKGS+=(openmpi-bin libopenmpi-dev)
+[ -x "$CUDA/bin/nsys" ] || PKGS+=("cuda-nsight-systems-${CUDA_VER/./-}")     # comm_profile.sh
 if [ "${#PKGS[@]}" -gt 0 ]; then
     # Images often declare NVIDIA's CUDA repository already; a second declaration with another key
     # makes apt refuse every source, so the keyring is only installed when no source names it
