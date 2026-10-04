@@ -77,6 +77,7 @@ RUN="$CA_MPIRUN" profile amgx_mpidirect "$CA_AMGX_BIN" --stencil=27 --communicat
     --tol=1e-300 --runs=3
 
 hr "Summary per iteration (rank 0)"
+command -v nsys > /dev/null || echo "  nsys not found: no timelines (comm_setup.sh installs it)"
 python3 scripts/benchmarking/comm_nsys_summary.py --iters "$ITERS" "$OUT"/nsys/*_r0.sqlite | tee "$OUT/nsys/summary.txt"
 
 hr "4. ncu: axpby with scalars by value vs read from device memory (1 GPU)"
@@ -87,7 +88,8 @@ if command -v ncu > /dev/null; then
             --csv "$BIN" "$MTX" --stencil=27 --dots="$mode" --max-iters=10 --runs=3 \
             > "$OUT/ncu/axpby_dots_$mode.csv" 2> "$OUT/ncu/axpby_dots_$mode.log" \
             && echo "  dots=$mode: done" \
-            || echo "  dots=$mode: FAILED (counters denied?), see $OUT/ncu/axpby_dots_$mode.log"
+            || echo "  dots=$mode: FAILED: $(grep -a -h -m1 '==ERROR==' "$OUT/ncu/axpby_dots_$mode".{csv,log} \
+                    2>/dev/null | head -n 1 | cut -c1-120)  (see $OUT/ncu/axpby_dots_$mode.csv)"
     done
 else
     echo "  ncu not found"
