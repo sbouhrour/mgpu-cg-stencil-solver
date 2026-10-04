@@ -26,11 +26,11 @@ NAME = re.compile(r"(\d+)pt_N(\d+)_np(\d+)_(\w+?)_(host|device)(?:_(\w+))?\.json
 LINES = [
     ("staged/host", "MPI, host staging (synchronous)", "#A23B72", "-o"),
     ("staged/host/overlap", "MPI, host staging + overlap (published)", "#A23B72", "--o"),
-    ("gpuaware/host", "CUDA-aware MPI", "#F18F01", "-s"),
+    ("gpuaware/host", "CUDA-aware MPI (Open MPI 5.0.8 + UCX)", "#F18F01", "-s"),
     ("nccl/device/graph", "NCCL, device dots, CUDA graph", "#2E86AB", "-D"),
     ("nvshmem/device/fused", "NVSHMEM, halo fused into the p update", "#3B8B5A", "-^"),
     ("amgx/host/mpi", "AmgX (MPI)", "#7F7F7F", "-v"),
-    ("amgx/host/mpidirect", "AmgX (MPI_DIRECT)", "#7F7F7F", "--v"),
+    ("amgx/host/mpidirect", "AmgX (MPI_DIRECT, Open MPI 5.0.8 + UCX)", "#7F7F7F", "--v"),
 ]
 
 

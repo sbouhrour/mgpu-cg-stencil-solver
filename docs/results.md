@@ -4,6 +4,8 @@ All benchmark results for the multi-GPU CG stencil solver. Measured on 8× NVIDI
 
 For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) (2D, kernel breakdown, roofline) and [`profiling-3d.md`](profiling-3d.md) (3D, compute-communication overlap). For measurement methodology, see [`methodology.md`](methodology.md).
 
+For the halo exchange backends (host staging, CUDA-aware MPI, NCCL, NVSHMEM), see [`communication.md`](communication.md).
+
 ## 2D: Strong Scaling (Custom CG)
 
 **Multi-GPU Strong Scaling** on 8× NVIDIA A100-SXM4-80GB
