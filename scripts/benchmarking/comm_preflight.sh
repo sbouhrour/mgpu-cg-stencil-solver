@@ -57,6 +57,11 @@ if [ "$NGPU" -gt 1 ]; then
     else
         echo "  all GPU pairs NVLink-connected"
     fi
+    if awk -v n="$NGPU" '/^GPU[0-9]/{for(i=2;i<=n+1;i++) if($i == "SYS") bad=1} END{exit !bad}' "$OUT/topo.txt"; then
+        echo "  WARNING: some GPU pairs are connected only across the CPU interconnect (SYS). Peer-to-peer"
+        echo "           there may hang even when the driver reports it supported: seen with NCCL P2P/CUMEM"
+        echo "           between two A100 on different sockets. NCCL_P2P_DISABLE=1 makes NCCL use host memory."
+    fi
 fi
 
 hr "2. Toolchain"
@@ -110,6 +115,8 @@ run() {  # $1 ranks, $2 backend, $3 dots ("overlap": host dots, overlap solver),
         fused) mode=(--fused-halo) ;;                         # halo written by the p update
         fused_device) mode=(--fused-halo --dots=device) ;;
     esac
+    # A hung transport must fail this check, not stall it: each run gets RUN_TIMEOUT seconds
+    timeout -s KILL "${RUN_TIMEOUT:-300}" \
     "$mpirun" --oversubscribe "${ENVV[@]}" "${mps[@]}" -np "$1" "$bin" "$MTX" --stencil=27 --comm="$2" \
         "${mode[@]}" --max-iters="$ITERS" --verbose=3 > "$OUT/r$1_$2_$3${4:-}.log" 2>&1
 }
@@ -155,9 +162,12 @@ for np in $RANKS; do
         for dots in $modes; do
             [ "$be/$dots" = staged/host ] && continue
             log="$OUT/r${np}_${be}_${dots}.log"
-            if ! run "$np" "$be" "$dots"; then
+            run "$np" "$be" "$dots"; rc=$?
+            if [ "$rc" != 0 ]; then
                 # -a: progress lines end in carriage returns, which make grep call the log binary
-                if grep -aqE 'built without NCCL|built without NVSHMEM|needs a CUDA-aware MPI' "$log"; then
+                if [ "$rc" = 137 ]; then
+                    printf '  %-6s %-9s %-7s FAIL (no result within %ss: hung, see %s)\n' "$np" "$be" "$dots" "${RUN_TIMEOUT:-300}" "$log"; FAIL=1
+                elif grep -aqE 'built without NCCL|built without NVSHMEM|needs a CUDA-aware MPI' "$log"; then
                     printf '  %-6s %-9s %-7s SKIP (%s)\n' "$np" "$be" "$dots" "$(grep -a -m1 -oE 'built without NCCL|built without NVSHMEM|needs a CUDA-aware MPI' "$log")"
                 else
                     printf '  %-6s %-9s %-7s FAIL (run error, see %s)\n' "$np" "$be" "$dots" "$log"; FAIL=1

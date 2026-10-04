@@ -21,6 +21,7 @@
 #         SET=core ...       only what the README figure and main table need (see below)
 #         RUNS=5 ...         timed solves per configuration (default: the solver's 10)
 #         RANKFILE=f ...     bind each rank to its GPU's cores (make_rankfile.sh writes f)
+#         RUN_TIMEOUT=s ...  a configuration with no result after s seconds fails (default 1800)
 #
 # Two MPI builds (comm_setup.sh): gpuaware and AmgX MPI_DIRECT need a CUDA-aware MPI and run from
 # bin/cuda-aware and amgx_cg_solver_mgpu_cuda_aware with CUDA_AWARE_MPIRUN; every other
@@ -172,7 +173,8 @@ for cfg in "${CONFIGS[@]}"; do
     [ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && envx+=(-x CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$((100 / np)))
     start=$(date +%s)
     # shellcheck disable=SC2046
-    if "$run" "${ROOT[@]}" $(pin_args "$run") "${envx[@]}" -np "$np" "$exe" "$(stub "$st" "$n")" "${args[@]}" \
+    if timeout -s KILL "${RUN_TIMEOUT:-1800}" \
+       "$run" "${ROOT[@]}" $(pin_args "$run") "${envx[@]}" -np "$np" "$exe" "$(stub "$st" "$n")" "${args[@]}" \
          > "$OUT/$name.log" 2>&1; then
         printf '  %-40s %4ss  %s\n' "$name" $(($(date +%s) - start)) \
             "$(grep -a -m1 -iE 'Time \(median\)|median' "$OUT/$name.log" | tr -s ' ')"
