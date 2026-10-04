@@ -68,7 +68,9 @@ endif
 HAS_NCCL := $(if $(wildcard $(NCCL_INC)/nccl.h),1,0)
 ifeq ($(HAS_NCCL),1)
     NCCL_CFLAGS := -DHAS_NCCL $(if $(NCCL_HOME),-I$(NCCL_INC))
-    NCCL_LDFLAGS := $(if $(NCCL_LIB),-L$(NCCL_LIB) -Wl$(comma)-rpath$(comma)$(NCCL_LIB)) -lnccl
+    # No rpath to a system directory: it is searched by default anyway, and as an rpath it would
+    # precede the MPI library directory of a CUDA-aware build (both hold a libmpi.so.40)
+    NCCL_LDFLAGS := $(if $(filter-out /usr/lib/x86_64-linux-gnu /usr/lib /usr/lib64,$(NCCL_LIB)),-L$(NCCL_LIB) -Wl$(comma)-rpath$(comma)$(NCCL_LIB)) -lnccl
 endif
 
 # Optional NVSHMEM backend (--comm=nvshmem), from NVSHMEM_HOME. Both the plain layout
