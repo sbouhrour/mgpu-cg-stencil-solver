@@ -241,11 +241,17 @@ printf 'd2h_concurrent_pinned=%s\n' "$D2H_PIN_VERDICT" >> "$OUT/hw_info.txt"
 
 hr "Verdict"
 if [ "$NCU_LIKELY" = 1 ] && command -v ncu >/dev/null; then
-    if ncu --metrics dram__bytes.sum ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_128.mtx \
-         --stencil=27 --max-iters=2 --runs=3 2>&1 | grep -qi ERR_NVGPUCTRPERM; then
+    # Decided from ncu's own exit status and output, written to a file first: "ncu ... | grep -q"
+    # under pipefail reports ncu's SIGPIPE, not grep's match, and read a refusal as success
+    ncu --metrics dram__bytes.sum ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_128.mtx \
+        --stencil=27 --max-iters=2 --runs=3 > "$OUT/ncu_check.txt" 2>&1
+    NCU_RC=$?
+    if grep -qi ERR_NVGPUCTRPERM "$OUT/ncu_check.txt"; then
         echo "  ncu:        DENIED by host -- timings and nsys only"
-    else
+    elif [ "$NCU_RC" = 0 ] && grep -q dram__bytes.sum "$OUT/ncu_check.txt"; then
         echo "  ncu:        WORKS -- counters can be captured"
+    else
+        echo "  ncu:        FAILED (exit $NCU_RC, see $OUT/ncu_check.txt)"
     fi
 else
     echo "  ncu:        unavailable -- timings and nsys only"
