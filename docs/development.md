@@ -1,13 +1,10 @@
 # Development
 
-This guide is for contributors extending the solver: build system, adding new kernels or solvers, and running the test suite.
+This guide is for contributors extending the solver: build system, adding new kernels or solvers, and checking a change.
 
 ### Build System
 
-**Dual build approach** for flexibility:
-
-- **Makefile**: Primary build for CUDA/MPI binaries
-- **CMake**: Testing framework with Google Test
+The Makefile builds every binary (CUDA, and MPI when `mpic++` is in the `PATH`):
 
 ```bash
 # Release build (default)
@@ -19,10 +16,6 @@ make BUILD_TYPE=debug
 # Build specific targets
 make cg_solver_mgpu_stencil
 make generate_matrix
-
-# Run tests
-cd tests && mkdir build && cd build
-cmake .. && make && ./test_runner
 ```
 
 ### Adding Features
@@ -31,12 +24,15 @@ cmake .. && make && ./test_runner
 2. **New solver**: Add to `src/solvers/`, create entry point in `src/main/`
 3. **Performance metrics**: Extend `benchmark_stats_mgpu_partitioned.cu`
 
-### Testing
+### Checking a change
 
 ```bash
-# All tests
-./test_runner
-
-# Specific test suite
-./test_runner --gtest_filter="PartitionedSolver*"
+make
+./scripts/verify_reproduction.sh   # on a GPU node; AmgX checks run when AmgX is built
 ```
+
+`verify_reproduction.sh` compares counts, not times: iteration counts of the published cases, the
+in-memory operators against the Matrix Market files (`Sum(x)`), 1 rank against 2, and AmgX against the
+Custom CG. Its exit status is 0 only when every check passes. The CI
+(`.github/workflows/ci.yml`) has no GPU: it checks formatting, script syntax, the documentation build,
+and that every binary compiles with CUDA 11.8, 12.8 and 13.0.
