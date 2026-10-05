@@ -140,6 +140,8 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 
 ## 3D: Custom CG vs NVIDIA AmgX (27-point)
 
+At equal transport, the Custom CG solves the 3D 27-point system 1.1 to 1.3× faster than AmgX. The gap narrows as communication takes a larger share of the time: at 128³, 1.31× on 1 GPU and 1.07× on 8 GPUs; at 512³ on 8 GPUs, 1.11×. On 1 GPU, with no halo exchange, the gap is the computation alone (SpMV and vector operations); on several GPUs, both solvers send their halos through host memory.
+
 Both solvers run unpreconditioned CG to the same relative residual (1e-6, L2 norm, from x0 = 0 with b = 1) and take the same number of iterations in every case: 151 at 128³, 303 at 256³, 611 at 512³. Both exchange halos through host memory (Custom CG: synchronous solver, host-staged halo; AmgX: `MPI` communicator, Open MPI 4.1.6 without CUDA support). Time to solution, median of 10 solves.
 
 **Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink NV12) · CUDA 12.8 · Driver 580.65.06 · AmgX v2.5.0 · ranks bound to the CPU cores local to their GPU · measured on 5 October 2026 at commit `42c10ad`
