@@ -142,28 +142,28 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 
 ## 3D: Custom CG vs NVIDIA AmgX (27-point)
 
-At equal transport, the Custom CG solves the 3D 27-point system 1.1 to 1.3× faster than AmgX. The gap narrows as communication takes a larger share of the time: at 128³, 1.31× on 1 GPU and 1.07× on 8 GPUs; at 512³ on 8 GPUs, 1.11×. On 1 GPU, with no halo exchange, the gap is the computation alone (SpMV and vector operations); on several GPUs, both solvers send their halos through host memory.
+At equal transport, the Custom CG synchronous solver solves the 3D 27-point system 1.09× to 1.31× faster than AmgX. The gap narrows as communication takes a larger share of the time: at 128³, 1.31× on 1 GPU and 1.09× on 8 GPUs. On 1 GPU, with no halo exchange, the gap is the computation alone (SpMV and vector operations); on several GPUs, both solvers send their halos through host memory. With compute-communication overlap, still through host memory, the Custom CG is 1.19× to 1.78× faster than AmgX. With NCCL, device dot products and a CUDA graph, a different transport from AmgX's, it is 1.27× to 1.69× faster. The fastest Custom configuration depends on the size: NCCL at 128³ on 8 GPUs (1.48×), overlap at 256³ on 8 GPUs (1.78×), the two within 0.3% at 512³ on 8 GPUs (1.37×).
 
-Both solvers run unpreconditioned CG to the same relative residual (1e-6, L2 norm, from x0 = 0 with b = 1) and take the same number of iterations in every case: 151 at 128³, 303 at 256³, 611 at 512³. Both exchange halos through host memory (Custom CG: synchronous solver, host-staged halo; AmgX: `MPI` communicator, Open MPI 4.1.6 without CUDA support). Time to solution, median of 10 solves.
+All runs solve unpreconditioned CG to the same relative residual (1e-6, L2 norm, from x0 = 0 with b = 1). The synchronous and overlap solvers and AmgX take the same number of iterations: 151 at 128³, 303 at 256³, 611 at 512³. The NCCL configuration tests convergence every 10 iterations (`--check-every=10`), so it stops after 160, 310 and 620; its time includes them. AmgX uses its `MPI` communicator (Open MPI 4.1.6 without CUDA support); its `MPI_DIRECT` communicator is slower on this node (see [Communication Backends](communication.md)). Time to solution, median of 10 solves.
 
-**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink NV12) · CUDA 12.8 · Driver 580.65.06 · AmgX v2.5.0 · ranks bound to the CPU cores local to their GPU · measured on 5 October 2026 at commit `42c10ad`
+**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink NV12) · CUDA 12.8 · Driver 580.65.06 · AmgX v2.5.0 · ranks bound to the CPU cores local to their GPU · measured on 5 October 2026 at commit `ba170c8`
 
-| Grid | GPUs | Custom CG | NVIDIA AmgX | AmgX / Custom |
-|------|-----:|----------:|------------:|--------------:|
-| 128³ (2.1M unknowns) | 1 | 92.8 ms | 121.7 ms | 1.31× |
-| | 2 | 65.1 ms | 83.4 ms | 1.28× |
-| | 4 | 54.5 ms | 62.2 ms | 1.14× |
-| | 8 | 49.6 ms | 53.3 ms | 1.07× |
-| 256³ (16.8M unknowns) | 1 | 1330.6 ms | 1717.5 ms | 1.29× |
-| | 2 | 760.2 ms | 965.2 ms | 1.27× |
-| | 4 | 462.5 ms | 574.0 ms | 1.24× |
-| | 8 | 328.6 ms | 375.4 ms | 1.14× |
-| 512³ (134M unknowns) | 1 | 21995.6 ms | n/a | |
-| | 2 | 11764.9 ms | n/a | |
-| | 4 | 6637.6 ms | 7637.4 ms | 1.15× |
-| | 8 | 3992.9 ms | 4438.1 ms | 1.11× |
+| Grid | GPUs | NVIDIA AmgX | Custom, synchronous | Custom, overlap | Custom, NCCL + CUDA graph |
+|------|-----:|------------:|--------------------:|----------------:|--------------------------:|
+| 128³ (2.1M unknowns) | 1 | 121.5 ms | 92.5 ms (1.31×) | | |
+| | 2 | 83.3 ms | 65.2 ms (1.28×) | 59.6 ms (1.40×) | 59.7 ms (1.40×) |
+| | 4 | 61.8 ms | 54.2 ms (1.14×) | 43.5 ms (1.42×) | 43.7 ms (1.41×) |
+| | 8 | 53.3 ms | 48.7 ms (1.09×) | 44.7 ms (1.19×) | 36.0 ms (1.48×) |
+| 256³ (16.8M unknowns) | 1 | 1716.1 ms | 1330.6 ms (1.29×) | | |
+| | 2 | 968.5 ms | 755.6 ms (1.28×) | 708.3 ms (1.37×) | 718.1 ms (1.35×) |
+| | 4 | 566.4 ms | 458.7 ms (1.23×) | 381.3 ms (1.49×) | 391.1 ms (1.45×) |
+| | 8 | 382.0 ms | 324.8 ms (1.18×) | 214.6 ms (1.78×) | 226.2 ms (1.69×) |
+| 512³ (134M unknowns) | 1 | n/a | 21987.4 ms | | |
+| | 2 | n/a | 11757.4 ms | 11326.3 ms | 11513.9 ms |
+| | 4 | 7639.5 ms | 6631.8 ms (1.15×) | 5947.5 ms (1.28×) | 5994.5 ms (1.27×) |
+| | 8 | 4412.9 ms | 3985.1 ms (1.11×) | 3228.3 ms (1.37×) | 3218.6 ms (1.37×) |
 
-<sub>512³ on 1 rank: AmgX's distributed matrix indexes local entries with 32-bit integers, and the rank holds 3.6 × 10⁹ entries. On 2 ranks (1.8 × 10⁹ local entries), the AmgX matrix upload stopped with "CUDA kernel launch error". Raw data: [`data/amgx_3d_a100/`](data/amgx_3d_a100/). Reproduce: `./scripts/benchmarking/benchmark_amgx.sh <header-only file> --stencil=27` for AmgX, `cg_solver_mgpu_stencil_3d <header-only file> --stencil=27` for the Custom CG.</sub>
+<sub>AmgX / Custom in brackets. Overlap and NCCL run on 2 GPUs or more. 512³ on 1 rank: AmgX's distributed matrix indexes local entries with 32-bit integers, and the rank holds 3.6 × 10⁹ entries. On 2 ranks (1.8 × 10⁹ local entries), the AmgX matrix upload stopped with "CUDA kernel launch error". Raw data: [`data/amgx_3d_a100/`](data/amgx_3d_a100/). Commands: [Reproducing](reproducing.md).</sub>
 
 ## 3D: 27-Point SpMV vs cuSPARSE CSR (single GPU)
 

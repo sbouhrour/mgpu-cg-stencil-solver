@@ -128,7 +128,7 @@ See [`results.md`](docs/results.md#2d-custom-cg-vs-nvidia-amgx) for the full com
 - **Same convergence**: Both solvers converge in 14 iterations with identical tolerance
 - **Similar scaling efficiency**: 87-94% for both implementations
 
-**3D (27-point)**: at equal transport (Custom CG synchronous solver; both send halos through host memory), the Custom CG is 1.07× to 1.31× faster than AmgX from 128³ to 512³ on 1 to 8 GPUs, with the same iteration count in every case. The gap narrows as communication takes a larger share of the time. See [`results.md`](docs/results.md#3d-custom-cg-vs-nvidia-amgx-27-point).
+**3D (27-point)**: at equal transport (Custom CG synchronous solver; both send halos through host memory), the Custom CG is 1.09× to 1.31× faster than AmgX from 128³ to 512³ on 1 to 8 GPUs, with the same iteration count in every case; the gap narrows as communication takes a larger share of the time. With compute-communication overlap, still through host memory, 1.19× to 1.78×. With NCCL, device dot products and a CUDA graph, a different transport from AmgX's, 1.27× to 1.69×. See [`results.md`](docs/results.md#3d-custom-cg-vs-nvidia-amgx-27-point).
 
 **Why the performance difference?**
 

@@ -209,20 +209,26 @@ mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --ste
 
 Check: 1-GPU sync median (22016 ms) divided by 8-GPU overlap median (3110 ms) gives 7.08×, and 7.08 / 8 = 88%.
 
-### 3D CG vs AmgX at equal transport: 1.07× to 1.31× (27-point, 128³ to 512³)
+### 3D CG vs AmgX: 1.09× to 1.31× at equal transport, up to 1.78× with overlap (27-point, 128³ to 512³)
 
-[Results](results.md#3d-custom-cg-vs-nvidia-amgx-27-point) · requires the AmgX build
+[Results](results.md#3d-custom-cg-vs-nvidia-amgx-27-point) · requires the AmgX build; the NCCL runs need the
+toolchain of [Communication Backends](communication.md) (`comm_setup.sh`, then `source /opt/comm/env.sh`)
 
 ```bash
 for n in 128 256 512; do echo "% STENCIL_GRID_SIZE $n" > matrix/stencil3d_27pt_$n.mtx; done
 for n in 128 256 512; do for np in 1 2 4 8; do
   mpirun -np $np ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_$n.mtx --stencil=27
+done; for np in 2 4 8; do
+  mpirun -np $np ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_$n.mtx --stencil=27 --overlap
+  mpirun -np $np ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_$n.mtx --stencil=27 \
+      --comm=nccl --dots=device --graph --check-every=10
 done; done
 for n in 128 256 512; do ./scripts/benchmarking/benchmark_amgx.sh matrix/stencil3d_27pt_$n.mtx --stencil=27; done
 ```
 
-Check: both solvers converge in 151, 303 and 611 iterations; at 256³ on 8 GPUs, Custom CG 328.6 ms against AmgX
-375.4 ms (1.14×). AmgX does not run 512³ on 1 or 2 ranks.
+Check: AmgX, the synchronous and the overlap solvers converge in 151, 303 and 611 iterations (NCCL with
+`--check-every=10`: 160, 310, 620); at 256³ on 8 GPUs, AmgX 382.0 ms against 324.8 ms (synchronous, 1.18×),
+214.6 ms (overlap, 1.78×) and 226.2 ms (NCCL, 1.69×). AmgX does not run 512³ on 1 or 2 ranks.
 
 ### 27-point SpMV vs cuSPARSE: 1.62× (256³, cuSPARSE of CUDA 12.8)
 
