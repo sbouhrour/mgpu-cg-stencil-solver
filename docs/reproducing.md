@@ -224,6 +224,21 @@ echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx           # 3D, 2
 
 A full file (`./bin/generate_matrix`, `generate_matrix_3d`, `generate_matrix_3d_27pt`) is still read as before; the 27-point solver reads only its header.
 
+### Communication backends: NCCL 1.45× over host staging (27-point, 128³, 8 GPUs)
+
+[Communication Backends](communication.md#4-results)
+
+```bash
+./scripts/benchmarking/comm_setup.sh && source /opt/comm/env.sh   # default and CUDA-aware builds
+./scripts/benchmarking/rental_preflight.sh                         # node checks, writes out/rankfile
+export RANKFILE=$PWD/out/rankfile                                  # one rank per GPU, on its local cores
+./scripts/benchmarking/comm_preflight.sh                           # bit-exact check of every backend
+SET=core RUNS=5 ./scripts/benchmarking/comm_matrix.sh              # time per iteration, all backends
+```
+
+The setup, the MPI library each backend runs with, and the rank placement are described in
+[`communication.md`](communication.md#3-measurement-setup).
+
 ## Manual build and run
 
 For understanding what the script does under the hood:
