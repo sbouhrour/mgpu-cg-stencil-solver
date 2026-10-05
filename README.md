@@ -300,8 +300,7 @@ behind useful computation.
 │   └── io/                         # Matrix I/O
 ├── include/                        # Header files
 ├── docs/                           # Documentation & pre-generated figures
-├── external/benchmarks/amgx/       # NVIDIA AmgX comparison
-└── tests/                          # Unit tests (Google Test)
+└── external/benchmarks/amgx/       # NVIDIA AmgX comparison
 ```
 
 ---
