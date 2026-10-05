@@ -1,446 +1,120 @@
-name: Build & Smoke Tests
+name: Build & Checks
 
-# TRIGGERS: Remote execution on GitHub servers (no GPU)
+# GitHub-hosted runners have no GPU: this workflow checks formatting, script syntax, the
+# documentation build, and that every binary of the Makefile compiles and links with each
+# supported CUDA toolkit. GPU runs are checked by scripts/verify_reproduction.sh on a GPU node.
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, next]
   pull_request:
-    branches: [ main ]
+    branches: [main, next]
+  workflow_dispatch:
 
-env:
-  BUILD_TYPE: Release
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # JOB 0: Code quality checks (formatting)
-  code-quality:
-    name: Code Quality
+  format:
+    name: Formatting (clang-format-14)
     runs-on: ubuntu-22.04
-
+    timeout-minutes: 10
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install clang-format-14
+        run: sudo apt-get update && sudo apt-get install -y clang-format-14
+      - name: Check formatting
+        run: |
+          find src include tests -type f \( -name '*.cu' -o -name '*.cuh' -o -name '*.h' \
+            -o -name '*.cpp' -o -name '*.hpp' \) -print0 |
+            xargs -0 clang-format-14 --style=file --dry-run --Werror
 
-    - name: Install clang-format
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang-format-14
-        clang-format-14 --version
-
-    - name: Check code formatting
-      run: |
-        echo "Checking C++/CUDA code formatting..."
-
-        # Find all source files
-        FILES=$(find src include -name "*.cu" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" 2>/dev/null)
-
-        if [ -z "$FILES" ]; then
-          echo "No source files found to check"
-          exit 0
-        fi
-
-        # Check formatting and capture diff
-        FORMATTING_ISSUES=""
-        for file in $FILES; do
-          DIFF=$(clang-format-14 --style=file "$file" | diff -u "$file" - 2>/dev/null || true)
-          if [ -n "$DIFF" ]; then
-            FORMATTING_ISSUES="$FORMATTING_ISSUES\n=== $file ===\n$DIFF"
-          fi
-        done
-
-        if [ -n "$FORMATTING_ISSUES" ]; then
-          echo "Formatting issues found:"
-          echo -e "$FORMATTING_ISSUES"
-          echo ""
-          echo "To fix, run: clang-format -i <file>"
-          echo "Or apply to all files: find src include -type f \( -name '*.cu' -o -name '*.h' -o -name '*.cpp' -o -name '*.hpp' \) -exec clang-format-14 -i {} +"
-          exit 1
-        fi
-
-        echo "All files are properly formatted"
-
-  # JOB 1: Build validation with both debug and release
-  build-validation:
-    name: Build (${{ matrix.build_type }}, CUDA ${{ matrix.cuda_version }})
+  scripts:
+    name: Script syntax
     runs-on: ubuntu-22.04
-    needs: code-quality
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Shell scripts parse
+        run: git ls-files -z '*.sh' | xargs -0 -n1 bash -n
+      - name: Python scripts compile
+        run: git ls-files -z '*.py' | xargs -0 python3 -m py_compile
 
+  docs:
+    name: Documentation build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Build the site, warnings as errors
+        run: |
+          pip install -r requirements-docs.txt
+          mkdocs build --strict
+
+  build:
+    name: Build (CUDA ${{ matrix.cuda }}, ${{ matrix.build_type }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
     strategy:
-      matrix:
-        build_type: [debug, release]
-        cuda_version: ['11.8.0', '12.2.0']
       fail-fast: false
-
+      matrix:
+        include:
+          - { cuda: '11.8', build_type: release }
+          - { cuda: '12.8', build_type: release }
+          - { cuda: '12.8', build_type: debug }
+          - { cuda: '13.0', build_type: release }
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-    - name: Install CUDA Toolkit
-      uses: Jimver/cuda-toolkit@v0.2.11
-      with:
-        cuda: ${{ matrix.cuda_version }}
-        method: 'network'
-        sub-packages: '["nvcc", "cudart", "libraries", "libraries-dev"]'
+      - name: Install the CUDA toolkit and Open MPI
+        run: |
+          V=$(echo "${{ matrix.cuda }}" | tr . -)
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-$V cuda-cudart-dev-$V cuda-cccl-$V cuda-nvtx-$V cuda-profiler-api-$V \
+            libcusparse-dev-$V libcublas-dev-$V openmpi-bin libopenmpi-dev
+          echo "/usr/local/cuda-${{ matrix.cuda }}/bin" >> "$GITHUB_PATH"
 
-    - name: Install OpenMPI
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y openmpi-bin libopenmpi-dev
-        mpirun --version
-        mpicc --version
-    
-    - name: Cache build artifacts
-      uses: actions/cache@v3
-      with:
-        path: |
-          build/
-          bin/
-        key: build-${{ matrix.build_type }}-${{ hashFiles('src/**/*.cu', 'include/**/*.h', 'Makefile') }}
-        restore-keys: |
-          build-${{ matrix.build_type }}-
-    
-    - name: Verify CUDA installation
-      run: |
-        echo "CUDA Toolkit verification:"
-        nvcc --version
-        echo "CUDA libraries verification:"
-        ldconfig -p | grep -E "(cusparse|cublas)" | head -5 || echo "Libraries in system paths"
+      - name: Check the toolkit
+        run: |
+          nvcc --version | grep -F "release ${{ matrix.cuda }}"
+          test -f "/usr/local/cuda-${{ matrix.cuda }}/include/nvtx3/nvToolsExt.h"
+          mpic++ --version
 
-        echo "CUDA installation paths:"
-        find /usr -name "cusparse.h" 2>/dev/null | head -5 || echo "cusparse.h not found in /usr"
-        find /usr/local -name "cusparse.h" 2>/dev/null | head -5 || echo "cusparse.h not found in /usr/local"
-        ls -la /usr/local/cuda*/include/ 2>/dev/null | head -10 || echo "No CUDA include directories found"
-        ls -la /usr/include/cuda* 2>/dev/null | head -5 || echo "No CUDA headers in /usr/include"
+      - name: Build every Makefile binary
+        run: make BUILD_TYPE=${{ matrix.build_type }} -j"$(nproc)"
 
-    - name: Install NVTX3 headers
-      run: |
-        echo "Installing NVTX3 headers from NVIDIA/NVTX GitHub release..."
-        CUDA_VER=$(echo "${{ matrix.cuda_version }}" | cut -d. -f1,2)
-        CUDA_INCLUDE="/usr/local/cuda-${CUDA_VER}/include"
+      - name: Check that all binaries exist and link to this toolkit
+        run: |
+          B=bin/${{ matrix.build_type }}
+          for exe in spmv_bench generate_matrix generate_matrix_3d generate_matrix_3d_27pt \
+                     cg_solver_mgpu_stencil cg_solver_mgpu_stencil_3d cg_solver_single_gpu_3d; do
+            test -x "$B/$exe" || { echo "missing: $B/$exe"; exit 1; }
+          done
+          ldd "$B/cg_solver_mgpu_stencil_3d" | grep -E 'libcusparse|libcublas|libcudart'
+          ldd "$B/cg_solver_mgpu_stencil_3d" | grep -E 'libcusparse' |
+            grep -F "/usr/local/cuda-${{ matrix.cuda }}/"
 
-        # Check if already present
-        if [ -f "${CUDA_INCLUDE}/nvtx3/nvToolsExt.h" ]; then
-          echo "NVTX3 headers already present at ${CUDA_INCLUDE}/nvtx3"
-          ls "${CUDA_INCLUDE}/nvtx3" | head -5
-          exit 0
-        fi
-
-        # Download and install from NVIDIA/NVTX release
-        wget -q https://github.com/NVIDIA/NVTX/archive/refs/tags/v3.1.0.tar.gz -O /tmp/nvtx3.tar.gz
-        tar xzf /tmp/nvtx3.tar.gz -C /tmp/
-        sudo mkdir -p "${CUDA_INCLUDE}/nvtx3"
-        sudo cp -r /tmp/NVTX-3.1.0/c/include/nvtx3/* "${CUDA_INCLUDE}/nvtx3/"
-
-        echo "NVTX3 headers installed:"
-        ls "${CUDA_INCLUDE}/nvtx3" | head -10
-        test -f "${CUDA_INCLUDE}/nvtx3/nvToolsExt.h" && echo "OK: nvToolsExt.h present"
-
-    - name: Build CUDA SpMV suite (${{ matrix.build_type }})
-      run: |
-        echo "Building CUDA SpMV benchmark (BUILD_TYPE=${{ matrix.build_type }}, CUDA=${{ matrix.cuda_version }})"
-        echo "CUDA paths for compilation:"
-        echo "CUDA_HOME: $CUDA_HOME"
-        echo "PATH: $PATH"
-        echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
-
-        # Determine CUDA version major.minor for path
-        CUDA_VER=$(echo "${{ matrix.cuda_version }}" | cut -d. -f1,2)
-        export CUDA_INCLUDE_PATH="/usr/local/cuda-${CUDA_VER}/include"
-        if [ -d "$CUDA_INCLUDE_PATH" ]; then
-          echo "Using CUDA include path: $CUDA_INCLUDE_PATH"
-          make BUILD_TYPE=${{ matrix.build_type }} INCLUDES="-Iinclude -I$CUDA_INCLUDE_PATH" -j$(nproc)
-        else
-          echo "CUDA include path not found, trying standard build"
-          make BUILD_TYPE=${{ matrix.build_type }} -j$(nproc)
-        fi
-        echo "Build completed successfully"
-
-    - name: Build MPI targets
-      if: matrix.build_type == 'release'
-      run: |
-        echo "Building MPI targets..."
-        CUDA_VER=$(echo "${{ matrix.cuda_version }}" | cut -d. -f1,2)
-        export CUDA_INCLUDE_PATH="/usr/local/cuda-${CUDA_VER}/include"
-        if [ -d "$CUDA_INCLUDE_PATH" ]; then
-          make cg_solver_mgpu_stencil BUILD_TYPE=${{ matrix.build_type }} INCLUDES="-Iinclude -I$CUDA_INCLUDE_PATH" -j$(nproc) || echo "MPI target build attempted"
-        else
-          make cg_solver_mgpu_stencil BUILD_TYPE=${{ matrix.build_type }} -j$(nproc) || echo "MPI target build attempted"
-        fi
-        echo "MPI targets build completed"
-    
-    - name: Verify generated binaries
-      run: |
-        echo "Generated binaries:"
-        ls -la bin/${{ matrix.build_type }}/
-
-        echo "Binary analysis:"
-        for binary in bin/${{ matrix.build_type }}/*; do
-          echo "$(basename "$binary"):"
-          echo "  Size: $(du -h "$binary" | cut -f1)"
-          echo "  Type: $(file "$binary" | cut -d: -f2)"
-          echo "  Executable: $([ -x "$binary" ] && echo "Yes" || echo "No")"
-        done
-
-        echo "CUDA library linking:"
-        ldd bin/${{ matrix.build_type }}/spmv_bench | grep -E "(cuda|cusparse|cublas)" || echo "CUDA libraries linked statically or in system paths"
-
-    - name: Generate test matrix if missing
-      run: |
-        echo "Ensuring test matrix exists..."
-        if [ ! -f matrix/example3x3.mtx ]; then
-          echo "Generating 3x3 test matrix (fallback)..."
-          ./bin/${{ matrix.build_type }}/generate_matrix 3 matrix/example3x3.mtx
-          echo "Test matrix generated"
-        else
-          echo "Test matrix example3x3.mtx already exists"
-          echo "Matrix info: $(wc -l matrix/example3x3.mtx | cut -d' ' -f1) lines, $(du -h matrix/example3x3.mtx | cut -f1)"
-        fi
-
-    - name: Smoke tests (no GPU execution)
-      run: |
-        echo "Running smoke tests..."
-
-        # Test 1: Binary help functionality
-        echo "Testing help/usage commands:"
-        ./bin/${{ matrix.build_type }}/spmv_bench --help 2>&1 | head -5 || echo "Help command tested"
-        ./bin/${{ matrix.build_type }}/generate_matrix --help 2>&1 | head -3 || echo "Generator help tested"
-
-        # Test 2: Argument validation
-        echo "Testing argument validation:"
-        ./bin/${{ matrix.build_type }}/spmv_bench 2>&1 | head -3 || echo "Argument validation tested"
-
-        # Test 3: File validation with existing matrix
-        echo "Testing matrix file validation:"
-        ./bin/${{ matrix.build_type }}/spmv_bench matrix/example3x3.mtx 2>&1 | head -5 || echo "Matrix file processing tested"
-
-        # Test 4: Invalid file handling
-        echo "Testing invalid file handling:"
-        ./bin/${{ matrix.build_type }}/spmv_bench nonexistent.mtx 2>&1 | head -3 || echo "Invalid file handling tested"
-
-        # Test 5: Matrix generator functionality
-        echo "Testing matrix generator:"
-        ./bin/${{ matrix.build_type }}/generate_matrix 2 test_matrix.mtx 2>&1 || echo "Generator execution tested"
-        if [ -f test_matrix.mtx ]; then
-          echo "Matrix generation successful: $(wc -l test_matrix.mtx | cut -d' ' -f1) lines"
-          rm test_matrix.mtx  # Cleanup
-        fi
-
-        echo "All smoke tests completed - binaries functional at basic level"
-    
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: spmv-binaries-${{ matrix.build_type }}-cuda${{ matrix.cuda_version }}
-        path: |
-          bin/${{ matrix.build_type }}/
-          matrix/example3x3.mtx
-        retention-days: 7
-
-  # JOB 2: Test framework build and validation (disabled - in development)
-  # test-framework-validation:
-  #   name: Test Framework Build (CMake)
-  #   runs-on: ubuntu-22.04
-  #   needs: build-validation
-  #   continue-on-error: true
-  #
-  #   steps:
-  #   - name: Checkout repository
-  #     uses: actions/checkout@v4
-  #
-  #   - name: Install dependencies
-  #     run: |
-  #       echo "📦 Installing CUDA and test dependencies..."
-  #       # Install CUDA via package manager (alternative to Jimver)
-  #       wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb
-  #       sudo dpkg -i cuda-keyring_1.0-1_all.deb
-  #       sudo apt-get update
-  #       sudo apt-get -y install cuda-toolkit-12-2
-  #
-  #       # Install Google Test
-  #       sudo apt-get install -y libgtest-dev cmake build-essential
-  #       echo "✅ Dependencies installed"
-  #
-  #   - name: Cache CMake build
-  #     uses: actions/cache@v3
-  #     with:
-  #       path: tests/build/
-  #       key: cmake-${{ hashFiles('tests/**/*.cpp', 'tests/**/*.hpp', 'tests/CMakeLists.txt', 'src/**/*.cu') }}
-  #       restore-keys: |
-  #         cmake-
-  #
-  #   - name: Build test framework
-  #     run: |
-  #       echo "🔧 Building CMake test framework..."
-  #       cd tests
-  #       mkdir -p build && cd build
-  #
-  #       cmake .. -DCMAKE_BUILD_TYPE=Release
-  #       make -j$(nproc)
-  #
-  #       echo "✅ Test framework built successfully"
-  #       echo "📄 Test binary info:"
-  #       ls -la spmv_tests
-  #       file spmv_tests
-  #
-  #   - name: Test framework smoke validation
-  #     run: |
-  #       echo "💨 Test framework smoke validation..."
-  #       cd tests/build
-  #
-  #       # Test 1: Binary execution
-  #       echo "🧪 Testing binary execution:"
-  #       ./spmv_tests --help 2>&1 | head -3 || echo "Test binary executes"
-  #
-  #       # Test 2: List available tests
-  #       echo "🧪 Available test suites:"
-  #       ./spmv_tests --gtest_list_tests | head -10 || echo "Test listing completed"
-  #
-  #       # Test 3: Dry run attempt (will fail gracefully without GPU)
-  #       echo "🧪 Attempting test execution (expected to fail gracefully without GPU):"
-  #       timeout 20 ./spmv_tests --gtest_filter="*Construction*" 2>&1 | head -10 || echo "Construction tests attempted"
-  #
-  #       echo "✅ Test framework smoke validation completed"
-  #
-  #   - name: Upload test framework
-  #     uses: actions/upload-artifact@v4
-  #     with:
-  #       name: test-framework
-  #       path: |
-  #         tests/build/spmv_tests
-  #       retention-days: 7
-
-  # JOB 3: Code analysis and reporting
-  analysis-report:
-    name: Code Analysis & CI Report
-    runs-on: ubuntu-22.04
-    needs: [code-quality, build-validation]
-    if: always()  # Run even if previous jobs fail
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Project analysis
-      run: |
-        echo "CUDA SpMV Project Analysis"
-        echo "================================"
-
-        echo "Project structure:"
-        find . -type f -name "*.cu" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" | grep -v build | sort
-
-        echo -e "\nCode statistics:"
-        echo "CUDA source files: $(find src -name "*.cu" | wc -l)"
-        echo "CUDA headers: $(find include -name "*.h" | wc -l)"
-        echo "Test files: $(find tests -name "*.cpp" -o -name "*.hpp" | wc -l)"
-
-        echo -e "\nLines of code:"
-        find src -name "*.cu" | xargs wc -l | tail -1 | awk '{print "CUDA source: " $1 " lines"}'
-        find include -name "*.h" | xargs wc -l | tail -1 | awk '{print "Headers: " $1 " lines"}'
-        find tests -name "*.cpp" -o -name "*.hpp" | xargs wc -l | tail -1 | awk '{print "Tests: " $1 " lines"}'
-
-    - name: CUDA-specific analysis
-      run: |
-        echo -e "\nCUDA Implementation Analysis"
-        echo "==============================="
-
-        echo "CUDA kernels: $(grep -r "__global__" src/ | wc -l)"
-        echo "CUDA API calls: $(grep -r "CUDA_CHECK" src/ | wc -l)"
-        echo "cuSPARSE calls: $(grep -r "cusparse" src/ | wc -l)"
-
-        echo -e "\nImplemented SpMV operators:"
-        find src/spmv -name "spmv_*.cu" | sed 's/.*spmv_/- /' | sed 's/\.cu$//'
-
-        echo -e "\nKernel signatures:"
-        grep -r "__global__" src/ || echo "No kernels found"
-    
-    - name: Download artifacts for analysis
-      uses: actions/download-artifact@v4
-      continue-on-error: true
-    
-    - name: Generate CI report
-      run: |
-        echo "Generating CI/CD Report..."
-
-        cat > ci_report.md << EOF
-        # CUDA SpMV Benchmark - CI/CD Report
-
-        **Generated:** $(date)
-        **Commit:** ${{ github.sha }}
-        **Branch:** ${{ github.ref_name }}
-        **Workflow:** Build & Smoke Tests (No GPU)
-
-        ## Build Results
-
-        EOF
-
-        # Check build artifacts
-        if ls spmv-binaries-* > /dev/null 2>&1; then
-          echo "**Build Status:** SUCCESS (Debug + Release, CUDA 11.8 + 12.2)" >> ci_report.md
-          echo "" >> ci_report.md
-          echo "**Generated Artifacts:**" >> ci_report.md
-          echo '```' >> ci_report.md
-          find spmv-binaries-* -type f 2>/dev/null | head -10 >> ci_report.md
-          echo '```' >> ci_report.md
-        else
-          echo "**Build Status:** FAILED" >> ci_report.md
-        fi
-
-        # Check test framework
-        if ls test-framework > /dev/null 2>&1; then
-          echo "**Test Framework:** BUILD SUCCESS" >> ci_report.md
-        else
-          echo "**Test Framework:** BUILD SKIPPED" >> ci_report.md
-        fi
-
-        cat >> ci_report.md << EOF
-
-        ## Smoke Test Summary
-
-        - CUDA compilation successful (debug + release, CUDA 11.8 + 12.2)
-        - Binary linking with CUDA libraries verified
-        - Help/usage functions working
-        - Argument validation functional
-        - File I/O error handling working
-        - Matrix generator operational
-        - MPI targets compiled
-
-        ## Full Testing (Requires GPU Hardware)
-
-        **Prerequisites for local GPU testing:**
-        - NVIDIA GPU (Compute Capability >= 7.0)
-        - CUDA Toolkit 11.0+
-        - cuSPARSE and cuBLAS libraries
-
-        **Local testing commands:**
-        \`\`\`bash
-        # Build and run complete test suite
-        cd tests/build
-        cmake .. && make
-        ./spmv_tests
-
-        # Run performance benchmarks
-        ./bin/release/spmv_bench matrix/example3x3.mtx --mode=csr
-        ./bin/release/spmv_bench matrix/example3x3.mtx --mode=stencil5
-        ./bin/release/spmv_bench matrix/example3x3.mtx --mode=ellpack
-        \`\`\`
-
-        ## Project Statistics
-
-        - **CUDA Operators:** CSR, ELLPACK, STENCIL5
-        - **Test Matrix:** example3x3.mtx (372 bytes, full algorithm coverage)
-        - **Build Systems:** Makefile (main) + CMake (tests)
-        - **Test Framework:** Google Test with CUDA utilities
-
-        ---
-        *This CI/CD validates build integrity and basic functionality.
-        Full CUDA kernel validation requires GPU hardware for local testing.*
-        EOF
-
-        echo "Generated CI/CD report"
-        cat ci_report.md
-    
-    - name: Upload CI/CD report
-      uses: actions/upload-artifact@v4
-      with:
-        name: ci-cd-report
-        path: ci_report.md
-        retention-days: 30
+      - name: Generate small matrices (host only, no GPU) and check their size
+        run: |
+          B=bin/${{ matrix.build_type }}
+          check() {  # file, expected "rows cols nnz"
+            head -n 1 "$1" | grep -q '^%%MatrixMarket'
+            got=$(grep -v '^%' "$1" | head -n 1)
+            echo "$1: $got (expected $2)"
+            [ "$got" = "$2" ]
+          }
+          "$B/generate_matrix" 8 /tmp/m2d.mtx > /dev/null
+          "$B/generate_matrix_3d" 6 /tmp/m3d.mtx > /dev/null
+          "$B/generate_matrix_3d_27pt" 6 /tmp/m27.mtx > /dev/null
+          check /tmp/m2d.mtx "64 64 288"     # 5 n - 4 N, N = 8
+          check /tmp/m3d.mtx "216 216 1296"  # 7 n - 6 N^2, N = 6
+          check /tmp/m27.mtx "216 216 4096"  # (3 N - 2)^3, N = 6
