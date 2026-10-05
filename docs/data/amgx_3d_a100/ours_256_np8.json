@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-10-05 20:10:05",
+  "solver": "CG Multi-GPU",
+  "mode": "3d-stencil-27pt",
+  "num_gpus": 8,
+  "matrix": {
+    "rows": 16777216,
+    "cols": 16777216,
+    "nnz": 55741820,
+    "grid_size": 256
+  },
+  "convergence": {
+    "converged": true,
+    "iterations": 303,
+    "residual_norm": 3.899913295002407e-03
+  },
+  "timing": {
+    "median_ms": 328.620,
+    "mean_ms": 334.267,
+    "min_ms": 326.784,
+    "max_ms": 345.667,
+    "std_dev_ms": 7.947
+  },
+  "statistics": {
+    "valid_runs": 10,
+    "outliers_removed": 0
+  },
+  "performance": {
+    "gflops_spmv_est": 102.792
+  },
+  "overlap": {
+    "enabled": false
+  },
+  "validation": {
+    "solution_sum": 2.5123601608831954e+09,
+    "solution_norm": 7.5552865721219743e+05
+  }
+}
