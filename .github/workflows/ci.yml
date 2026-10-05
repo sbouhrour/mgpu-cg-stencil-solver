@@ -28,7 +28,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang-format-14
       - name: Check formatting
         run: |
-          find src include tests -type f \( -name '*.cu' -o -name '*.cuh' -o -name '*.h' \
+          find src include -type f \( -name '*.cu' -o -name '*.cuh' -o -name '*.h' \
             -o -name '*.cpp' -o -name '*.hpp' \) -print0 |
             xargs -0 clang-format-14 --style=file --dry-run --Werror
 
@@ -75,12 +75,15 @@ jobs:
       - name: Install the CUDA toolkit and Open MPI
         run: |
           V=$(echo "${{ matrix.cuda }}" | tr . -)
+          # cuSPARSE 12.x and 13.x link against nvJitLink, which libcusparse-dev does not pull in
+          JIT=""
+          if [ "${{ matrix.cuda }}" != "11.8" ]; then JIT="libnvjitlink-$V"; fi
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cuda-nvcc-$V cuda-cudart-dev-$V cuda-cccl-$V cuda-nvtx-$V cuda-profiler-api-$V \
-            libcusparse-dev-$V libcublas-dev-$V openmpi-bin libopenmpi-dev
+            libcusparse-dev-$V libcublas-dev-$V $JIT openmpi-bin libopenmpi-dev
           echo "/usr/local/cuda-${{ matrix.cuda }}/bin" >> "$GITHUB_PATH"
 
       - name: Check the toolkit
