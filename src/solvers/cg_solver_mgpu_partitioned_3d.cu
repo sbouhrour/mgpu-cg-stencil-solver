@@ -463,7 +463,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
             cg_scalars_advance(&S);
         }
         CUDA_CHECK(cudaStreamEndCapture(stream, &graph));
-        CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, 0));
+        CUDA_CHECK(cudaGraphInstantiateWithFlags(&graph_exec, graph, 0));
         CUDA_CHECK(cudaGraphDestroy(graph));
     }
 
@@ -940,7 +940,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
             cg_scalars_advance(&S);
         }
         CUDA_CHECK(cudaStreamEndCapture(stream, &graph));
-        CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, 0));
+        CUDA_CHECK(cudaGraphInstantiateWithFlags(&graph_exec, graph, 0));
         CUDA_CHECK(cudaGraphDestroy(graph));
     }
 
