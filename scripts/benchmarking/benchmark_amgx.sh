@@ -4,13 +4,20 @@
 #
 # Usage:
 #   ./scripts/benchmarking/benchmark_amgx.sh matrix/stencil_10000x10000.mtx
+#   ./scripts/benchmarking/benchmark_amgx.sh matrix/stencil3d_256.mtx --stencil=27   # 3D, header-only file
 #
 # Output: results_amgx_<GPU>_<matrix>_<date>/ with one JSON and one CSV per rank count,
 # and summary.txt. The Custom-vs-AmgX ratios are printed by ./scripts/run_all.sh.
 
-set -e
+set -e -o pipefail
 
 MATRIX="$1"
+STENCIL_ARG=""
+case "${2:-}" in
+    "") ;;
+    --stencil=5|--stencil=7|--stencil=27) STENCIL_ARG="$2" ;;
+    *) echo "Unknown option: $2 (expected --stencil=5|7|27)"; exit 1 ;;
+esac
 RUNS=10
 TOLERANCE="1e-6"
 MAX_ITERS=5000
@@ -26,7 +33,7 @@ if [ ! -f "$EXECUTABLE" ]; then
     exit 1
 fi
 
-GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader -i 0 | head -1 | tr -d ' ')
+GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader -i 0 | tr -d ' ')
 # GPUs this process may use: the entries of CUDA_VISIBLE_DEVICES when it is set, else every GPU
 # nvidia-smi lists (nvidia-smi ignores CUDA_VISIBLE_DEVICES)
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
@@ -34,7 +41,7 @@ if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
 else
     NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
 fi
-MATRIX_SIZE=$(basename "$MATRIX" .mtx)
+MATRIX_SIZE=$(basename "$MATRIX" .mtx)${STENCIL_ARG:+_${STENCIL_ARG#--stencil=}pt}
 DATE=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="results_amgx_${GPU_NAME}_${MATRIX_SIZE}_${DATE}"
 SUMMARY_FILE="$RESULTS_DIR/summary.txt"
@@ -46,7 +53,7 @@ GIT_DIRTY=$(git diff-index --quiet HEAD -- 2>/dev/null || echo " (dirty)")
 cat > "$SUMMARY_FILE" <<EOF
 AmgX CG (unpreconditioned) benchmark
 GPU: $GPU_NAME ($NUM_GPUS detected)
-Matrix: $MATRIX
+Matrix: $MATRIX${STENCIL_ARG:+ ($STENCIL_ARG)}
 Tolerance: $TOLERANCE, max iterations: $MAX_ITERS, runs: $RUNS
 Date: $(date)
 Commit: $GIT_HASH$GIT_DIRTY
@@ -64,7 +71,8 @@ for NP in 1 2 4 8; do
     echo "" | tee -a "$SUMMARY_FILE"
     echo "=== $NP rank(s) ===" | tee -a "$SUMMARY_FILE"
 
-    if mpirun --allow-run-as-root -np "$NP" "$EXECUTABLE" "$MATRIX" \
+    # shellcheck disable=SC2086
+    if mpirun --allow-run-as-root -np "$NP" "$EXECUTABLE" "$MATRIX" $STENCIL_ARG \
         --tol="$TOLERANCE" --max-iters="$MAX_ITERS" --runs="$RUNS" \
         --json="$RESULTS_DIR/${BASE_NAME}.json" --csv="$RESULTS_DIR/${BASE_NAME}.csv" --timers \
         2>&1 | tee -a "$SUMMARY_FILE"; then

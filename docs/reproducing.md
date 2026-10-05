@@ -209,6 +209,33 @@ mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --ste
 
 Check: 1-GPU sync median (22016 ms) divided by 8-GPU overlap median (3110 ms) gives 7.08×, and 7.08 / 8 = 88%.
 
+### 3D CG vs AmgX at equal transport: 1.07× to 1.31× (27-point, 128³ to 512³)
+
+[Results](results.md#3d-custom-cg-vs-nvidia-amgx-27-point) · requires the AmgX build
+
+```bash
+for n in 128 256 512; do echo "% STENCIL_GRID_SIZE $n" > matrix/stencil3d_27pt_$n.mtx; done
+for n in 128 256 512; do for np in 1 2 4 8; do
+  mpirun -np $np ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_$n.mtx --stencil=27
+done; done
+for n in 128 256 512; do ./scripts/benchmarking/benchmark_amgx.sh matrix/stencil3d_27pt_$n.mtx --stencil=27; done
+```
+
+Check: both solvers converge in 151, 303 and 611 iterations; at 256³ on 8 GPUs, Custom CG 328.6 ms against AmgX
+375.4 ms (1.14×). AmgX does not run 512³ on 1 or 2 ranks.
+
+### 27-point SpMV vs cuSPARSE: 1.62× (256³, cuSPARSE of CUDA 12.8)
+
+[Results](results.md#3d-27-point-spmv-vs-cusparse-csr-single-gpu) · one GPU of compute capability 8.0 or newer
+
+```bash
+make bench_spmv_27pt SPMV27_ARCH=80          # SPMV27_ARCH=90 on H100
+./bin/bench_spmv_27pt --sizes=256,384 --coeffs=const
+```
+
+Check: the `staged` line reports 0 bits differing from `rowmajor`; at 256³ with CUDA 12.8, `staged` 2.789 ms against
+cuSPARSE ALG1 4.530 ms (1.62×).
+
 ### Matrix files
 
 `spmv_bench`, `cg_solver_mgpu_stencil`, `cg_solver_mgpu_stencil_3d` and the two AmgX CG drivers accept a header-only file in place of a full Matrix Market file, and then generate the matrix in memory. Only the `% STENCIL_GRID_SIZE N` line is read:

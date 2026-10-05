@@ -20,7 +20,7 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 ## Where to Go Next
 
-**[Results](results.md)**. All benchmark tables in one place: 2D strong scaling, detailed 1/2/4/8-GPU breakdowns, SpMV format comparison, AmgX comparison, and 3D 7-point/27-point overlap results.
+**[Results](results.md)**. All benchmark tables in one place: 2D strong scaling, detailed 1/2/4/8-GPU breakdowns, SpMV format comparison, AmgX comparison in 2D and 3D, 3D 7-point/27-point overlap results, and the 27-point SpMV against cuSPARSE.
 
 **[Why It's Faster: 2D Analysis](profiling-2d.md)**. Kernel-level profiling that explains the speedup over NVIDIA AmgX: SpMV kernel breakdown, roofline analysis, and speedup attribution.
 

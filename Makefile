@@ -135,10 +135,16 @@ CU_CG_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_CG_SRCS))
 CU_SINGLE_GPU_3D_SRCS := $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/spmv/spmv_stencil_3d_partitioned_halo_kernel.cu $(SRC_DIR)/io/io.cu $(SRC_DIR)/spmv/spmv_cusparse_csr.cu $(SRC_DIR)/solvers/cg_metrics.cu
 CU_SINGLE_GPU_3D_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_SINGLE_GPU_3D_SRCS))
 
+# 27-point SpMV benchmark against cuSPARSE (single GPU, standalone; C++17 for cub).
+# Offline build for the target GPU: cp.async needs sm_80 or newer (SPMV27_ARCH=90 on H100).
+SPMV27_ARCH ?= 80
+BIN_SPMV27 := $(BIN_DIR)/bench_spmv_27pt
+SPMV27_DEPS := bench/spmv_27pt/bench_spmv_27pt.cu $(INC_DIR)/spmv_stencil27_fast.cuh $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu
+
 # PHONY targets
 .PHONY: all clean help check-mpi-message
 .PHONY: spmv_bench generate_matrix generate_matrix_3d generate_matrix_3d_27pt cg_solver cg_solver_mgpu_stencil cg_solver_mgpu_stencil_3d cg_solver_single_gpu_3d
-.PHONY: spmv gen gen3d gen3d_27pt cg cg3d_mgpu cg3d
+.PHONY: spmv gen gen3d gen3d_27pt cg cg3d_mgpu cg3d bench_spmv_27pt
 
 # Main target - conditionally include MPI targets
 ifeq ($(HAS_MPI),1)
@@ -167,6 +173,7 @@ help:
 	@echo "  make generate_matrix         - 2D matrix generator (bin/generate_matrix)"
 	@echo "  make generate_matrix_3d      - 3D matrix generator (bin/generate_matrix_3d)"
 	@echo "  make cg_solver_mgpu_stencil  - CG solver (bin/cg_solver_mgpu_stencil, MPI)"
+	@echo "  make bench_spmv_27pt         - 27-point SpMV vs cuSPARSE (bin/bench_spmv_27pt, SPMV27_ARCH=80)"
 	@echo ""
 	@echo "Short aliases:"
 	@echo "  make spmv         - Alias for spmv_bench"
@@ -202,6 +209,13 @@ $(BIN_GEN3D_27PT): $(CU_GEN3D_27PT_OBJS)
 $(BIN_CG): $(CU_CG_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+# 27-point SpMV benchmark binary
+bench_spmv_27pt: $(BIN_SPMV27)
+
+$(BIN_SPMV27): $(SPMV27_DEPS)
+	@mkdir -p $(BIN_DIR)
+	$(NVCC) $(filter-out -std=c++11,$(NVCCFLAGS)) -std=c++17 -lineinfo -arch=sm_$(SPMV27_ARCH) $(INCLUDES) -I$(SRC_DIR) $< -o $@ $(LDFLAGS)
 
 # Compile CUDA sources
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cu

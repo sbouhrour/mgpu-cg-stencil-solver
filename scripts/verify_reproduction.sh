@@ -154,6 +154,15 @@ L_27V=$(run c3d27_s128_verify $MPIRUN -np 1 ./bin/cg_solver_mgpu_stencil_3d "$DI
 check_eq "3D 27pt 128^3 iterations" "$(iters "$L_27")" 151
 check_eq "3D 27pt 128^3 --overlap --verify" "$(grep -m1 -o 'VERIFY: [A-Z]*' "$L_27V")" "VERIFY: PASS"
 
+# AmgX on the same 3D operator (built in memory from the header-only file), same tolerance
+if [ -x "$AMGXN" ]; then
+    L_A27=$(run amgx_s3d27_128 $MPIRUN -np 1 "$AMGXN" "$DIR/s3d27_128.mtx" --stencil=27 --runs=1)
+    check_eq "3D 27pt 128^3 AmgX iterations = Custom CG" "$(iters "$L_A27")" "$(iters "$L_27")"
+    check_rel "3D 27pt 128^3 Sum(x), AmgX vs Custom CG" "$(sumx "$L_A27")" "$(sumx "$L_27")" 1e-10
+else
+    report "3D 27pt 128^3 AmgX" SKIP "AmgX driver not built (./scripts/setup/full_setup.sh --amgx)"
+fi
+
 if [ "$NUM_GPUS" -ge 2 ]; then
     L_27N2=$(run c3d27_s128_np2 $MPIRUN -np 2 ./bin/cg_solver_mgpu_stencil_3d "$DIR/s3d27_128.mtx" --stencil=27 --overlap)
     check_eq "3D 27pt 128^3 iterations, 2 ranks overlap" "$(iters "$L_27N2")" 151

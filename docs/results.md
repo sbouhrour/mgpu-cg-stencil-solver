@@ -139,3 +139,44 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 | 512³ | 1.00× | 1.98× | 3.79× | 7.08× |
 
 <sub>512³ at 8 GPUs: 7.08× speedup (**88% parallel efficiency**).</sub>
+
+## 3D: Custom CG vs NVIDIA AmgX (27-point)
+
+At equal transport, the Custom CG solves the 3D 27-point system 1.1 to 1.3× faster than AmgX. The gap narrows as communication takes a larger share of the time: at 128³, 1.31× on 1 GPU and 1.07× on 8 GPUs; at 512³ on 8 GPUs, 1.11×. On 1 GPU, with no halo exchange, the gap is the computation alone (SpMV and vector operations); on several GPUs, both solvers send their halos through host memory.
+
+Both solvers run unpreconditioned CG to the same relative residual (1e-6, L2 norm, from x0 = 0 with b = 1) and take the same number of iterations in every case: 151 at 128³, 303 at 256³, 611 at 512³. Both exchange halos through host memory (Custom CG: synchronous solver, host-staged halo; AmgX: `MPI` communicator, Open MPI 4.1.6 without CUDA support). Time to solution, median of 10 solves.
+
+**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink NV12) · CUDA 12.8 · Driver 580.65.06 · AmgX v2.5.0 · ranks bound to the CPU cores local to their GPU · measured on 5 October 2026 at commit `42c10ad`
+
+| Grid | GPUs | Custom CG | NVIDIA AmgX | AmgX / Custom |
+|------|-----:|----------:|------------:|--------------:|
+| 128³ (2.1M unknowns) | 1 | 92.8 ms | 121.7 ms | 1.31× |
+| | 2 | 65.1 ms | 83.4 ms | 1.28× |
+| | 4 | 54.5 ms | 62.2 ms | 1.14× |
+| | 8 | 49.6 ms | 53.3 ms | 1.07× |
+| 256³ (16.8M unknowns) | 1 | 1330.6 ms | 1717.5 ms | 1.29× |
+| | 2 | 760.2 ms | 965.2 ms | 1.27× |
+| | 4 | 462.5 ms | 574.0 ms | 1.24× |
+| | 8 | 328.6 ms | 375.4 ms | 1.14× |
+| 512³ (134M unknowns) | 1 | 21995.6 ms | n/a | |
+| | 2 | 11764.9 ms | n/a | |
+| | 4 | 6637.6 ms | 7637.4 ms | 1.15× |
+| | 8 | 3992.9 ms | 4438.1 ms | 1.11× |
+
+<sub>512³ on 1 rank: AmgX's distributed matrix indexes local entries with 32-bit integers, and the rank holds 3.6 × 10⁹ entries. On 2 ranks (1.8 × 10⁹ local entries), the AmgX matrix upload stopped with "CUDA kernel launch error". Raw data: [`data/amgx_3d_a100/`](data/amgx_3d_a100/). Reproduce: `./scripts/benchmarking/benchmark_amgx.sh <header-only file> --stencil=27` for AmgX, `cg_solver_mgpu_stencil_3d <header-only file> --stencil=27` for the Custom CG.</sub>
+
+## 3D: 27-Point SpMV vs cuSPARSE CSR (single GPU)
+
+The same CSR arrays for every variant (`bench/spmv_27pt/`): cuSPARSE ALG1 (32-bit indices, the faster of ALG1 and ALG2), the row-major kernel of the 3D solver (one thread per row), and `staged`, the same kernel with the values of each warp's 32 rows copied to shared memory by coalesced 16-byte `cp.async` before use. `staged` and the row-major kernel produce bitwise identical results. Kernel time, median of 30 launches, constant coefficients; variable symmetric coefficients give the same times within 0.2%.
+
+**Hardware**: NVIDIA A100-SXM4-80GB · Driver 580.65.06 · default L2 fetch granularity (64 bytes) · measured on 5 October 2026, benchmark and kernel as in commit `6896030`
+
+| Grid | CUDA (cuSPARSE) | cuSPARSE ALG1 | Row-major | Staged |
+|------|-----------------|--------------:|----------:|-------:|
+| 256³ | 12.8 (12.5.8) | 4.530 ms | 3.348 ms (1.35×) | 2.789 ms (1.62×) |
+| 384³ | 12.8 (12.5.8) | 15.064 ms | 11.797 ms (1.28×) | 9.147 ms (1.65×) |
+| 256³ | 13.0 (12.6.3) | 4.339 ms | 3.347 ms (1.30×) | 2.786 ms (1.56×) |
+| 384³ | 13.0 (12.6.3) | 14.574 ms | 11.797 ms (1.24×) | 9.153 ms (1.59×) |
+
+<sub>Speedups against cuSPARSE ALG1 of the same CUDA version. Raw output: `bench/spmv_27pt/run_session.sh` writes one text file per coefficient set and a CSV.</sub>
+
