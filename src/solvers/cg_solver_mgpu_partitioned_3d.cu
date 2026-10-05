@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include <mpi.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -26,6 +27,7 @@
 #include "spmv.h"
 #include "io.h"
 #include "solvers/cg_solver_mgpu_partitioned.h"
+#include "solvers/comm_backend.h"
 
 /* External kernels */
 extern __global__ void axpy_kernel(double alpha, const double* x, double* y, int n);
@@ -50,59 +52,209 @@ static double compute_local_dot_3d(cublasHandle_t cublas_handle, const double* d
     return result;
 }
 
-/**
- * @brief Exchange halo zones with neighbors using MPI with explicit staging (3D version)
+/*
+ * Global CG scalars (p.Ap, r.r) and the alpha/beta derived from them.
  *
- * For 3D 7-point stencil with Z-slab partitioning:
- * - Each halo is one full XY-plane = grid_size² elements
- * - Send first plane to prev, last plane to next
+ * Host mode: cublasDdot returns a host double (the call waits for the stream),
+ * MPI sums it, alpha and beta are computed on the host and passed by value.
+ * Device mode: the scalars never leave the GPU. cublasDdot writes to device
+ * memory, the reduction is enqueued on the stream, and the BLAS1 kernels read
+ * alpha and beta from device memory. The host only reads r.r back when it has
+ * to test convergence.
  */
-static void exchange_halo_mpi_3d(const double* d_local_send_prev, const double* d_local_send_next,
-                                 double* d_halo_recv_prev, double* d_halo_recv_next,
-                                 double* h_send_prev, double* h_send_next, double* h_recv_prev,
-                                 double* h_recv_next, int halo_size, int rank, int world_size,
-                                 cudaStream_t stream) {
-    MPI_Request requests[4];
-    int req_count = 0;
+typedef struct {
+    int on_device;
+    cublasHandle_t cublas;
+    CommContext* comm;
+    cudaStream_t stream;
+    double* d_buf;  // device mode: [p.Ap, r.r (old), r.r (new)]
+    double* d_pAp;
+    double* d_rs_old;
+    double* d_rs_new;
+    double* h_read;  // pinned, device mode: [p.Ap, r.r (new)] read back
+    double pAp;      // host values: always valid in host mode, after
+    double rs_old;   // cg_scalars_read in device mode
+    double rs_new;
+} CgScalars;
 
-    // D2H
-    if (rank > 0 && d_local_send_prev != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(h_send_prev, d_local_send_prev, halo_size * sizeof(double),
-                                   cudaMemcpyDeviceToHost, stream));
+// y = (sign * num/den) * x + y: same expression as axpy_kernel, alpha read from the device
+static __global__ void axpy_ratio_kernel(const double* num, const double* den, double sign,
+                                         const double* x, double* y, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double alpha = sign * (*num / *den);
+        y[i] = alpha * x[i] + y[i];
     }
-    if (rank < world_size - 1 && d_local_send_next != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(h_send_next, d_local_send_next, halo_size * sizeof(double),
-                                   cudaMemcpyDeviceToHost, stream));
-    }
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+}
 
-    // MPI non-blocking
-    if (rank > 0) {
-        MPI_Isend(h_send_prev, halo_size, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
-        MPI_Irecv(h_recv_prev, halo_size, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
+// y = alpha * x + (num/den) * y: same expression as axpby_kernel, beta read from the device
+static __global__ void axpby_ratio_kernel(double alpha, const double* x, const double* num,
+                                          const double* den, double* y, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double beta = *num / *den;
+        y[i] = alpha * x[i] + beta * y[i];
     }
-    if (rank < world_size - 1) {
-        MPI_Isend(h_send_next, halo_size, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
-        MPI_Irecv(h_recv_next, halo_size, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD,
-                  &requests[req_count++]);
-    }
-    if (req_count > 0) {
-        MPI_Waitall(req_count, requests, MPI_STATUSES_IGNORE);
-    }
+}
 
-    // H2D
-    if (rank > 0 && d_halo_recv_prev != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(d_halo_recv_prev, h_recv_prev, halo_size * sizeof(double),
-                                   cudaMemcpyHostToDevice, stream));
+static void cg_scalars_init(CgScalars* S, int on_device, cublasHandle_t cublas, CommContext* comm,
+                            cudaStream_t stream) {
+    memset(S, 0, sizeof(*S));
+    S->on_device = on_device;
+    S->cublas = cublas;
+    S->comm = comm;
+    S->stream = stream;
+    if (on_device) {
+        CUDA_CHECK(cudaMalloc(&S->d_buf, 3 * sizeof(double)));
+        CUDA_CHECK(cudaMallocHost(&S->h_read, 2 * sizeof(double)));
+        S->d_pAp = S->d_buf;
+        S->d_rs_old = S->d_buf + 1;
+        S->d_rs_new = S->d_buf + 2;
+        cublasSetPointerMode(cublas, CUBLAS_POINTER_MODE_DEVICE);
     }
-    if (rank < world_size - 1 && d_halo_recv_next != NULL) {
-        CUDA_CHECK(cudaMemcpyAsync(d_halo_recv_next, h_recv_next, halo_size * sizeof(double),
-                                   cudaMemcpyHostToDevice, stream));
+}
+
+static void cg_scalars_free(CgScalars* S) {
+    if (S->on_device) {
+        cublasSetPointerMode(S->cublas, CUBLAS_POINTER_MODE_HOST);
+        cudaFree(S->d_buf);
+        cudaFreeHost(S->h_read);
     }
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+}
+
+static void dot_device(CgScalars* S, const double* x, const double* y, int n, double* d_out) {
+    if (cublasDdot(S->cublas, n, x, 1, y, 1, d_out) != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "cuBLAS ddot failed\n");
+        exit(EXIT_FAILURE);
+    }
+    comm_allreduce_sum_device(S->comm, d_out, S->stream);
+}
+
+/** rs_old = r.r, summed over ranks; host copy always valid afterwards (read once per solve). */
+static void cg_scalars_rs_init(CgScalars* S, const double* r, int n) {
+    if (S->on_device) {
+        dot_device(S, r, r, n, S->d_rs_old);
+        CUDA_CHECK(cudaMemcpyAsync(S->h_read, S->d_rs_old, sizeof(double), cudaMemcpyDeviceToHost,
+                                   S->stream));
+        CUDA_CHECK(cudaStreamSynchronize(S->stream));
+        S->rs_old = S->h_read[0];
+    } else {
+        S->rs_old = comm_allreduce_sum(S->comm, compute_local_dot_3d(S->cublas, r, r, n));
+    }
+}
+
+static void cg_scalars_pAp(CgScalars* S, const double* p, const double* Ap, int n) {
+    if (S->on_device)
+        dot_device(S, p, Ap, n, S->d_pAp);
+    else
+        S->pAp = comm_allreduce_sum(S->comm, compute_local_dot_3d(S->cublas, p, Ap, n));
+}
+
+/** x += alpha p ; r -= alpha Ap, with alpha = rs_old / p.Ap */
+static void cg_scalars_update_xr(CgScalars* S, const double* p, double* x, const double* Ap,
+                                 double* r, int n, int blocks, int threads) {
+    if (S->on_device) {
+        axpy_ratio_kernel<<<blocks, threads, 0, S->stream>>>(S->d_rs_old, S->d_pAp, 1.0, p, x, n);
+        axpy_ratio_kernel<<<blocks, threads, 0, S->stream>>>(S->d_rs_old, S->d_pAp, -1.0, Ap, r, n);
+    } else {
+        double alpha = S->rs_old / S->pAp;
+        axpy_kernel<<<blocks, threads, 0, S->stream>>>(alpha, p, x, n);
+        axpy_kernel<<<blocks, threads, 0, S->stream>>>(-alpha, Ap, r, n);
+    }
+}
+
+static void cg_scalars_rs_new(CgScalars* S, const double* r, int n) {
+    if (S->on_device)
+        dot_device(S, r, r, n, S->d_rs_new);
+    else
+        S->rs_new = comm_allreduce_sum(S->comm, compute_local_dot_3d(S->cublas, r, r, n));
+}
+
+/** Device mode: bring p.Ap and r.r back to the host (one stream synchronization). */
+static void cg_scalars_read(CgScalars* S) {
+    if (!S->on_device)
+        return;
+    CUDA_CHECK(cudaMemcpyAsync(&S->h_read[0], S->d_pAp, sizeof(double), cudaMemcpyDeviceToHost,
+                               S->stream));
+    CUDA_CHECK(cudaMemcpyAsync(&S->h_read[1], S->d_rs_new, sizeof(double), cudaMemcpyDeviceToHost,
+                               S->stream));
+    CUDA_CHECK(cudaStreamSynchronize(S->stream));
+    S->pAp = S->h_read[0];
+    S->rs_new = S->h_read[1];
+}
+
+/** p = r + beta p, with beta = rs_new / rs_old */
+static void cg_scalars_update_p(CgScalars* S, const double* r, double* p, int n, int blocks,
+                                int threads) {
+    if (S->on_device) {
+        axpby_ratio_kernel<<<blocks, threads, 0, S->stream>>>(1.0, r, S->d_rs_new, S->d_rs_old, p,
+                                                              n);
+    } else {
+        axpby_kernel<<<blocks, threads, 0, S->stream>>>(1.0, r, S->rs_new / S->rs_old, p, n);
+    }
+}
+
+/*
+ * --fused-halo: the same updates, and the threads owning a boundary plane also store their new
+ * value straight into the neighbour's halo (a pointer into its memory from nvshmem_ptr). The fence
+ * makes those stores visible system-wide before anything this thread does next; the signal that
+ * follows the kernel on the stream then tells the neighbour its halo is complete.
+ */
+static __device__ __forceinline__ void store_boundary(double v, int i, int n, int halo,
+                                                      double* into_prev, double* into_next) {
+    if (into_prev && i < halo) {
+        into_prev[i] = v;
+        __threadfence_system();
+    }
+    if (into_next && i >= n - halo) {
+        into_next[i - (n - halo)] = v;
+        __threadfence_system();
+    }
+}
+
+static __global__ void axpby_halo_kernel(double alpha, const double* x, double beta, double* y,
+                                         int n, int halo, double* into_prev, double* into_next) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double v = alpha * x[i] + beta * y[i];  // same expression as axpby_kernel
+        y[i] = v;
+        store_boundary(v, i, n, halo, into_prev, into_next);
+    }
+}
+
+static __global__ void axpby_ratio_halo_kernel(double alpha, const double* x, const double* num,
+                                               const double* den, double* y, int n, int halo,
+                                               double* into_prev, double* into_next) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        double beta = *num / *den;
+        double v = alpha * x[i] + beta * y[i];  // same expression as axpby_ratio_kernel
+        y[i] = v;
+        store_boundary(v, i, n, halo, into_prev, into_next);
+    }
+}
+
+/** p = r + beta p, boundary planes stored into the neighbours' halos as well */
+static void cg_scalars_update_p_fused(CgScalars* S, const double* r, double* p, int n, int halo,
+                                      double* into_prev, double* into_next, int blocks,
+                                      int threads) {
+    if (S->on_device) {
+        axpby_ratio_halo_kernel<<<blocks, threads, 0, S->stream>>>(
+            1.0, r, S->d_rs_new, S->d_rs_old, p, n, halo, into_prev, into_next);
+    } else {
+        axpby_halo_kernel<<<blocks, threads, 0, S->stream>>>(1.0, r, S->rs_new / S->rs_old, p, n,
+                                                             halo, into_prev, into_next);
+    }
+}
+
+/** rs_old = rs_new (device mode swaps the two slots, the host copy follows what was read). */
+static void cg_scalars_advance(CgScalars* S) {
+    if (S->on_device) {
+        double* t = S->d_rs_old;
+        S->d_rs_old = S->d_rs_new;
+        S->d_rs_new = t;
+    }
+    S->rs_old = S->rs_new;
 }
 
 /**
@@ -131,7 +283,10 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    int device_id = rank % device_count;
+    CUDA_CHECK(cudaSetDevice(device_id));
 
     // Z-slab partition: contiguous Z-planes per GPU
     int n_local = n / world_size;
@@ -142,8 +297,9 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, device_id, prop.name, prop.major,
+               prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -158,6 +314,13 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         exit(EXIT_FAILURE);
     }
     cublasSetStream(cublas_handle, stream);
+
+    CommContext* comm = config.comm;
+    int own_comm = 0;
+    if (comm == NULL) {
+        comm = comm_create(COMM_STAGED, MPI_COMM_WORLD, (size_t)halo_size);
+        own_comm = 1;
+    }
 
     // Build local CSR partition
     if (rank == 0 && config.verbose >= 1) {
@@ -229,24 +392,80 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
                halo_mem / 1e3);
     }
 
-    // Pinned host buffers for MPI staging
-    double *h_send_prev = NULL, *h_send_next = NULL;
-    double *h_recv_prev = NULL, *h_recv_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMallocHost(&h_send_prev, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMallocHost(&h_send_next, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_next, halo_size * sizeof(double)));
-    }
-
     // Initialize vectors
     CUDA_CHECK(cudaMemcpy(d_b, &b[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(
         cudaMemcpy(d_x_local, &x[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_r_local, 0, n_local * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_p_local, 0, n_local * sizeof(double)));
+
+    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
+    if (rank > 0) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
+    }
+    if (rank < world_size - 1) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
+    }
+
+    // Exercise every send/receive buffer pair once before the clock starts, so
+    // that lazy connection setup or buffer registration by the communication
+    // library is never timed. The timed region rewrites every halo it reads.
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                       d_p_halo_next, halo_size, stream);
+
+    CgScalars S;
+    cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
+
+    // --fused-halo: p's halo planes live in symmetric memory, so that each neighbour can store
+    // into them directly from its axpby kernel
+    double *into_prev = NULL, *into_next = NULL;
+    if (config.fused_halo) {
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+        d_p_halo_prev = comm_symmetric_alloc(comm, (size_t)halo_size);  // every rank, same order
+        d_p_halo_next = comm_symmetric_alloc(comm, (size_t)halo_size);
+        if (comm_fused_peers(comm, d_p_halo_prev, d_p_halo_next, &into_prev, &into_next) != 0) {
+            fprintf(stderr,
+                    "[Rank %d] --fused-halo: a neighbour's memory is not directly addressable "
+                    "(needs NVLink, PCIe P2P or the same GPU)\n",
+                    rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    }
+
+    // --graph: record check_every iterations once, before the clock starts (instantiation is
+    // setup, like the communicator), then replay them. Every operation of the iteration is
+    // stream-ordered here (device scalars, NCCL), so capture sees no host synchronization. The
+    // rs_old/rs_new slot swap is frozen into the graph: an even count brings it back to the start.
+    cudaGraphExec_t graph_exec = NULL;
+    if (config.use_graph) {
+        const int threads_g = 256;
+        const int blocks_g = (n_local + threads_g - 1) / threads_g;
+        cudaGraph_t graph;
+        CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+        for (int it = 0; it < config.check_every; it++) {
+            stencil7_csr_partitioned_halo_kernel_3d<<<blocks_g, threads_g, 0, stream>>>(
+                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                n_local, row_offset, n, grid_size);
+            cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
+            cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_g,
+                                 threads_g);
+            cg_scalars_rs_new(&S, d_r_local, n_local);
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_g, threads_g);
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+            cg_scalars_advance(&S);
+        }
+        CUDA_CHECK(cudaStreamEndCapture(stream, &graph));
+        CUDA_CHECK(cudaGraphInstantiateWithFlags(&graph_exec, graph, 0));
+        CUDA_CHECK(cudaGraphDestroy(graph));
+    }
 
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -264,18 +483,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial x halo exchange
-    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
-    }
-
-    exchange_halo_mpi_3d(d_x_local,                          // First plane to prev
-                         d_x_local + (n_local - halo_size),  // Last plane to next
-                         d_x_halo_prev, d_x_halo_next, h_send_prev, h_send_next, h_recv_prev,
-                         h_recv_next, halo_size, rank, world_size, stream);
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
 
     // Initial SpMV: Ap = A*x
     stencil7_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
@@ -287,9 +496,8 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
     CUDA_CHECK(cudaMemcpy(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice));
 
     // Exchange r halo
-    exchange_halo_mpi_3d(d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev, d_r_halo_next,
-                         h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
-                         world_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
 
     // p = r
     CUDA_CHECK(
@@ -305,22 +513,55 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
                               cudaMemcpyDeviceToDevice));
     }
 
-    // rs_old = dot(r, r) + AllReduce
-    double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-    double rs_old;
-    MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    double b_norm = sqrt(rs_old);
+    // rs_old = r.r, summed over ranks
+    cg_scalars_rs_init(&S, d_r_local, n_local);
+    double b_norm = sqrt(S.rs_old);
 
     if (rank == 0 && config.verbose >= 2) {
-        printf("[Iter   0] Residual: %.6e\n", sqrt(rs_old));
+        printf("[Iter   0] Residual: %.6e\n", sqrt(S.rs_old));
     }
+
+    // Device mode reads r.r back only to test convergence: every check_every
+    // iterations, at the last one, and at every iteration when tracing.
+    const int check_every = config.check_every > 0 ? config.check_every : 1;
 
     // CG iteration loop
     nvtxRangePush("CG_Solver_3D");
     int iter;
     for (iter = 0; iter < config.max_iters; iter++) {
         nvtxRangePush("CG_Iteration_3D");
+
+        if (graph_exec) {
+            // One launch runs check_every iterations; the newest r.r sits in the rs_old slot
+            CUDA_CHECK(cudaGraphLaunch(graph_exec, stream));
+            iter += config.check_every - 1;
+            CUDA_CHECK(cudaMemcpyAsync(&S.h_read[1], S.d_rs_old, sizeof(double),
+                                       cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            S.rs_new = S.rs_old = S.h_read[1];
+            double residual_norm = sqrt(S.rs_new);
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, graph)\n", iter + 1, residual_norm,
+                       residual_norm / b_norm);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a\n", iter + 1, S.rs_new);
+            }
+            nvtxRangePop();
+            if (residual_norm / b_norm < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                break;
+            }
+            continue;
+        }
+
+        // --fused-halo: the SpMV reads p's halo, which the neighbours wrote at the end of the
+        // previous iteration; iteration 0 reads the halo set up before the loop
+        if (config.fused_halo && iter > 0)
+            comm_fused_wait(comm, stream);
 
         // Ap = A * p
         nvtxRangePush("SpMV_3D");
@@ -331,63 +572,64 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
 
         // alpha = rs_old / (p^T * Ap)
         nvtxRangePush("Dot_Product");
-        double pAp_local = compute_local_dot_3d(cublas_handle, d_p_local, d_Ap, n_local);
+        cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
         nvtxRangePop();
 
-        double pAp;
-        MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-        double alpha = rs_old / pAp;
-
-        // x = x + alpha * p
+        // x = x + alpha * p ; r = r - alpha * Ap
         nvtxRangePush("BLAS_AXPY");
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(alpha, d_p_local, d_x_local, n_local);
-
-        // r = r - alpha * Ap
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(-alpha, d_Ap, d_r_local, n_local);
+        cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_local,
+                             threads);
         nvtxRangePop();
 
         // rs_new = dot(r, r)
         nvtxRangePush("Dot_Product");
-        double rs_local_new = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
+        cg_scalars_rs_new(&S, d_r_local, n_local);
         nvtxRangePop();
 
-        double rs_new;
-        MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        int check = !S.on_device || config.verbose >= 2 || (iter + 1) % check_every == 0 ||
+                    iter + 1 == config.max_iters;
+        if (check) {
+            cg_scalars_read(&S);
+            double residual_norm = sqrt(S.rs_new);
+            double rel_residual = residual_norm / b_norm;
+            double alpha = S.rs_old / S.pAp;
 
-        double residual_norm = sqrt(rs_new);
-        double rel_residual = residual_norm / b_norm;
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1,
+                       residual_norm, rel_residual, alpha);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, S.rs_new, alpha);
+            }
 
-        if (rank == 0 && config.verbose >= 2) {
-            printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
-                   rel_residual, alpha);
+            if (rel_residual < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                nvtxRangePop();
+                break;
+            }
         }
 
-        if (rel_residual < config.tolerance) {
-            iter++;
-            stats->converged = 1;
-            stats->iterations = iter;
-            stats->residual_norm = residual_norm;
-            nvtxRangePop();
-            break;
-        }
-
-        double beta = rs_new / rs_old;
-
-        // p = r + beta * p
+        // p = r + beta * p, beta = rs_new / rs_old
         nvtxRangePush("BLAS_AXPBY");
-        axpby_kernel<<<blocks_local, threads, 0, stream>>>(1.0, d_r_local, beta, d_p_local,
-                                                           n_local);
-        nvtxRangePop();
+        if (config.fused_halo) {
+            // The update writes the neighbours' halos itself; one signal each follows it
+            cg_scalars_update_p_fused(&S, d_r_local, d_p_local, n_local, halo_size, into_prev,
+                                      into_next, blocks_local, threads);
+            comm_fused_notify(comm, stream);
+            nvtxRangePop();
+        } else {
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
+            nvtxRangePop();
 
-        // Halo exchange for p (N² elements per direction)
-        nvtxRangePush("Halo_Exchange_MPI_3D");
-        exchange_halo_mpi_3d(d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
-                             d_p_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                             halo_size, rank, world_size, stream);
-        nvtxRangePop();
+            // Halo exchange for p (N² elements per direction)
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+        }
 
-        rs_old = rs_new;
+        cg_scalars_advance(&S);
         nvtxRangePop();
     }
     nvtxRangePop();
@@ -396,7 +638,7 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         printf("\nMax iterations reached without convergence\n");
         stats->converged = 0;
         stats->iterations = iter;
-        stats->residual_norm = sqrt(rs_old);
+        stats->residual_norm = sqrt(S.rs_old);
     }
 
     // Stop timing
@@ -473,24 +715,26 @@ int cg_solve_mgpu_partitioned_3d(SpmvOperator* spmv_op, MatrixData* mat, const d
         cudaFree(d_x_halo_prev);
     if (d_x_halo_next)
         cudaFree(d_x_halo_next);
-    if (d_p_halo_prev)
-        cudaFree(d_p_halo_prev);
-    if (d_p_halo_next)
-        cudaFree(d_p_halo_next);
+    if (config.fused_halo) {
+        comm_symmetric_free(comm, d_p_halo_prev);
+        comm_symmetric_free(comm, d_p_halo_next);
+    } else {
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+    }
     if (d_r_halo_prev)
         cudaFree(d_r_halo_prev);
     if (d_r_halo_next)
         cudaFree(d_r_halo_next);
 
-    if (h_send_prev)
-        cudaFreeHost(h_send_prev);
-    if (h_send_next)
-        cudaFreeHost(h_send_next);
-    if (h_recv_prev)
-        cudaFreeHost(h_recv_prev);
-    if (h_recv_next)
-        cudaFreeHost(h_recv_next);
+    if (own_comm)
+        comm_destroy(comm);
 
+    if (graph_exec)
+        cudaGraphExecDestroy(graph_exec);
+    cg_scalars_free(&S);
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);
     cudaEventDestroy(start);
@@ -532,7 +776,10 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    int device_id = rank % device_count;
+    CUDA_CHECK(cudaSetDevice(device_id));
 
     int n_local = n / world_size;
     int row_offset = rank * n_local;
@@ -542,8 +789,9 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, device_id, prop.name, prop.major,
+               prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -559,6 +807,13 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     }
     cublasSetStream(cublas_handle, stream);
 
+    CommContext* comm = config.comm;
+    int own_comm = 0;
+    if (comm == NULL) {
+        comm = comm_create(COMM_STAGED, MPI_COMM_WORLD, (size_t)halo_size);
+        own_comm = 1;
+    }
+
     if (rank == 0 && config.verbose >= 1) {
         printf("Building local CSR partitions...\n");
     }
@@ -567,19 +822,19 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
     long long local_nnz = csr_mat.row_ptr[row_offset + n_local] - csr_mat.row_ptr[row_offset];
 
-    long long* d_row_ptr;
-    int* d_col_idx;
-    double* d_values;
-
-    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
-    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
+    long long* d_row_ptr = NULL;
+    int* d_col_idx = NULL;
+    double* d_values = NULL;
 
     long long* local_row_ptr = (long long*)malloc((n_local + 1) * sizeof(long long));
     long long offset = csr_mat.row_ptr[row_offset];
     for (int i = 0; i <= n_local; i++) {
         local_row_ptr[i] = csr_mat.row_ptr[row_offset + i] - offset;
     }
+
+    CUDA_CHECK(cudaMalloc(&d_row_ptr, (n_local + 1) * sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_col_idx, (size_t)local_nnz * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_values, (size_t)local_nnz * sizeof(double)));
 
     CUDA_CHECK(cudaMemcpy(d_row_ptr, local_row_ptr, (n_local + 1) * sizeof(long long),
                           cudaMemcpyHostToDevice));
@@ -601,8 +856,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     double *d_r_halo_prev = NULL, *d_r_halo_next = NULL;
 
     CUDA_CHECK(cudaMalloc(&d_x_local, n_local * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_r_local, n_local * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_p_local, n_local * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_r_local, n_local * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_Ap, n_local * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_b, n_local * sizeof(double)));
 
@@ -615,22 +870,79 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         CUDA_CHECK(cudaMalloc(&d_r_halo_next, halo_size * sizeof(double)));
     }
 
-    double *h_send_prev = NULL, *h_send_next = NULL;
-    double *h_recv_prev = NULL, *h_recv_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMallocHost(&h_send_prev, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMallocHost(&h_send_next, halo_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_next, halo_size * sizeof(double)));
-    }
-
     CUDA_CHECK(cudaMemcpy(d_b, &b[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(
         cudaMemcpy(d_x_local, &x[row_offset], n_local * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_r_local, 0, n_local * sizeof(double)));
     CUDA_CHECK(cudaMemset(d_p_local, 0, n_local * sizeof(double)));
+
+    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
+    if (rank > 0) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
+    }
+    if (rank < world_size - 1) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
+    }
+
+    // Exercise every send/receive buffer pair once before the clock starts, so
+    // that lazy connection setup or buffer registration by the communication
+    // library is never timed. The timed region rewrites every halo it reads.
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
+    comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                       d_p_halo_next, halo_size, stream);
+
+    CgScalars S;
+    cg_scalars_init(&S, config.dots_device, cublas_handle, comm, stream);
+
+    // --fused-halo: p's halo planes live in symmetric memory, so that each neighbour can store
+    // into them directly from its axpby kernel
+    double *into_prev = NULL, *into_next = NULL;
+    if (config.fused_halo) {
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+        d_p_halo_prev = comm_symmetric_alloc(comm, (size_t)halo_size);  // every rank, same order
+        d_p_halo_next = comm_symmetric_alloc(comm, (size_t)halo_size);
+        if (comm_fused_peers(comm, d_p_halo_prev, d_p_halo_next, &into_prev, &into_next) != 0) {
+            fprintf(stderr,
+                    "[Rank %d] --fused-halo: a neighbour's memory is not directly addressable "
+                    "(needs NVLink, PCIe P2P or the same GPU)\n",
+                    rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    }
+
+    // --graph: record check_every iterations once, before the clock starts (instantiation is
+    // setup, like the communicator), then replay them. Every operation of the iteration is
+    // stream-ordered here (device scalars, NCCL), so capture sees no host synchronization. The
+    // rs_old/rs_new slot swap is frozen into the graph: an even count brings it back to the start.
+    cudaGraphExec_t graph_exec = NULL;
+    if (config.use_graph) {
+        const int threads_g = 256;
+        const int blocks_g = (n_local + threads_g - 1) / threads_g;
+        cudaGraph_t graph;
+        CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+        for (int it = 0; it < config.check_every; it++) {
+            stencil27_csr_partitioned_halo_kernel_3d<<<blocks_g, threads_g, 0, stream>>>(
+                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                n_local, row_offset, n, grid_size);
+            cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
+            cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_g,
+                                 threads_g);
+            cg_scalars_rs_new(&S, d_r_local, n_local);
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_g, threads_g);
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+            cg_scalars_advance(&S);
+        }
+        CUDA_CHECK(cudaStreamEndCapture(stream, &graph));
+        CUDA_CHECK(cudaGraphInstantiateWithFlags(&graph_exec, graph, 0));
+        CUDA_CHECK(cudaGraphDestroy(graph));
+    }
 
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -647,17 +959,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial x halo exchange
-    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, halo_size * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_next, halo_size * sizeof(double)));
-    }
-
-    exchange_halo_mpi_3d(d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev, d_x_halo_next,
-                         h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
-                         world_size, stream);
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - halo_size), d_x_halo_prev,
+                       d_x_halo_next, halo_size, stream);
 
     // Initial SpMV: Ap = A*x (27-point kernel)
     stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
@@ -669,9 +972,8 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     CUDA_CHECK(cudaMemcpy(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice));
 
     // Exchange r halo
-    exchange_halo_mpi_3d(d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev, d_r_halo_next,
-                         h_send_prev, h_send_next, h_recv_prev, h_recv_next, halo_size, rank,
-                         world_size, stream);
+    comm_halo_exchange(comm, d_r_local, d_r_local + (n_local - halo_size), d_r_halo_prev,
+                       d_r_halo_next, halo_size, stream);
 
     // p = r
     CUDA_CHECK(
@@ -686,22 +988,55 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
                               cudaMemcpyDeviceToDevice));
     }
 
-    // rs_old
-    double rs_local_old = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
-    double rs_old;
-    MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    double b_norm = sqrt(rs_old);
+    // rs_old = r.r, summed over ranks
+    cg_scalars_rs_init(&S, d_r_local, n_local);
+    double b_norm = sqrt(S.rs_old);
 
     if (rank == 0 && config.verbose >= 2) {
-        printf("[Iter   0] Residual: %.6e\n", sqrt(rs_old));
+        printf("[Iter   0] Residual: %.6e\n", sqrt(S.rs_old));
     }
+
+    // Device mode reads r.r back only to test convergence: every check_every
+    // iterations, at the last one, and at every iteration when tracing.
+    const int check_every = config.check_every > 0 ? config.check_every : 1;
 
     // CG iteration loop
     nvtxRangePush("CG_Solver_27PT_3D");
     int iter;
     for (iter = 0; iter < config.max_iters; iter++) {
         nvtxRangePush("CG_Iteration_27PT_3D");
+
+        if (graph_exec) {
+            // One launch runs check_every iterations; the newest r.r sits in the rs_old slot
+            CUDA_CHECK(cudaGraphLaunch(graph_exec, stream));
+            iter += config.check_every - 1;
+            CUDA_CHECK(cudaMemcpyAsync(&S.h_read[1], S.d_rs_old, sizeof(double),
+                                       cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            S.rs_new = S.rs_old = S.h_read[1];
+            double residual_norm = sqrt(S.rs_new);
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, graph)\n", iter + 1, residual_norm,
+                       residual_norm / b_norm);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a\n", iter + 1, S.rs_new);
+            }
+            nvtxRangePop();
+            if (residual_norm / b_norm < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                break;
+            }
+            continue;
+        }
+
+        // --fused-halo: the SpMV reads p's halo, which the neighbours wrote at the end of the
+        // previous iteration; iteration 0 reads the halo set up before the loop
+        if (config.fused_halo && iter > 0)
+            comm_fused_wait(comm, stream);
 
         // Ap = A * p (27-point kernel)
         nvtxRangePush("SpMV_27PT_3D");
@@ -712,59 +1047,64 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
         // alpha = rs_old / (p^T * Ap)
         nvtxRangePush("Dot_Product");
-        double pAp_local = compute_local_dot_3d(cublas_handle, d_p_local, d_Ap, n_local);
+        cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
         nvtxRangePop();
 
-        double pAp;
-        MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-        double alpha = rs_old / pAp;
-
+        // x = x + alpha * p ; r = r - alpha * Ap
         nvtxRangePush("BLAS_AXPY");
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(alpha, d_p_local, d_x_local, n_local);
-
-        axpy_kernel<<<blocks_local, threads, 0, stream>>>(-alpha, d_Ap, d_r_local, n_local);
+        cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_local,
+                             threads);
         nvtxRangePop();
 
+        // rs_new = dot(r, r)
         nvtxRangePush("Dot_Product");
-        double rs_local_new = compute_local_dot_3d(cublas_handle, d_r_local, d_r_local, n_local);
+        cg_scalars_rs_new(&S, d_r_local, n_local);
         nvtxRangePop();
 
-        double rs_new;
-        MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        int check = !S.on_device || config.verbose >= 2 || (iter + 1) % check_every == 0 ||
+                    iter + 1 == config.max_iters;
+        if (check) {
+            cg_scalars_read(&S);
+            double residual_norm = sqrt(S.rs_new);
+            double rel_residual = residual_norm / b_norm;
+            double alpha = S.rs_old / S.pAp;
 
-        double residual_norm = sqrt(rs_new);
-        double rel_residual = residual_norm / b_norm;
+            if (rank == 0 && config.verbose >= 2) {
+                printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1,
+                       residual_norm, rel_residual, alpha);
+            }
+            if (rank == 0 && config.verbose >= 3) {
+                printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, S.rs_new, alpha);
+            }
 
-        if (rank == 0 && config.verbose >= 2) {
-            printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
-                   rel_residual, alpha);
+            if (rel_residual < config.tolerance) {
+                iter++;
+                stats->converged = 1;
+                stats->iterations = iter;
+                stats->residual_norm = residual_norm;
+                nvtxRangePop();
+                break;
+            }
         }
 
-        if (rel_residual < config.tolerance) {
-            iter++;
-            stats->converged = 1;
-            stats->iterations = iter;
-            stats->residual_norm = residual_norm;
-            nvtxRangePop();
-            break;
-        }
-
-        double beta = rs_new / rs_old;
-
+        // p = r + beta * p, beta = rs_new / rs_old
         nvtxRangePush("BLAS_AXPBY");
-        axpby_kernel<<<blocks_local, threads, 0, stream>>>(1.0, d_r_local, beta, d_p_local,
-                                                           n_local);
-        nvtxRangePop();
+        if (config.fused_halo) {
+            // The update writes the neighbours' halos itself; one signal each follows it
+            cg_scalars_update_p_fused(&S, d_r_local, d_p_local, n_local, halo_size, into_prev,
+                                      into_next, blocks_local, threads);
+            comm_fused_notify(comm, stream);
+            nvtxRangePop();
+        } else {
+            cg_scalars_update_p(&S, d_r_local, d_p_local, n_local, blocks_local, threads);
+            nvtxRangePop();
 
-        // Halo exchange for p
-        nvtxRangePush("Halo_Exchange_MPI_27PT_3D");
-        exchange_halo_mpi_3d(d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
-                             d_p_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                             halo_size, rank, world_size, stream);
-        nvtxRangePop();
+            // Halo exchange for p (N² elements per direction)
+            comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - halo_size), d_p_halo_prev,
+                               d_p_halo_next, halo_size, stream);
+        }
 
-        rs_old = rs_new;
+        cg_scalars_advance(&S);
         nvtxRangePop();
     }
     nvtxRangePop();
@@ -773,7 +1113,7 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         printf("\nMax iterations reached without convergence\n");
         stats->converged = 0;
         stats->iterations = iter;
-        stats->residual_norm = sqrt(rs_old);
+        stats->residual_norm = sqrt(S.rs_old);
     }
 
     CUDA_CHECK(cudaEventRecord(stop, stream));
@@ -832,36 +1172,37 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
     }
 
     cudaFree(d_x_local);
-    cudaFree(d_r_local);
     cudaFree(d_p_local);
-    cudaFree(d_Ap);
-    cudaFree(d_b);
     cudaFree(d_row_ptr);
     cudaFree(d_col_idx);
     cudaFree(d_values);
-
     if (d_x_halo_prev)
         cudaFree(d_x_halo_prev);
     if (d_x_halo_next)
         cudaFree(d_x_halo_next);
-    if (d_p_halo_prev)
-        cudaFree(d_p_halo_prev);
-    if (d_p_halo_next)
-        cudaFree(d_p_halo_next);
+    if (config.fused_halo) {
+        comm_symmetric_free(comm, d_p_halo_prev);
+        comm_symmetric_free(comm, d_p_halo_next);
+    } else {
+        if (d_p_halo_prev)
+            cudaFree(d_p_halo_prev);
+        if (d_p_halo_next)
+            cudaFree(d_p_halo_next);
+    }
+    cudaFree(d_r_local);
+    cudaFree(d_Ap);
+    cudaFree(d_b);
     if (d_r_halo_prev)
         cudaFree(d_r_halo_prev);
     if (d_r_halo_next)
         cudaFree(d_r_halo_next);
 
-    if (h_send_prev)
-        cudaFreeHost(h_send_prev);
-    if (h_send_next)
-        cudaFreeHost(h_send_next);
-    if (h_recv_prev)
-        cudaFreeHost(h_recv_prev);
-    if (h_recv_next)
-        cudaFreeHost(h_recv_next);
+    if (own_comm)
+        comm_destroy(comm);
 
+    if (graph_exec)
+        cudaGraphExecDestroy(graph_exec);
+    cg_scalars_free(&S);
     cublasDestroy(cublas_handle);
     cudaStreamDestroy(stream);
     cudaEventDestroy(start);

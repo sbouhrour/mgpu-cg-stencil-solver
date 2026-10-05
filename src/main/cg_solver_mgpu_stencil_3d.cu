@@ -16,6 +16,7 @@
 #include "io.h"
 #include "spmv.h"
 #include "solvers/cg_solver_mgpu_partitioned.h"
+#include "solvers/comm_backend.h"
 #include "solvers/cg_metrics.h"
 #include "benchmark_stats_mgpu.h"
 
@@ -41,7 +42,23 @@ int main(int argc, char** argv) {
             printf("  --verify        Use known solution (x=1) to verify correctness\n");
             printf("  --max-iters=N   Set maximum CG iterations (default: 5000)\n");
             printf("  --json=<file>   Export results to JSON file\n");
+            printf(
+                "  --runs=N        Timed solves behind the reported median (3-10, default 10)\n");
+            printf("  --verbose=N     0 silent, 1 summary (default), 2 per-iteration residual,\n");
+            printf(
+                "                  3 adds exact (hex) residual trace for bit-level comparison\n");
             printf("  --stencil=N     Stencil type: 7 (default) or 27\n");
+            printf("  --comm=MODE     Halo backend: staged (default), gpuaware, nccl, nvshmem\n");
+            printf("  --dots=MODE     CG scalars: host (default) or device (never read back\n");
+            printf("                  except to test convergence)\n");
+            printf("  --check-every=K With --dots=device, test convergence every K iterations\n");
+            printf("                  (may run up to K-1 iterations past convergence)\n");
+            printf("  --graph         Replay K iterations as one CUDA graph (needs --comm=nccl,\n");
+            printf("                  --dots=device, even --check-every=K)\n");
+            printf(
+                "  --fused-halo    With --comm=nvshmem: the p update stores its boundary planes\n");
+            printf("                  straight into the neighbours' halos (NVLink, P2P or same "
+                   "GPU)\n");
         }
         MPI_Finalize();
         return 1;
@@ -53,6 +70,7 @@ int main(int argc, char** argv) {
     int custom_max_iters = 0;
     int max_iters_value = 5000;
     int stencil_points = 7;  // default: 7-point stencil
+    int bench_runs = 10;     // timed solves behind the median
 
     // Configuration
     CGConfigMultiGPU config;
@@ -60,6 +78,12 @@ int main(int argc, char** argv) {
     config.tolerance = 1e-6;
     config.verbose = 1;
     config.enable_overlap = 0;
+    config.comm = NULL;
+    config.dots_device = 0;
+    config.check_every = 1;
+    config.use_graph = 0;
+    config.fused_halo = 0;
+    CommBackendKind comm_kind_arg = COMM_STAGED;
 
     // Parse arguments before using them
     for (int i = 1; i < argc; i++) {
@@ -76,6 +100,8 @@ int main(int argc, char** argv) {
             max_iters_value = atoi(argv[i] + 12);
         } else if (strncmp(argv[i], "--json=", 7) == 0) {
             json_file = argv[i] + 7;
+        } else if (strncmp(argv[i], "--verbose=", 10) == 0) {
+            config.verbose = atoi(argv[i] + 10);
         } else if (strncmp(argv[i], "--stencil=", 10) == 0) {
             stencil_points = atoi(argv[i] + 10);
             if (stencil_points != 7 && stencil_points != 27) {
@@ -86,7 +112,79 @@ int main(int argc, char** argv) {
             }
             if (rank == 0)
                 printf("Stencil: %d-point\n", stencil_points);
+        } else if (strncmp(argv[i], "--comm=", 7) == 0) {
+            if (comm_backend_parse(argv[i] + 7, &comm_kind_arg) != 0) {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --comm must be staged, gpuaware, nccl or nvshmem\n");
+                MPI_Finalize();
+                return 1;
+            }
+        } else if (strncmp(argv[i], "--dots=", 7) == 0) {
+            const char* mode = argv[i] + 7;
+            if (strcmp(mode, "host") == 0) {
+                config.dots_device = 0;
+            } else if (strcmp(mode, "device") == 0) {
+                config.dots_device = 1;
+            } else {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --dots must be host or device\n");
+                MPI_Finalize();
+                return 1;
+            }
+        } else if (strncmp(argv[i], "--runs=", 7) == 0) {
+            bench_runs = atoi(argv[i] + 7);
+            if (bench_runs < 3 || bench_runs > 10) {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --runs must be between 3 and 10\n");
+                MPI_Finalize();
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--fused-halo") == 0) {
+            config.fused_halo = 1;
+        } else if (strcmp(argv[i], "--graph") == 0) {
+            config.use_graph = 1;
+        } else if (strncmp(argv[i], "--check-every=", 14) == 0) {
+            config.check_every = atoi(argv[i] + 14);
+            if (config.check_every < 1) {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --check-every must be >= 1\n");
+                MPI_Finalize();
+                return 1;
+            }
         }
+    }
+
+    if ((config.dots_device || config.check_every > 1) && config.enable_overlap) {
+        if (rank == 0)
+            fprintf(
+                stderr,
+                "Error: --dots=device and --check-every are not supported with --overlap yet\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (config.use_graph &&
+        (comm_kind_arg != COMM_NCCL || !config.dots_device || config.check_every < 2 ||
+         config.check_every % 2 != 0 || config.enable_overlap)) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --graph needs --comm=nccl --dots=device and an even "
+                            "--check-every >= 2 (no host synchronization inside the graph)\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (config.fused_halo &&
+        (comm_kind_arg != COMM_NVSHMEM || config.enable_overlap || config.use_graph)) {
+        if (rank == 0)
+            fprintf(stderr,
+                    "Error: --fused-halo needs --comm=nvshmem, without --overlap or --graph\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (config.check_every > 1 && !config.dots_device) {
+        if (rank == 0)
+            fprintf(stderr,
+                    "Error: --check-every needs --dots=device (host dots test every iteration)\n");
+        MPI_Finalize();
+        return 1;
     }
 
     if (custom_max_iters) {
@@ -144,6 +242,31 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Select the device before creating the communication context: a NCCL
+    // communicator binds to the device current at creation. The solvers make
+    // the same choice.
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
+
+    // One communication context for every solve below (warmup included): library
+    // setup happens here, once, and never inside a timed region.
+    config.comm =
+        comm_create(comm_kind_arg, MPI_COMM_WORLD, (size_t)mat.grid_size * (size_t)mat.grid_size);
+    if (config.comm == NULL)
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    if (rank == 0) {
+        printf("Communication backend: %s\n", comm_backend_name(comm_kind_arg));
+        printf("CG scalars: %s", config.dots_device ? "device" : "host");
+        if (config.dots_device)
+            printf(" (convergence test every %d iterations)", config.check_every);
+        if (config.use_graph)
+            printf(", CUDA graph");
+        if (config.fused_halo)
+            printf(", halo fused into the p update");
+        printf("\n");
+    }
+
     // Select solver based on stencil type and overlap mode
     int (*solver_fn)(SpmvOperator*, MatrixData*, const double*, double*, CGConfigMultiGPU,
                      CGStatsMultiGPU*);
@@ -184,12 +307,12 @@ int main(int argc, char** argv) {
                profiled_stats.converged ? "converged" : "failed", profiled_stats.iterations);
     }
 
-    // Benchmark: 10 runs with inline median
+    // Benchmark: bench_runs timed solves (10 by default) with inline median
     memset(x, 0, mat.rows * sizeof(double));
     if (rank == 0)
-        printf("Running benchmark (10 runs)...\n");
+        printf("Running benchmark (%d runs)...\n", bench_runs);
 
-    const int num_runs = 10;
+    const int num_runs = bench_runs;
     double times[10];
     CGStatsMultiGPU all_stats[10];
     CGConfigMultiGPU bench_config = config;
@@ -316,11 +439,16 @@ int main(int argc, char** argv) {
                 (stencil_points == 27)
                     ? (config.enable_overlap ? "3d-stencil-27pt-overlap" : "3d-stencil-27pt")
                     : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
-            export_cg_mgpu_json(json_file, mode_str, &mat, &bench_stats, &stats, world_size);
+            export_cg_mgpu_json(json_file, mode_str,
+                                config.fused_halo ? "nvshmem-fused"
+                                                  : comm_backend_name(comm_kind_arg),
+                                config.dots_device ? "device" : "host", config.check_every, &mat,
+                                &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);
         }
     }
 
+    comm_destroy(config.comm);
     free(b);
     free(x);
     if (mat.entries)

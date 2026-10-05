@@ -128,7 +128,7 @@ See [`results.md`](docs/results.md#2d-custom-cg-vs-nvidia-amgx) for the full com
 - **Same convergence**: Both solvers converge in 14 iterations with identical tolerance
 - **Similar scaling efficiency**: 87-94% for both implementations
 
-**3D (27-point)**: at equal transport (Custom CG synchronous solver; both send halos through host memory), the Custom CG is 1.07× to 1.31× faster than AmgX from 128³ to 512³ on 1 to 8 GPUs, with the same iteration count in every case. The gap narrows as communication takes a larger share of the time. See [`results.md`](docs/results.md#3d-custom-cg-vs-nvidia-amgx-27-point).
+**3D (27-point)**: at equal transport (Custom CG synchronous solver; both send halos through host memory), the Custom CG is 1.09× to 1.31× faster than AmgX from 128³ to 512³ on 1 to 8 GPUs, with the same iteration count in every case; the gap narrows as communication takes a larger share of the time. With compute-communication overlap, still through host memory, 1.19× to 1.78×. With NCCL, device dot products and a CUDA graph, a different transport from AmgX's, 1.27× to 1.69×. See [`results.md`](docs/results.md#3d-custom-cg-vs-nvidia-amgx-27-point).
 
 **Why the performance difference?**
 
@@ -151,6 +151,20 @@ The solver is extended to realistic 3D stencils (7-point and 27-point) with comp
 Best results: **1.45× overlap gain** (27pt, 256³, 8 GPUs) and **1.36×** (7pt, 512³, 8 GPUs). The gain depends on how much interior work is available to hide the halo exchange: it vanishes when the per-GPU slab is too thin (7-point, 128³ on 8 GPUs: 0.96×), and it is not monotonic in grid size (27-point on 8 GPUs: 1.45× at 256³, 1.23× at 512³).
 
 See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables across all configurations (7pt/27pt × 128³/256³/512³ × 1/2/4/8 GPUs), strong scaling efficiency analysis, and key observations.
+
+---
+
+## Communication Backends: Host Staging, CUDA-aware MPI, NCCL, NVSHMEM
+
+The 3D solver takes `--comm=staged|gpuaware|nccl|nvshmem` for the halo exchange, `--dots=device` to keep the CG scalars on the GPU, and `--graph` to replay iterations as a CUDA graph. All four backends reproduce the staged residual history bit for bit.
+
+On 8 A100-SXM4-80GB GPUs (27-point stencil), NCCL with device dots and a CUDA graph runs **221.3 µs per iteration at 128³ against 324.0 µs for host staging (1.46×)**, and 5201.7 against 6444.1 µs at 512³ (1.24×).
+
+<p align="center">
+  <img src="docs/figures/comm_backends_a100.png" alt="Time per CG iteration for each communication backend" width="100%">
+</p>
+
+See [Communication Backends](docs/communication.md) for the setup (MPI library per backend, rank placement), the full table, per-iteration Nsight Systems counts, the cross-rank analysis and the nccl-tests calibration.
 
 ---
 

@@ -26,6 +26,8 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 
 **[Compute-Communication Overlap: 3D Analysis](profiling-3d.md)**. How interior/boundary decomposition and dual-stream execution hide MPI halo exchange behind GPU computation, reaching 88% strong scaling efficiency on 8 GPUs.
 
+**[Communication Backends](communication.md)**. Host staging, CUDA-aware MPI, NCCL and NVSHMEM for the halo exchange of the 3D solver: correctness, time per iteration on 8 A100 GPUs, Nsight Systems counts and nccl-tests on the same node.
+
 **[Reproducing the Results](reproducing.md)**. Build the solver, run the benchmark suite, and profile on your own hardware.
 
 **[Methodology](methodology.md)**. Measurement protocol: timing scope, statistical approach, reproducibility conditions, profiling tools.

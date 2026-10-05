@@ -27,6 +27,21 @@ else
     NVCCFLAGS := -O2 --ptxas-options=-O2 --ptxas-options=-allow-expensive-optimizations=true -std=c++11
 endif
 
+# Target architecture. Empty by default, which keeps every previously published figure reproducible
+# with the command that produced it: nvcc then compiles for its own default target and the driver
+# JITs the embedded PTX at load time.
+#
+# Set it (ARCH=90, ARCH=80, ARCH=89) to compile offline for the device actually present. Two reasons
+# to do so on hardware whose numbers are meant to be compared: JIT compiles PTX generated for a much
+# older target, so the two paths are not guaranteed to produce the same code; and recent toolkits
+# have dropped offline support for their old defaults, which turns a missing -arch into a binary
+# with no device code for the card in front of you, a failure that reports itself as "no kernels
+# were profiled" rather than as a compilation error.
+ARCH ?=
+ifneq ($(ARCH),)
+    NVCCFLAGS += -arch=sm_$(ARCH)
+endif
+
 # CUDA libraries come from the toolkit of the nvcc in PATH, and the binaries load them from there
 # at run time. libcusparse.so.12 is the soname in CUDA 12.x and 13.0 alike, so a plain -L lets the
 # loader pick another installed toolkit's cuSPARSE. The rpath is a DT_RPATH (--disable-new-dtags):
@@ -39,6 +54,44 @@ CUDA_LIBDIR := $(CUDA_TOOLKIT_DIR)/lib64
 # whose layout changed leaves stale objects disagreeing on field offsets: a silent, crashing binary.
 DEPFLAGS := -MMD -MP
 
+# Optional NCCL backend (--comm=nccl). Detected in NCCL_HOME, else in the
+# system include path; a build without NCCL keeps the other backends.
+comma := ,
+NCCL_HOME ?=
+ifneq ($(NCCL_HOME),)
+    NCCL_INC := $(NCCL_HOME)/include
+    NCCL_LIB := $(firstword $(wildcard $(NCCL_HOME)/lib/x86_64-linux-gnu $(NCCL_HOME)/lib))
+else
+    NCCL_INC := /usr/include
+    NCCL_LIB :=
+endif
+HAS_NCCL := $(if $(wildcard $(NCCL_INC)/nccl.h),1,0)
+ifeq ($(HAS_NCCL),1)
+    NCCL_CFLAGS := -DHAS_NCCL $(if $(NCCL_HOME),-I$(NCCL_INC))
+    # No rpath to a system directory: it is searched by default anyway, and as an rpath it would
+    # precede the MPI library directory of a CUDA-aware build (both hold a libmpi.so.40)
+    NCCL_LDFLAGS := $(if $(filter-out /usr/lib/x86_64-linux-gnu /usr/lib /usr/lib64,$(NCCL_LIB)),-L$(NCCL_LIB) -Wl$(comma)-rpath$(comma)$(NCCL_LIB)) -lnccl
+endif
+
+# Optional NVSHMEM backend (--comm=nvshmem), from NVSHMEM_HOME. Both the plain layout
+# (include/, lib/) and the Debian package layout (include/nvshmem_12, lib/.../nvshmem/12)
+# are recognised. The module is then compiled relocatable and device-linked against
+# libnvshmem_device, which NVSHMEM's initialisation needs.
+NVSHMEM_HOME ?=
+ifneq ($(NVSHMEM_HOME),)
+    NVSHMEM_INC := $(firstword $(dir $(wildcard $(NVSHMEM_HOME)/include/nvshmem.h $(NVSHMEM_HOME)/include/nvshmem_*/nvshmem.h)))
+    NVSHMEM_LIB := $(firstword $(dir $(wildcard $(NVSHMEM_HOME)/lib/libnvshmem_host.so $(NVSHMEM_HOME)/lib/*/nvshmem/*/libnvshmem_host.so)))
+endif
+HAS_NVSHMEM := $(if $(and $(NVSHMEM_INC),$(NVSHMEM_LIB)),1,0)
+ifeq ($(HAS_NVSHMEM),1)
+    NVSHMEM_CFLAGS := -DHAS_NVSHMEM -rdc=true -I$(NVSHMEM_INC)
+    NVSHMEM_LDFLAGS := -L$(NVSHMEM_LIB) -Wl$(comma)-rpath$(comma)$(NVSHMEM_LIB) -lnvshmem_host \
+                       -lnvshmem_device -lcudadevrt -lcuda
+    NVSHMEM_DLINK := $(OBJ_DIR)/mgpu/comm_backend_dlink.o
+endif
+# NVSHMEM's headers need C++17; only the communication module is built with it
+COMM_NVCCFLAGS := $(if $(filter 1,$(HAS_NVSHMEM)),$(filter-out -std=c++11,$(NVCCFLAGS)) -std=c++17,$(NVCCFLAGS))
+
 # Base includes and libraries
 INCLUDES := -I$(INC_DIR) -I$(INC_DIR)/solvers
 LDFLAGS := -lcusparse -lcublas -Xlinker --disable-new-dtags -Xlinker -rpath=$(CUDA_LIBDIR)
@@ -49,7 +102,7 @@ CU_SRCS := $(shell find $(SRC_DIR) -name '*.cu')
 CU_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_SRCS))
 
 # SpMV benchmark: exclude generators, CG solver, and multi-GPU sources
-CU_SPMV_SRCS := $(filter-out $(SRC_DIR)/matrix/generate_matrix.cu $(SRC_DIR)/main/cg_solver.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil_3d.cu $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/main/generate_matrix_3d.cu $(SRC_DIR)/main/generate_matrix_3d_27pt.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned_3d.cu $(SRC_DIR)/solvers/cg_solver_mgpu_overlap.cu $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu, $(CU_SRCS))
+CU_SPMV_SRCS := $(filter-out $(SRC_DIR)/matrix/generate_matrix.cu $(SRC_DIR)/main/cg_solver.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil_3d.cu $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/main/generate_matrix_3d.cu $(SRC_DIR)/main/generate_matrix_3d_27pt.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned_3d.cu $(SRC_DIR)/solvers/comm_backend.cu $(SRC_DIR)/solvers/cg_solver_mgpu_overlap.cu $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu, $(CU_SRCS))
 CU_SPMV_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_SPMV_SRCS))
 
 # Matrix generator (2D 5-point stencil)
@@ -75,7 +128,7 @@ BIN_MGPU_STENCIL_3D := $(BIN_DIR)/cg_solver_mgpu_stencil_3d
 BIN_SINGLE_GPU_3D := $(BIN_DIR)/cg_solver_single_gpu_3d
 
 # CG solver: exclude generator, spmv_bench, and multi-GPU sources
-CU_CG_SRCS := $(filter-out $(SRC_DIR)/matrix/generate_matrix.cu $(SRC_DIR)/main/main.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil_3d.cu $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/main/generate_matrix_3d.cu $(SRC_DIR)/main/generate_matrix_3d_27pt.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned_3d.cu $(SRC_DIR)/solvers/cg_solver_mgpu_overlap.cu $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu, $(CU_SRCS))
+CU_CG_SRCS := $(filter-out $(SRC_DIR)/matrix/generate_matrix.cu $(SRC_DIR)/main/main.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil.cu $(SRC_DIR)/main/cg_solver_mgpu_stencil_3d.cu $(SRC_DIR)/main/cg_solver_single_gpu_3d.cu $(SRC_DIR)/main/generate_matrix_3d.cu $(SRC_DIR)/main/generate_matrix_3d_27pt.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned.cu $(SRC_DIR)/solvers/cg_solver_mgpu_partitioned_3d.cu $(SRC_DIR)/solvers/comm_backend.cu $(SRC_DIR)/solvers/cg_solver_mgpu_overlap.cu $(SRC_DIR)/spmv/spmv_stencil_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu $(SRC_DIR)/spmv/benchmark_stats_mgpu_partitioned.cu, $(CU_SRCS))
 CU_CG_OBJS := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CU_CG_SRCS))
 
 # Single-GPU 3D solver
@@ -189,6 +242,7 @@ OBJ_MGPU_OVERLAP_SOLVER := $(OBJ_DIR)/mgpu/cg_solver_mgpu_overlap.o
 # 3D stencil solver objects
 OBJ_MGPU_STENCIL_3D_MAIN := $(OBJ_DIR)/mgpu/cg_solver_mgpu_stencil_3d.o
 OBJ_MGPU_3D_SOLVER := $(OBJ_DIR)/mgpu/cg_solver_mgpu_partitioned_3d.o
+OBJ_MGPU_COMM_BACKEND := $(OBJ_DIR)/mgpu/comm_backend.o
 OBJ_MGPU_3D_HALO_KERNEL := $(OBJ_DIR)/mgpu/spmv_stencil_3d_partitioned_halo_kernel.o
 OBJ_MGPU_3D_27PT_HALO_KERNEL := $(OBJ_DIR)/mgpu/spmv_stencil_3d_27pt_partitioned_halo_kernel.o
 
@@ -196,6 +250,13 @@ OBJ_MGPU_3D_27PT_HALO_KERNEL := $(OBJ_DIR)/mgpu/spmv_stencil_3d_27pt_partitioned
 $(OBJ_DIR)/mgpu/%.o: $(SRC_DIR)/main/%.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
 	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) -c $< -o $@
+
+$(OBJ_DIR)/mgpu/comm_backend.o: $(SRC_DIR)/solvers/comm_backend.cu
+	@mkdir -p $(OBJ_DIR)/mgpu
+	$(NVCC) $(COMM_NVCCFLAGS) $(DEPFLAGS) $(INCLUDES) $(MPI_INCLUDES) $(NCCL_CFLAGS) $(NVSHMEM_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/mgpu/comm_backend_dlink.o: $(OBJ_DIR)/mgpu/comm_backend.o
+	$(NVCC) $(NVCCFLAGS) -dlink $< -L$(NVSHMEM_LIB) -lnvshmem_device -o $@
 
 $(OBJ_DIR)/mgpu/%.o: $(SRC_DIR)/solvers/%.cu
 	@mkdir -p $(OBJ_DIR)/mgpu
@@ -231,14 +292,15 @@ $(OBJ_DIR)/mgpu/spmv_stencil_3d_27pt_partitioned_halo_kernel.o: $(SRC_DIR)/spmv/
 
 # Link stencil solver with MPI (halo P2P approach + overlap variant)
 # Note: OBJ_MGPU_3D_HALO_KERNEL needed because overlap solver contains 3D functions
-$(BIN_MGPU_STENCIL): $(OBJ_MGPU_STENCIL_MAIN) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_MGPU_OVERLAP_SOLVER) $(OBJ_MGPU_3D_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_HALO_KERNEL) $(OBJ_MGPU_IO) $(OBJ_MGPU_CSR) $(OBJ_MGPU_STENCIL_SPMV) $(OBJ_MGPU_HALO_KERNEL) $(OBJ_MGPU_BENCH_STATS_PARTITIONED) $(OBJ_MGPU_CG_METRICS)
+# The overlap solver object also holds the 3D overlap solvers, which call the communication module
+$(BIN_MGPU_STENCIL): $(OBJ_MGPU_STENCIL_MAIN) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_MGPU_OVERLAP_SOLVER) $(OBJ_MGPU_COMM_BACKEND) $(NVSHMEM_DLINK) $(OBJ_MGPU_3D_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_HALO_KERNEL) $(OBJ_MGPU_IO) $(OBJ_MGPU_CSR) $(OBJ_MGPU_STENCIL_SPMV) $(OBJ_MGPU_HALO_KERNEL) $(OBJ_MGPU_BENCH_STATS_PARTITIONED) $(OBJ_MGPU_CG_METRICS)
 	@mkdir -p $(BIN_DIR)
-	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS)
+	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS) $(NCCL_LDFLAGS) $(NVSHMEM_LDFLAGS)
 
 # Link 3D stencil solver with MPI (synchronous + overlap, 7-point + 27-point)
-$(BIN_MGPU_STENCIL_3D): $(OBJ_MGPU_STENCIL_3D_MAIN) $(OBJ_MGPU_3D_SOLVER) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_MGPU_OVERLAP_SOLVER) $(OBJ_MGPU_3D_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_HALO_KERNEL) $(OBJ_MGPU_IO) $(OBJ_MGPU_CSR) $(OBJ_MGPU_STENCIL_SPMV) $(OBJ_MGPU_HALO_KERNEL) $(OBJ_MGPU_BENCH_STATS_PARTITIONED) $(OBJ_MGPU_CG_METRICS)
+$(BIN_MGPU_STENCIL_3D): $(OBJ_MGPU_STENCIL_3D_MAIN) $(OBJ_MGPU_3D_SOLVER) $(OBJ_MGPU_COMM_BACKEND) $(NVSHMEM_DLINK) $(OBJ_MGPU_STENCIL_SOLVER) $(OBJ_MGPU_OVERLAP_SOLVER) $(OBJ_MGPU_3D_HALO_KERNEL) $(OBJ_MGPU_3D_27PT_HALO_KERNEL) $(OBJ_MGPU_IO) $(OBJ_MGPU_CSR) $(OBJ_MGPU_STENCIL_SPMV) $(OBJ_MGPU_HALO_KERNEL) $(OBJ_MGPU_BENCH_STATS_PARTITIONED) $(OBJ_MGPU_CG_METRICS)
 	@mkdir -p $(BIN_DIR)
-	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS)
+	$(MPICXX) $^ -o $@ $(LDFLAGS) $(CUDA_LDFLAGS) $(NCCL_LDFLAGS) $(NVSHMEM_LDFLAGS)
 
 # Single-GPU 3D solver binary
 $(BIN_SINGLE_GPU_3D): $(CU_SINGLE_GPU_3D_OBJS)
