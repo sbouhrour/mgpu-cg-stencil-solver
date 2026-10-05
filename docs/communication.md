@@ -48,7 +48,9 @@ send/receive buffer pair before its start event.
 
 ## 3. Measurement setup
 
-Measured on 1 and 2 October 2026, solver code at commit `a485963`.
+Sections 4 and 6: measured on 5 October 2026, solver code at commit `c29dea7`. Section 5 and the Open MPI
+and placement comparisons below: 1 and 2 October 2026, solver code at commit `a485963`, same node; the
+per-iteration counts of section 5 were measured again on 5 October and are identical.
 
 - **Node**: 8× NVIDIA A100-SXM4-80GB, NVLink NV12 between every GPU pair (HGX board, NVSwitch),
   driver 580.65.06. 2× AMD EPYC 7532, 8 NUMA nodes; each GPU pair is local to one of them.
@@ -77,19 +79,19 @@ Time per CG iteration (µs), 27-point stencil; speedup over `staged` in brackets
 
 | Configuration | 128³, 2 GPUs | 128³, 4 GPUs | 128³, 8 GPUs | 512³, 8 GPUs |
 |---|---:|---:|---:|---:|
-| `staged`, host dots | 429.3 | 357.0 | 323.9 | 6518.7 |
-| `staged`, overlap | 394.9 (1.09×) | 287.1 (1.24×) | 296.8 (1.09×) | 5310.4 (1.23×) |
-| `nccl`, host dots | 389.9 (1.10×) | 285.5 (1.25×) | 234.2 (1.38×) | 5276.5 (1.24×) |
-| `nccl`, device dots | 382.7 (1.12×) | 281.1 (1.27×) | 232.2 (1.39×) | 5217.8 (1.25×) |
-| `nccl`, device dots, CUDA graph | **372.8 (1.15×)** | **272.1 (1.31×)** | **223.6 (1.45×)** | **5202.8 (1.25×)** |
-| `nccl`, overlap | 412.4 (1.04×) | 305.8 (1.17×) | 255.4 (1.27×) | 5458.7 (1.19×) |
-| `nvshmem`, device dots | 391.4 (1.10×) | 313.8 (1.14×) | 266.5 (1.22×) | 5222.9 (1.25×) |
-| `nvshmem`, fused halo | 380.6 (1.13×) | 299.4 (1.19×) | 250.0 (1.30×) | 5263.4 (1.24×) |
-| `gpuaware` (Open MPI 5.0.8) | 590.2 (0.73×) | 659.0 (0.54×) | 680.7 (0.48×) | 9741.6 (0.67×) |
-| AmgX, `MPI` | 548.9 (0.78×) | 409.1 (0.87×) | 350.9 (0.92×) | 7294.3 (0.89×) |
-| AmgX, `MPI_DIRECT` (Open MPI 5.0.8) | 727.8 (0.59×) | 738.9 (0.48×) | 688.6 (0.47×) | 10413.7 (0.63×) |
+| `staged`, host dots | 429.6 | 356.6 | 324.0 | 6444.1 |
+| `staged`, overlap | 395.9 (1.09×) | 286.9 (1.24×) | 295.3 (1.10×) | 5279.0 (1.22×) |
+| `nccl`, host dots | 388.6 (1.11×) | 284.2 (1.25×) | 233.7 (1.39×) | 5269.6 (1.22×) |
+| `nccl`, device dots | 383.3 (1.12×) | 281.0 (1.27×) | 232.8 (1.39×) | 5221.9 (1.23×) |
+| `nccl`, device dots, CUDA graph | **372.7 (1.15×)** | **270.0 (1.32×)** | **221.3 (1.46×)** | **5201.7 (1.24×)** |
+| `nccl`, overlap | 411.3 (1.04×) | 305.5 (1.17×) | 257.0 (1.26×) | 5448.5 (1.18×) |
+| `nvshmem`, device dots | 391.0 (1.10×) | 313.9 (1.14×) | 265.2 (1.22×) | 5224.1 (1.23×) |
+| `nvshmem`, fused halo | 379.5 (1.13×) | 291.8 (1.22×) | 249.9 (1.30×) | 5260.5 (1.23×) |
+| `gpuaware` (Open MPI 5.0.8) | 593.0 (0.72×) | 658.9 (0.54×) | 621.7 (0.52×) | 9798.0 (0.66×) |
+| AmgX, `MPI` | 549.0 (0.78×) | 410.2 (0.87×) | 352.8 (0.92×) | 7254.4 (0.89×) |
+| AmgX, `MPI_DIRECT` (Open MPI 5.0.8) | 726.7 (0.59×) | 739.2 (0.48×) | 684.8 (0.47×) | 10403.3 (0.62×) |
 
-One GPU: 614.8 µs per iteration at 128³, 36044.4 µs at 512³ (no communication).
+One GPU: 613.4 µs per iteration at 128³, 36044.9 µs at 512³ (no communication).
 
 ## 5. What the timelines show
 
@@ -134,20 +136,21 @@ takes 44.2 µs once both have started.
 
 | Message | send/recv | all-reduce |
 |---|---:|---:|
-| 8 B | 12.49 µs | 19.72 µs (14.32 µs from a CUDA graph) |
-| 128 KiB (halo, 128³) | 28.95 µs | 32.57 µs |
-| 512 KiB (halo, 256³) | 36.03 µs | 33.77 µs |
-| 2 MiB (halo, 512³) | 71.53 µs | 66.01 µs |
-| 1 GiB | 5174.77 µs (207.5 GB/s) | 9034.83 µs (bus bandwidth 207.98 GB/s) |
+| 8 B | 12.61 µs | 19.82 µs (14.32 µs from a CUDA graph) |
+| 128 KiB (halo, 128³) | 28.96 µs | 33.12 µs |
+| 512 KiB (halo, 256³) | 36.16 µs | 33.78 µs |
+| 2 MiB (halo, 512³) | 69.35 µs | 66.15 µs |
+| 1 GiB | 5164.89 µs (207.9 GB/s) | 9037.91 µs (bus bandwidth 207.91 GB/s) |
 
-8-byte all-reduce by algorithm and protocol (`NCCL_ALGO`, `NCCL_PROTO`): Ring/LL 19.68 µs, Tree/LL
-24.82 µs, Ring/LL128 35.40 µs, Tree/LL128 64.14 µs, Ring/Simple 91.38 µs, Tree/Simple 120.37 µs; NVLS
+8-byte all-reduce by algorithm and protocol (`NCCL_ALGO`, `NCCL_PROTO`): Ring/LL 19.98 µs, Tree/LL
+23.58 µs, Ring/LL128 35.42 µs, Tree/LL128 42.05 µs, Ring/Simple 92.38 µs, Tree/Simple 118.38 µs; NVLS
 is not supported on this node.
 
 The solver's communication costs what the library costs at the same size: 19.6 µs per all-reduce
-against 19.72 µs, and 44.2 µs for a halo sent in both directions against 36.03 µs for send/recv in one.
-A two-parameter fit `t = α + n/β` over all 28 sizes (α = 12.35 µs, β = 211 GB/s, printed by
-`comm_model.py`) gives 14.8 µs at 512 KiB and 22.3 µs at 2 MiB; the measured curve reaches the bandwidth
+(traces of 2 October, section 5) against 19.82 µs, and 44.2 µs for a halo sent in both directions against
+36.16 µs for send/recv in one.
+A two-parameter fit `t = α + n/β` over all 28 sizes (α = 12.51 µs, β = 211.9 GB/s, printed by
+`comm_model.py`) gives 15.0 µs at 512 KiB and 22.4 µs at 2 MiB; the measured curve reaches the bandwidth
 plateau only above ~100 MB, so solver-size messages are read from the curve, not from the fit.
 
 ## 7. Reproducing

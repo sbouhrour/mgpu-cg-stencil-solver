@@ -224,7 +224,7 @@ echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx           # 3D, 2
 
 A full file (`./bin/generate_matrix`, `generate_matrix_3d`, `generate_matrix_3d_27pt`) is still read as before; the 27-point solver reads only its header.
 
-### Communication backends: NCCL 1.45× over host staging (27-point, 128³, 8 GPUs)
+### Communication backends: NCCL 1.46× over host staging (27-point, 128³, 8 GPUs)
 
 [Communication Backends](communication.md#4-results)
 

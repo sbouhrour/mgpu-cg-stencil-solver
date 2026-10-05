@@ -156,7 +156,7 @@ See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables acr
 
 The 3D solver takes `--comm=staged|gpuaware|nccl|nvshmem` for the halo exchange, `--dots=device` to keep the CG scalars on the GPU, and `--graph` to replay iterations as a CUDA graph. All four backends reproduce the staged residual history bit for bit.
 
-On 8 A100-SXM4-80GB GPUs (27-point stencil), NCCL with device dots and a CUDA graph runs **223.6 µs per iteration at 128³ against 323.9 µs for host staging (1.45×)**, and 5202.8 against 6518.7 µs at 512³ (1.25×).
+On 8 A100-SXM4-80GB GPUs (27-point stencil), NCCL with device dots and a CUDA graph runs **221.3 µs per iteration at 128³ against 324.0 µs for host staging (1.46×)**, and 5201.7 against 6444.1 µs at 512³ (1.24×).
 
 <p align="center">
   <img src="docs/figures/comm_backends_a100.png" alt="Time per CG iteration for each communication backend" width="100%">
