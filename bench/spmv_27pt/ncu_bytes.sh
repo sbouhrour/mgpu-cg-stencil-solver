@@ -32,6 +32,10 @@ for v in $VARIANTS; do
         echo "ncu failed for $v, see $OUT/$v.err"
         continue
     }
+    # ncu exits 0 when it is refused the counters (ERR_NVGPUCTRPERM): report its error line
+    if grep -h '^==ERROR==' "$OUT/$v.csv" "$OUT/$v.err"; then
+        echo "ncu reported an error for $v: no metrics"
+    fi
 done
 
 python3 - "$OUT" "$N" "$REPS" $VARIANTS <<'EOF'
