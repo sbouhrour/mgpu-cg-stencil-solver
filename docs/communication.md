@@ -16,7 +16,7 @@ are the same for all four.
 
 | Backend | Halo path | Host synchronizations per halo |
 |---|---|---|
-| `staged` (default, the published results) | device → pinned host → MPI → pinned host → device | 2 |
+| `staged` (default; the backend of the scaling and AmgX results) | device → pinned host → MPI → pinned host → device | 2 |
 | `gpuaware` | device pointers handed to a CUDA-aware MPI | 1 (MPI does not know CUDA streams) |
 | `nccl` | `ncclSend`/`ncclRecv` to both neighbours in one group, enqueued on the solver's stream | 0 |
 | `nvshmem` | one-sided puts into the neighbour's symmetric memory with a signal, ordered on the stream | 0 |
@@ -48,9 +48,10 @@ send/receive buffer pair before its start event.
 
 ## 3. Measurement setup
 
-Sections 4 and 6: measured on 5 October 2026, solver code at commit `c29dea7`. Section 5 and the Open MPI
-and placement comparisons below: 1 and 2 October 2026, solver code at commit `a485963`, same node; the
-per-iteration counts of section 5 were measured again on 5 October and are identical.
+Sections 4 and 6: measured on 5 October 2026, solver code at commit `c29dea7` (PR #23). Section 5 and the
+Open MPI and placement comparisons below: 1 and 2 October 2026, solver code at commit `a485963` (branch
+`p3/comm-backends`), same node; the per-iteration counts of section 5 were measured again on 5 October and
+are identical.
 
 - **Node**: 8× NVIDIA A100-SXM4-80GB, NVLink NV12 between every GPU pair (HGX board, NVSwitch),
   driver 580.65.06. 2× AMD EPYC 7532, 8 NUMA nodes; each GPU pair is local to one of them.
@@ -67,14 +68,16 @@ per-iteration counts of section 5 were measured again on 5 October and are ident
   unbound ranks ran the 27-point 256³ solve on 8 GPUs in 526 ms, bound ranks in 327 ms.
 - **Protocol**: each configuration is the median of 5 timed solves, capped at 300 iterations, and every
   time is divided by the run's own iteration count. At 512³ every run reaches the cap. At 128³ the
-  solver converges first: 151 iterations, 160 with device dots (which test convergence every 10);
-  the AmgX runs stopped at 231. Every backend follows the same residual history (section 2), so the
-  time per iteration compares the same work.
+  solver converges first: 151 iterations, 160 with device dots (which test convergence every 10).
+  AmgX is given an unreachable tolerance (1e-300) to run a fixed number of iterations, and reports
+  convergence after 231 at 128³; at the same tolerance as the Custom CG (1e-6), both take 151 (see
+  [`results.md`](results.md#3d-custom-cg-vs-nvidia-amgx-27-point)). Every backend follows the same
+  residual history (section 2), so the time per iteration compares the same work.
 
 ## 4. Results
 
 Time per CG iteration (µs), 27-point stencil; speedup over `staged` in brackets. Raw data:
-[`data/comm_backends_a100/`](data/comm_backends_a100/), table produced by
+[`data/comm_backends_a100/`](https://github.com/sbouhrour/mgpu-cg-stencil-solver/tree/main/docs/data/comm_backends_a100), table produced by
 `scripts/benchmarking/comm_table.py`.
 
 | Configuration | 128³, 2 GPUs | 128³, 4 GPUs | 128³, 8 GPUs | 512³, 8 GPUs |
