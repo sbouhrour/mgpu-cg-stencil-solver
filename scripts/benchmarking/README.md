@@ -82,6 +82,10 @@ Five scripts to evaluate the performance of the multi-GPU CG solver and SpMV.
 ```bash
 ./scripts/benchmarking/benchmark_amgx.sh matrix/stencil_20000x20000.mtx
 
+# 3D 27-point operator, built in memory from a header-only file
+echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx
+./scripts/benchmarking/benchmark_amgx.sh matrix/stencil3d_27pt_256.mtx --stencil=27
+
 # Results in: results_amgx_[GPU]_[MATRIX]_[DATE]/
 ```
 

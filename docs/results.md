@@ -162,3 +162,19 @@ Both solvers run unpreconditioned CG to the same relative residual (1e-6, L2 nor
 | | 8 | 3992.9 ms | 4438.1 ms | 1.11× |
 
 <sub>512³ on 1 rank: AmgX's distributed matrix indexes local entries with 32-bit integers, and the rank holds 3.6 × 10⁹ entries. On 2 ranks (1.8 × 10⁹ local entries), the AmgX matrix upload stopped with "CUDA kernel launch error". Raw data: [`data/amgx_3d_a100/`](data/amgx_3d_a100/). Reproduce: `./scripts/benchmarking/benchmark_amgx.sh <header-only file> --stencil=27` for AmgX, `cg_solver_mgpu_stencil_3d <header-only file> --stencil=27` for the Custom CG.</sub>
+
+## 3D: 27-Point SpMV vs cuSPARSE CSR (single GPU)
+
+The same CSR arrays for every variant (`bench/spmv_27pt/`): cuSPARSE ALG1 (32-bit indices, the faster of ALG1 and ALG2), the row-major kernel of the 3D solver (one thread per row), and `staged`, the same kernel with the values of each warp's 32 rows copied to shared memory by coalesced 16-byte `cp.async` before use. `staged` and the row-major kernel produce bitwise identical results. Kernel time, median of 30 launches, constant coefficients; variable symmetric coefficients give the same times within 0.2%.
+
+**Hardware**: NVIDIA A100-SXM4-80GB · Driver 580.65.06 · default L2 fetch granularity (64 bytes) · measured on 5 October 2026, benchmark and kernel as in commit `6896030`
+
+| Grid | CUDA (cuSPARSE) | cuSPARSE ALG1 | Row-major | Staged |
+|------|-----------------|--------------:|----------:|-------:|
+| 256³ | 12.8 (12.5.8) | 4.530 ms | 3.348 ms (1.35×) | 2.789 ms (1.62×) |
+| 384³ | 12.8 (12.5.8) | 15.064 ms | 11.797 ms (1.28×) | 9.147 ms (1.65×) |
+| 256³ | 13.0 (12.6.3) | 4.339 ms | 3.347 ms (1.30×) | 2.786 ms (1.56×) |
+| 384³ | 13.0 (12.6.3) | 14.574 ms | 11.797 ms (1.24×) | 9.153 ms (1.59×) |
+
+<sub>Speedups against cuSPARSE ALG1 of the same CUDA version. Raw output: `bench/spmv_27pt/run_session.sh` writes one text file per coefficient set and a CSV.</sub>
+

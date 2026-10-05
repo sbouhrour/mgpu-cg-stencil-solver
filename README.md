@@ -107,7 +107,7 @@ The stencil optimization operates directly on CSR without converting to DIA/ELL/
 
 </details>
 
-See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison, 3D overlap).
+See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison in 2D and 3D, 3D overlap, 27-point SpMV).
 
 ---
 
@@ -127,6 +127,8 @@ See [`results.md`](docs/results.md#2d-custom-cg-vs-nvidia-amgx) for the full com
 - **~40% faster at every scale**: Custom CG outperforms AmgX on both single-GPU and 8 GPUs
 - **Same convergence**: Both solvers converge in 14 iterations with identical tolerance
 - **Similar scaling efficiency**: 87-94% for both implementations
+
+**3D (27-point)**: at equal transport (Custom CG synchronous solver; both send halos through host memory), the Custom CG is 1.07× to 1.31× faster than AmgX from 128³ to 512³ on 1 to 8 GPUs, with the same iteration count in every case. The gap narrows as communication takes a larger share of the time. See [`results.md`](docs/results.md#3d-custom-cg-vs-nvidia-amgx-27-point).
 
 **Why the performance difference?**
 
@@ -284,7 +286,7 @@ behind useful computation.
 │   ├── benchmarking/               # Individual benchmark scripts
 │   ├── plotting/                   # Python plotting utilities
 │   └── visualizations/             # README figure generation scripts
-├── results/
+├── results/                        # Created by the benchmark scripts
 │   ├── raw/                        # Raw benchmark outputs (TXT)
 │   ├── json/                       # Structured results (JSON)
 │   └── figures/                    # Generated plots (PNG)
@@ -299,6 +301,7 @@ behind useful computation.
 │   ├── matrix/                     # Stencil Matrix Market generator
 │   └── io/                         # Matrix I/O
 ├── include/                        # Header files
+├── bench/spmv_27pt/                # 27-point SpMV benchmark against cuSPARSE (single GPU)
 ├── docs/                           # Documentation & pre-generated figures
 └── external/benchmarks/amgx/       # NVIDIA AmgX comparison
 ```
@@ -307,12 +310,13 @@ behind useful computation.
 
 ## Documentation
 
-- **[Results](docs/results.md)**: All benchmark tables: 2D scaling, SpMV comparison, AmgX comparison, 3D overlap
+- **[Results](docs/results.md)**: All benchmark tables: 2D scaling, SpMV comparison, AmgX comparison (2D and 3D), 3D overlap, 27-point SpMV
 - **[Profiling Analysis (2D)](docs/profiling-2d.md)**: Why stencil specialization wins: kernel breakdown, roofline analysis, speedup attribution
 - **[Profiling Analysis (3D)](docs/profiling-3d.md)**: Compute-communication overlap, interior/boundary decomposition
 - **[Methodology](docs/methodology.md)**: Measurement protocol, statistical approach, profiling tools
 - **[Reproducing the Results](docs/reproducing.md)**: Build, run, and profile on your own hardware
-- **[Development](docs/development.md)**: Build system, adding kernels and solvers, running tests
+- **[Development](docs/development.md)**: Build system, adding kernels and solvers, checking a change
+- **[27-point SpMV benchmark](bench/spmv_27pt/README.md)**: coalesced staging of the CSR values against cuSPARSE, on the same arrays
 
 ---
 
