@@ -160,5 +160,7 @@ export RANKFILE=$PWD/out/rankfile
 ./scripts/benchmarking/comm_calibrate.sh
 SET=core RUNS=5 ./scripts/benchmarking/comm_matrix.sh
 ./scripts/benchmarking/comm_profile.sh
-python3 scripts/visualizations/plot_comm_backends.py --input-dir=out/comm_matrix
+python3 -m venv .venv-plot && .venv-plot/bin/pip install -r scripts/plotting/requirements.txt
+.venv-plot/bin/python scripts/visualizations/plot_comm_backends.py --input-dir=out/comm_matrix \
+    --output=docs/figures/comm_backends_a100.png
 ```

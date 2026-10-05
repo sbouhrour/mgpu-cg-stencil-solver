@@ -41,13 +41,25 @@ if [ ! -x "$NT/build/all_reduce_perf" ]; then
 fi
 (cd "$NT" && git log --oneline -1 2>/dev/null) | sed 's/^/  nccl-tests /'
 
+# The ranks must load the libmpi of $MPIRUN. Open MPI 4 and 5 share the soname libmpi.so.40, and
+# the nccl-tests binary has no rpath: with the system Open MPI first in the library path, each rank
+# starts as a singleton and nccl-tests reports 8 one-rank runs instead of one 8-rank run.
+MPI_LIB="$(dirname "$(dirname "$(command -v "$MPIRUN")")")/lib"
+LIBX=(-x LD_LIBRARY_PATH="$MPI_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}")
+
 # One process per GPU, as in the solver
 nt() {  # $1 ranks, $2 binary, rest: arguments -> stdout
     local np=$1 bin=$2; shift 2
     # shellcheck disable=SC2046
-    "$MPIRUN" "${ROOT[@]}" $(pin_args "$MPIRUN") -np "$np" "${ENVX[@]}" "$NT/build/$bin" -g 1 -d double -w 20 -n 100 "$@"
+    "$MPIRUN" "${ROOT[@]}" $(pin_args "$MPIRUN") -np "$np" "${LIBX[@]}" "${ENVX[@]}" \
+        "$NT/build/$bin" -g 1 -d double -w 20 -n 100 "$@"
 }
 ENVX=()
+one_job() {  # $1 output, $2 ranks: one job prints one summary and lists every rank
+    [ "$(grep -c 'Avg bus bandwidth' "$1")" -eq 1 ] && grep -qE "^#  Rank +$(($2 - 1)) " "$1" && return 0
+    echo "  FAILED: $1 is not one $2-rank run (ranks did not join one MPI job; ldd $NT/build/all_reduce_perf | grep libmpi)"
+    exit 1
+}
 
 hr "2. Bandwidth and latency, 8 B to 1 GiB"
 for np in 2 "$NGPU"; do
@@ -55,6 +67,7 @@ for np in 2 "$NGPU"; do
     for op in sendrecv all_reduce; do
         f="$OUT/${op}_np${np}.txt"
         nt "$np" "${op}_perf" -b 8 -e 1G -f 2 > "$f" 2>&1
+        one_job "$f" "$np"
         printf '  %-11s np=%-2s %s\n' "$op" "$np" "$(grep 'Avg bus bandwidth' "$f" | tr -s ' ')"
     done
 done
