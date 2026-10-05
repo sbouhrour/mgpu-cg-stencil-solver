@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-10-05 20:29:31",
+  "solver": "AmgX CG",
+  "mode": "multi-gpu-2",
+  "matrix": {
+    "rows": 16777216,
+    "cols": 16777216,
+    "nnz": 449455096,
+    "grid_size": 256
+  },
+  "convergence": {
+    "converged": true,
+    "iterations": 303
+  },
+  "timing": {
+    "median_ms": 965.171,
+    "mean_ms": 965.417,
+    "min_ms": 960.794,
+    "max_ms": 970.528,
+    "std_dev_ms": 3.467
+  },
+  "statistics": {
+    "valid_runs": 10,
+    "outliers_removed": 0
+  },
+  "performance": {
+    "gflops": 282.199
+  }
+}
