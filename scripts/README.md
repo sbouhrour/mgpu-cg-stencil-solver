@@ -44,3 +44,4 @@ See [benchmarking/README.md](benchmarking/README.md) for detailed documentation 
 - `benchmark_weak_scaling.sh` - Weak scaling
 - `benchmark_amgx.sh` - AmgX reference (1-8 ranks)
 - `benchmark_3d_overlap.sh` - 3D sync vs overlap (7-point, 27-point)
+- `comm_*.sh` - communication backends of the 3D solver (setup, correctness, nccl-tests, timing matrix, Nsight Systems), see [Communication Backends](../docs/communication.md)

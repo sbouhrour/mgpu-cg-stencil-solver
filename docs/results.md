@@ -146,7 +146,7 @@ At equal transport, the Custom CG synchronous solver solves the 3D 27-point syst
 
 All runs solve unpreconditioned CG to the same relative residual (1e-6, L2 norm, from x0 = 0 with b = 1). The synchronous and overlap solvers and AmgX take the same number of iterations: 151 at 128³, 303 at 256³, 611 at 512³. The NCCL configuration tests convergence every 10 iterations (`--check-every=10`), so it stops after 160, 310 and 620; its time includes them. AmgX uses its `MPI` communicator (Open MPI 4.1.6 without CUDA support); its `MPI_DIRECT` communicator is slower on this node (see [Communication Backends](communication.md)). Time to solution, median of 10 solves.
 
-**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink NV12) · CUDA 12.8 · Driver 580.65.06 · AmgX v2.5.0 · ranks bound to the CPU cores local to their GPU · measured on 5 October 2026 at commit `ba170c8`
+**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink NV12) · CUDA 12.8 · Driver 580.65.06 · AmgX v2.5.0 · ranks bound to the CPU cores local to their GPU · measured on 5 October 2026 at commit `ba170c8` (PR #23)
 
 | Grid | GPUs | NVIDIA AmgX | Custom, synchronous | Custom, overlap | Custom, NCCL + CUDA graph |
 |------|-----:|------------:|--------------------:|----------------:|--------------------------:|
@@ -163,13 +163,13 @@ All runs solve unpreconditioned CG to the same relative residual (1e-6, L2 norm,
 | | 4 | 7639.5 ms | 6631.8 ms (1.15×) | 5947.5 ms (1.28×) | 5994.5 ms (1.27×) |
 | | 8 | 4412.9 ms | 3985.1 ms (1.11×) | 3228.3 ms (1.37×) | 3218.6 ms (1.37×) |
 
-<sub>AmgX / Custom in brackets. Overlap and NCCL run on 2 GPUs or more. 512³ on 1 rank: AmgX's distributed matrix indexes local entries with 32-bit integers, and the rank holds 3.6 × 10⁹ entries. On 2 ranks (1.8 × 10⁹ local entries), the AmgX matrix upload stopped with "CUDA kernel launch error". Raw data: [`data/amgx_3d_a100/`](data/amgx_3d_a100/). Commands: [Reproducing](reproducing.md).</sub>
+<sub>AmgX / Custom in brackets. Overlap and NCCL run on 2 GPUs or more. 512³ on 1 rank: AmgX's distributed matrix indexes local entries with 32-bit integers, and the rank holds 3.6 × 10⁹ entries. On 2 ranks (1.8 × 10⁹ local entries), the AmgX matrix upload stopped with "CUDA kernel launch error". Raw data: [`data/amgx_3d_a100/`](https://github.com/sbouhrour/mgpu-cg-stencil-solver/tree/main/docs/data/amgx_3d_a100). Commands: [Reproducing](reproducing.md).</sub>
 
 ## 3D: 27-Point SpMV vs cuSPARSE CSR (single GPU)
 
 The same CSR arrays for every variant (`bench/spmv_27pt/`): cuSPARSE ALG1 (32-bit indices, the faster of ALG1 and ALG2), the row-major kernel of the 3D solver (one thread per row), and `staged`, the same kernel with the values of each warp's 32 rows copied to shared memory by coalesced 16-byte `cp.async` before use. `staged` and the row-major kernel produce bitwise identical results. Kernel time, median of 30 launches, constant coefficients; variable symmetric coefficients give the same times within 0.2%.
 
-**Hardware**: NVIDIA A100-SXM4-80GB · Driver 580.65.06 · default L2 fetch granularity (64 bytes) · measured on 5 October 2026, benchmark and kernel as in commit `6896030`
+**Hardware**: NVIDIA A100-SXM4-80GB · Driver 580.65.06 · default L2 fetch granularity (64 bytes) · measured on 5 October 2026, benchmark and kernel of PR #19
 
 | Grid | CUDA (cuSPARSE) | cuSPARSE ALG1 | Row-major | Staged |
 |------|-----------------|--------------:|----------:|-------:|
