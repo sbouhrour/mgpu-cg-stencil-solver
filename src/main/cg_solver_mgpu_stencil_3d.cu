@@ -59,6 +59,9 @@ int main(int argc, char** argv) {
                 "  --fused-halo    With --comm=nvshmem: the p update stores its boundary planes\n");
             printf("                  straight into the neighbours' halos (NVLink, P2P or same "
                    "GPU)\n");
+            printf("  --spmv=KERNEL   27-point SpMV: rowmajor (default, coefficients read from\n");
+            printf("                  global memory) or staged (each warp stages its rows'\n");
+            printf("                  coefficients in shared memory; same result bit for bit)\n");
         }
         MPI_Finalize();
         return 1;
@@ -83,6 +86,7 @@ int main(int argc, char** argv) {
     config.check_every = 1;
     config.use_graph = 0;
     config.fused_halo = 0;
+    config.spmv_staged = 0;
     CommBackendKind comm_kind_arg = COMM_STAGED;
 
     // Parse arguments before using them
@@ -139,6 +143,20 @@ int main(int argc, char** argv) {
                 MPI_Finalize();
                 return 1;
             }
+        } else if (strncmp(argv[i], "--spmv=", 7) == 0) {
+            const char* kernel = argv[i] + 7;
+            if (strcmp(kernel, "rowmajor") == 0) {
+                config.spmv_staged = 0;
+            } else if (strcmp(kernel, "staged") == 0) {
+                config.spmv_staged = 1;
+                if (rank == 0)
+                    printf("SpMV kernel: staged\n");
+            } else {
+                if (rank == 0)
+                    fprintf(stderr, "Error: --spmv must be rowmajor or staged\n");
+                MPI_Finalize();
+                return 1;
+            }
         } else if (strcmp(argv[i], "--fused-halo") == 0) {
             config.fused_halo = 1;
         } else if (strcmp(argv[i], "--graph") == 0) {
@@ -176,6 +194,12 @@ int main(int argc, char** argv) {
         if (rank == 0)
             fprintf(stderr,
                     "Error: --fused-halo needs --comm=nvshmem, without --overlap or --graph\n");
+        MPI_Finalize();
+        return 1;
+    }
+    if (config.spmv_staged && stencil_points != 27) {
+        if (rank == 0)
+            fprintf(stderr, "Error: --spmv=staged needs --stencil=27\n");
         MPI_Finalize();
         return 1;
     }
@@ -439,11 +463,11 @@ int main(int argc, char** argv) {
                 (stencil_points == 27)
                     ? (config.enable_overlap ? "3d-stencil-27pt-overlap" : "3d-stencil-27pt")
                     : (config.enable_overlap ? "3d-stencil-overlap" : "3d-stencil");
-            export_cg_mgpu_json(json_file, mode_str,
-                                config.fused_halo ? "nvshmem-fused"
-                                                  : comm_backend_name(comm_kind_arg),
-                                config.dots_device ? "device" : "host", config.check_every, &mat,
-                                &bench_stats, &stats, world_size);
+            export_cg_mgpu_json(
+                json_file, mode_str,
+                config.fused_halo ? "nvshmem-fused" : comm_backend_name(comm_kind_arg),
+                config.dots_device ? "device" : "host", config.check_every,
+                config.spmv_staged ? "staged" : "rowmajor", &mat, &bench_stats, &stats, world_size);
             printf("\nResults exported to JSON: %s\n", json_file);
         }
     }

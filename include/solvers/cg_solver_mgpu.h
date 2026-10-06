@@ -43,6 +43,7 @@ typedef struct {
     int check_every;             ///< Device dots: test convergence every k iterations (>= 1)
     int use_graph;               ///< Replay check_every iterations as one CUDA graph (nccl, device)
     int fused_halo;              ///< nvshmem: the p update stores the neighbours' halos itself
+    int spmv_staged;             ///< 3D 27-point: stage each warp's coefficients in shared memory
 } CGConfigMultiGPU;
 
 /**

@@ -8,6 +8,7 @@
  *   cusparse-alg1, cusparse-alg2  cusparseSpMV, 32-bit indices, preprocessed when available
  *   rowmajor                      the kernel of the published solver (one thread per row)
  *   staged                        rowmajor with warp-coalesced cp.async staging of the values
+ *   staged-solver                 the solver's staged kernel (halo mapping, row subranges)
  *
  * Every variant is checked against a plain CSR reference (one thread per row, CSR order) before
  * its time is reported, and the one-time pattern check is timed separately.
@@ -284,6 +285,8 @@ int main(int argc, char** argv) {
     printf("Kernel resources:\n");
     print_attrs("rowmajor", stencil27_csr_partitioned_halo_kernel_3d, 256, 0);
     print_attrs("staged", stencil27::csr_staged_kernel<kStagedWarps>, kStagedWarps * 32, 0);
+    print_attrs("staged-solver", stencil27_staged_subrange_kernel_3d, kStencil27StagedWarps * 32,
+                0);
 
     FILE* csv = nullptr;
     if (args.csv) {
@@ -362,6 +365,7 @@ int main(int argc, char** argv) {
             {"cusparse-alg2", 12.0 * nnz + 4.0 * (n + 1) + vec},
             {"rowmajor", 8.0 * nnz + 8.0 * (n + 1) + vec},
             {"staged", 8.0 * nnz + 8.0 * (n + 1) + vec},
+            {"staged-solver", 8.0 * nnz + 8.0 * (n + 1) + vec},
         };
         std::vector<int> active;
         for (int v = 0; v < (int)vars.size(); v++) {
@@ -392,6 +396,10 @@ int main(int argc, char** argv) {
                             A.rp64, A.col, A.val, x, y, N);
                     break;
                 }
+                case 4:
+                    stencil27_staged_spmv_3d(A.rp64, A.col, A.val, x, nullptr, nullptr, y, n, 0, n,
+                                             N, 0, n, 0);
+                    break;
             }
         };
 

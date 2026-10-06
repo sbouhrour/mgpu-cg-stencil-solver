@@ -7,8 +7,16 @@
  * Halo contains one full XY-plane (N² elements) from neighbors.
  * 27-point stencil: center + 6 face + 12 edge + 8 corner neighbors.
  *
+ * Two kernels with the same arithmetic and summation order, hence bitwise identical results:
+ * - stencil27_csr_partitioned_halo_kernel_3d: one thread per row, coefficients read straight
+ *   from global memory (consecutive lanes are 27 doubles apart).
+ * - stencil27_staged_subrange_kernel_3d: each warp first copies the coefficients of its 32 rows
+ *   to shared memory with coalesced 16-byte loads (see spmv_stencil27_fast.cuh).
+ *
  * Author: Bouhrour Stephane
  */
+
+#include "spmv_stencil27_fast.cuh"
 
 /**
  * @brief Optimized 3D 27-point stencil SpMV kernel for partitioned CSR with Z-slab halo
@@ -122,4 +130,130 @@ __global__ void stencil27_csr_partitioned_halo_kernel_3d(
     }
 
     y[local_row] = sum;
+}
+
+/** @brief Warps per block of stencil27_staged_subrange_kernel_3d */
+static constexpr int kStencil27StagedWarps = 4;
+
+/**
+ * @brief Boundary row of the partition: CSR traversal with halo mapping
+ *
+ * @details v and cols point at the row's first entry. Same loop as the boundary branch of
+ * stencil27_csr_partitioned_halo_kernel_3d.
+ */
+__device__ __forceinline__ double stencil27_row_halo(const double* v, const int* __restrict__ cols,
+                                                     int len, const double* __restrict__ x_local,
+                                                     const double* __restrict__ x_halo_prev,
+                                                     const double* __restrict__ x_halo_next,
+                                                     int n_local, int row_offset, int N) {
+    double sum = 0.0;
+    for (int q = 0; q < len; q++) {
+        const int global_col = cols[q];
+        double val;
+        if (global_col >= row_offset && global_col < row_offset + n_local)
+            val = x_local[global_col - row_offset];
+        else if (x_halo_prev != NULL && global_col >= row_offset - (N * N) &&
+                 global_col < row_offset)
+            val = x_halo_prev[global_col - (row_offset - (N * N))];
+        else if (x_halo_next != NULL && global_col >= row_offset + n_local &&
+                 global_col < row_offset + n_local + (N * N))
+            val = x_halo_next[global_col - (row_offset + n_local)];
+        else
+            val = 0.0;
+        sum += v[q] * val;
+    }
+    return sum;
+}
+
+/**
+ * @brief 27-point SpMV over local rows [subrange_start, subrange_start + subrange_count), with
+ * warp-coalesced staging of the coefficients
+ *
+ * @details One thread per row, as stencil27_csr_partitioned_halo_kernel_3d. The 32 rows of a
+ * warp own one contiguous span of values: the warp copies it to shared memory with 16-byte
+ * cp.async (plain loads below sm_80), then each thread reads its coefficients from there. A span
+ * larger than the stage buffer (not a stencil pattern) is read from global memory instead.
+ * Interior rows read x_local at the 27 stencil offsets; rows on a domain face or on the first or
+ * last plane of the partition go through the CSR loop with halo mapping.
+ *
+ * @param[in] n_local Number of rows of the whole partition (subrange or not)
+ *
+ * Launched by stencil27_staged_spmv_3d. values must be 16-byte aligned (cudaMalloc: 256).
+ */
+__global__ void __launch_bounds__(kStencil27StagedWarps * 32) stencil27_staged_subrange_kernel_3d(
+    const long long* __restrict__ row_ptr, const int* __restrict__ col_idx,
+    const double* __restrict__ values, const double* __restrict__ x_local,
+    const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
+    double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size,
+    int subrange_start, int subrange_count) {
+    using namespace stencil27;
+    __shared__ __align__(16) double stage[kStencil27StagedWarps][kStage1];
+    const int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    const int t0 = (blockIdx.x * kStencil27StagedWarps + w) * 32;
+    if (t0 >= subrange_count)
+        return;  // whole warp
+    const int local_row = subrange_start + t0 + lane;
+    const bool valid = t0 + lane < subrange_count;
+    const int last = subrange_start + min(t0 + 31, subrange_count - 1);
+    const long long rp = valid ? row_ptr[local_row] : 0;
+    const long long base = __shfl_sync(kFull, rp, 0);
+    const long long end = row_ptr[last + 1];
+    const long long abase = base & ~1LL;
+    const int nchunks = (int)((end - abase + 1) >> 1);
+    const bool staged = nchunks <= kStage1 / 2;
+    double* st = stage[w];
+    if (staged) {
+#pragma unroll
+        for (int c = 0; c < kStage1 / 64; c++) {
+            const int g = c * 32 + lane;
+            if (abase + 2 * g + 1 < end)
+                cp_async16(st + 2 * g, values + abase + 2 * g);
+            else if (abase + 2 * g < end)
+                st[2 * g] = values[abase + 2 * g];  // last double of the array, no 16-byte read
+        }
+        cp_async_wait_all();
+    }
+    __syncwarp();
+    if (!valid)
+        return;
+
+    const int N = grid_size;
+    const int global_row = row_offset + local_row;
+    const int i = global_row / (N * N), j = (global_row / N) % N, k = global_row % N;
+    const int local_nz = n_local / (N * N), local_z = local_row / (N * N);
+    const bool interior = i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1 &&
+                          local_z > 0 && local_z < local_nz - 1;
+    double sum;
+    // Two branches so that each reads v from a known address space (shared or global)
+    if (staged) {
+        const double* v = st + (rp - abase);
+        sum = interior
+                  ? row27(v, x_local, local_row, N)
+                  : stencil27_row_halo(v, col_idx + rp, (int)(row_ptr[local_row + 1] - rp), x_local,
+                                       x_halo_prev, x_halo_next, n_local, row_offset, N);
+    } else {
+        const double* v = values + rp;
+        sum = interior
+                  ? row27(v, x_local, local_row, N)
+                  : stencil27_row_halo(v, col_idx + rp, (int)(row_ptr[local_row + 1] - rp), x_local,
+                                       x_halo_prev, x_halo_next, n_local, row_offset, N);
+    }
+    y[local_row] = sum;
+}
+
+/**
+ * @brief Launches stencil27_staged_subrange_kernel_3d over local rows [start, start + count)
+ */
+void stencil27_staged_spmv_3d(const long long* row_ptr, const int* col_idx, const double* values,
+                              const double* x_local, const double* x_halo_prev,
+                              const double* x_halo_next, double* y, int n_local, int row_offset,
+                              int N_total, int grid_size, int start, int count,
+                              cudaStream_t stream) {
+    if (count <= 0)
+        return;
+    const int threads = kStencil27StagedWarps * 32;
+    const int blocks = (count + threads - 1) / threads;
+    stencil27_staged_subrange_kernel_3d<<<blocks, threads, 0, stream>>>(
+        row_ptr, col_idx, values, x_local, x_halo_prev, x_halo_next, y, n_local, row_offset,
+        N_total, grid_size, start, count);
 }
