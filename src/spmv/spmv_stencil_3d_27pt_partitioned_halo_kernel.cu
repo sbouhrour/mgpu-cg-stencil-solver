@@ -147,6 +147,7 @@ __device__ __forceinline__ double stencil27_row_halo(const double* v, const int*
                                                      const double* __restrict__ x_halo_next,
                                                      int n_local, int row_offset, int N) {
     double sum = 0.0;
+#pragma unroll 1
     for (int q = 0; q < len; q++) {
         const int global_col = cols[q];
         double val;
@@ -171,8 +172,9 @@ __device__ __forceinline__ double stencil27_row_halo(const double* v, const int*
  *
  * @details One thread per row, as stencil27_csr_partitioned_halo_kernel_3d. The 32 rows of a
  * warp own one contiguous span of values: the warp copies it to shared memory with 16-byte
- * cp.async (plain loads below sm_80), then each thread reads its coefficients from there. A span
- * larger than the stage buffer (not a stencil pattern) is read from global memory instead.
+ * cp.async, then each thread reads its coefficients from there (below sm_80, where cp.async does
+ * not exist, the coefficients are read from global memory). A span larger than the stage
+ * buffer (not a stencil pattern) is read from global memory instead.
  * Interior rows read x_local at the 27 stencil offsets; rows on a domain face or on the first or
  * last plane of the partition go through the CSR loop with halo mapping.
  *
@@ -200,7 +202,12 @@ __global__ void __launch_bounds__(kStencil27StagedWarps * 32) stencil27_staged_s
     const long long end = row_ptr[last + 1];
     const long long abase = base & ~1LL;
     const int nchunks = (int)((end - abase + 1) >> 1);
+    // Below sm_80 (no cp.async), staging through registers is slower than direct reads
+#if __CUDA_ARCH__ >= 800
     const bool staged = nchunks <= kStage1 / 2;
+#else
+    const bool staged = false;
+#endif
     double* st = stage[w];
     if (staged) {
 #pragma unroll
@@ -219,10 +226,12 @@ __global__ void __launch_bounds__(kStencil27StagedWarps * 32) stencil27_staged_s
 
     const int N = grid_size;
     const int global_row = row_offset + local_row;
-    const int i = global_row / (N * N), j = (global_row / N) % N, k = global_row % N;
-    const int local_nz = n_local / (N * N), local_z = local_row / (N * N);
-    const bool interior = i > 0 && i < N - 1 && j > 0 && j < N - 1 && k > 0 && k < N - 1 &&
-                          local_z > 0 && local_z < local_nz - 1;
+    const int NN = N * N;
+    const int j = (global_row / N) % N, k = global_row % N;
+    // 0 < i < N - 1 and 0 < local_z < local_nz - 1, written as row bounds (no per-row division)
+    const int z_end = (n_local / NN - 1) * NN;
+    const bool interior = global_row >= NN && global_row < (N - 1) * NN && j > 0 && j < N - 1 &&
+                          k > 0 && k < N - 1 && local_row >= NN && local_row < z_end;
     double sum;
     // Two branches so that each reads v from a known address space (shared or global)
     if (staged) {
