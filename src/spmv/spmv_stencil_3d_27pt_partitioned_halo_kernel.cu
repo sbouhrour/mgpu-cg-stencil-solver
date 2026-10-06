@@ -147,7 +147,6 @@ __device__ __forceinline__ double stencil27_row_halo(const double* v, const int*
                                                      const double* __restrict__ x_halo_next,
                                                      int n_local, int row_offset, int N) {
     double sum = 0.0;
-#pragma unroll 1
     for (int q = 0; q < len; q++) {
         const int global_col = cols[q];
         double val;
@@ -164,6 +163,28 @@ __device__ __forceinline__ double stencil27_row_halo(const double* v, const int*
         sum += v[q] * val;
     }
     return sum;
+}
+
+/**
+ * @brief Row on a domain face: plain CSR loop when every column lies in the local partition,
+ * halo mapping otherwise
+ *
+ * @details The plain loop has no branch per entry, so the compiler batches its loads; a warp
+ * holding a face row (k = 0 or N - 1 every N rows) waits for that row's loop.
+ */
+__device__ __forceinline__ double
+stencil27_row_face(const double* v, const int* __restrict__ cols, int len, int local_row,
+                   const double* __restrict__ x_local, const double* __restrict__ x_halo_prev,
+                   const double* __restrict__ x_halo_next, int n_local, int row_offset, int N) {
+    const int reach = N * N + N + 1;  // largest |column - row| of the stencil
+    if (local_row >= reach && local_row + reach < n_local) {
+        double sum = 0.0;
+        for (int q = 0; q < len; q++)
+            sum += v[q] * x_local[cols[q] - row_offset];
+        return sum;
+    }
+    return stencil27_row_halo(v, cols, len, x_local, x_halo_prev, x_halo_next, n_local, row_offset,
+                              N);
 }
 
 /**
@@ -236,16 +257,16 @@ __global__ void __launch_bounds__(kStencil27StagedWarps * 32) stencil27_staged_s
     // Two branches so that each reads v from a known address space (shared or global)
     if (staged) {
         const double* v = st + (rp - abase);
-        sum = interior
-                  ? row27(v, x_local, local_row, N)
-                  : stencil27_row_halo(v, col_idx + rp, (int)(row_ptr[local_row + 1] - rp), x_local,
-                                       x_halo_prev, x_halo_next, n_local, row_offset, N);
+        sum = interior ? row27(v, x_local, local_row, N)
+                       : stencil27_row_face(v, col_idx + rp, (int)(row_ptr[local_row + 1] - rp),
+                                            local_row, x_local, x_halo_prev, x_halo_next, n_local,
+                                            row_offset, N);
     } else {
         const double* v = values + rp;
-        sum = interior
-                  ? row27(v, x_local, local_row, N)
-                  : stencil27_row_halo(v, col_idx + rp, (int)(row_ptr[local_row + 1] - rp), x_local,
-                                       x_halo_prev, x_halo_next, n_local, row_offset, N);
+        sum = interior ? row27(v, x_local, local_row, N)
+                       : stencil27_row_face(v, col_idx + rp, (int)(row_ptr[local_row + 1] - rp),
+                                            local_row, x_local, x_halo_prev, x_halo_next, n_local,
+                                            row_offset, N);
     }
     y[local_row] = sum;
 }
