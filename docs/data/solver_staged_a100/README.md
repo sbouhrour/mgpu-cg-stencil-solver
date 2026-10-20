@@ -1,6 +1,6 @@
 # `--spmv=staged` in the 3D solver, 8x A100-SXM4-80GB
 
-Measured on 6 October 2026 at commit `cd3486c`, solver built with `make ARCH=80`. CUDA 12.8, driver 580.65.06.
+Measured on 6 October 2026 at commit `cd3486c` (PR #26, branch `wip/solver-27pt-staged`), solver built with `make ARCH=80`. CUDA 12.8, driver 580.65.06.
 
 | File | Content |
 |------|---------|

@@ -184,7 +184,7 @@ The same CSR arrays for every variant (`bench/spmv_27pt/`): cuSPARSE ALG1 (32-bi
 
 With `--stencil=27`, the 3D solvers take `--spmv=staged`: the `staged` kernel of the section above, extended to the halo columns and to the row subranges of the overlap solver. Interior rows read `x` at the 27 stencil offsets; rows on a domain face or on the first or last plane of a partition go through the CSR loop with halo mapping. The default kernel is the row-major one (`--spmv=rowmajor`), with which the other 3D results on this page are measured. Both kernels give the same `Sum(x)` to 17 digits: `scripts/verify_reproduction.sh` checks it on 1 rank and on 2 ranks with overlap. The coefficient staging uses `cp.async`, which needs compute capability 8.0 (`make ARCH=80`); built for an older architecture, the kernel reads the coefficients from global memory.
 
-**Hardware**: NVIDIA A100-SXM4-80GB · CUDA 12.8 (cuSPARSE 12.5.8) · Driver 580.65.06 · solver built with `make ARCH=80` · measured on 6 October 2026 at commit `cd3486c`
+**Hardware**: NVIDIA A100-SXM4-80GB · CUDA 12.8 (cuSPARSE 12.5.8) · Driver 580.65.06 · solver built with `make ARCH=80` · measured on 6 October 2026 at commit `cd3486c` (PR #26)
 
 Kernel alone, single GPU (`bench/spmv_27pt/`, line `staged-solver`, compiled from the solver's source file), median of 30 launches:
 
