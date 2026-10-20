@@ -242,6 +242,27 @@ make bench_spmv_27pt SPMV27_ARCH=80          # SPMV27_ARCH=90 on H100
 Check: the `staged` line reports 0 bits differing from `rowmajor`; at 256³ with CUDA 12.8, `staged` 2.789 ms against
 cuSPARSE ALG1 4.530 ms (1.62×).
 
+### Staged SpMV in the 3D solver: SpMV 1.19× faster than the default kernel (256³, 8 GPUs)
+
+[Results](results.md#3d-staged-spmv-in-the-solver) · GPUs of compute capability 8.0 or newer
+
+```bash
+make ARCH=80 cg_solver_mgpu_stencil_3d
+./scripts/verify_reproduction.sh             # includes --spmv=staged against rowmajor
+echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx
+for k in rowmajor staged; do
+  mpirun -np 8 nsys profile --trace=cuda,nvtx,osrt -o sync_${k}_r%q{OMPI_COMM_WORLD_RANK} \
+    ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --spmv=$k --max-iters=20 --runs=3
+  nsys export --type sqlite -o sync_${k}_r0.sqlite sync_${k}_r0.nsys-rep
+done
+python3 scripts/benchmarking/comm_nsys_summary.py --iters 20 sync_*_r0.sqlite
+```
+
+Check: `verify_reproduction.sh` reports `--spmv=staged = rowmajor` PASS on 1 rank and on 2 ranks; on 8 A100-SXM4-80GB,
+the SpMV kernel (`stencil27_staged_subrange_kernel_3d`) averages about 399 µs per iteration against about 475 µs for
+`stencil27_csr_partitioned_halo_kernel_3d`. The kernel alone: `./bin/bench_spmv_27pt --sizes=128,256,384
+--coeffs=const`, line `staged-solver`.
+
 ### Matrix files
 
 `spmv_bench`, `cg_solver_mgpu_stencil`, `cg_solver_mgpu_stencil_3d` and the two AmgX CG drivers accept a header-only file in place of a full Matrix Market file, and then generate the matrix in memory. Only the `% STENCIL_GRID_SIZE N` line is read:
