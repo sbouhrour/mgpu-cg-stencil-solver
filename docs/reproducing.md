@@ -263,6 +263,21 @@ the SpMV kernel (`stencil27_staged_subrange_kernel_3d`) averages about 399 µs p
 `stencil27_csr_partitioned_halo_kernel_3d`. The kernel alone: `./bin/bench_spmv_27pt --sizes=128,256,384
 --coeffs=const`, line `staged-solver`.
 
+Time to solution with both kernels (the NCCL runs need the toolchain of [Communication Backends](communication.md):
+`comm_setup.sh`, then `source /opt/comm/env.sh`):
+
+```bash
+for k in rowmajor staged; do
+  mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --spmv=$k
+  mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap --spmv=$k
+  mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 \
+    --comm=nccl --dots=device --graph --check-every=10 --spmv=$k
+done
+```
+
+Check: same iterations and `Sum(x)` for both kernels; at 256³ on 8 GPUs, synchronous 324.2 → 295.8 ms, overlap
+214.7 → 209.9 ms, NCCL with a CUDA graph 225.7 → 201.1 ms.
+
 ### Matrix files
 
 `spmv_bench`, `cg_solver_mgpu_stencil`, `cg_solver_mgpu_stencil_3d` and the two AmgX CG drivers accept a header-only file in place of a full Matrix Market file, and then generate the matrix in memory. Only the `% STENCIL_GRID_SIZE N` line is read:
