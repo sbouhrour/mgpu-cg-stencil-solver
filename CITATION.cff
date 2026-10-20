@@ -5,8 +5,8 @@ type: software
 authors:
   - family-names: "Bouhrour"
     given-names: "Stéphane"
-version: "1.0.0"
-date-released: "2026-10-01"
+version: "1.1.0"
+date-released: "2026-10-20"
 license: MIT
 repository-code: "https://github.com/sbouhrour/mgpu-cg-stencil-solver"
 url: "https://sbouhrour.github.io/mgpu-cg-stencil-solver/"
@@ -17,6 +17,8 @@ abstract: >-
   of CUDA 12.8; CG 1.41x faster than NVIDIA AmgX on 1 GPU and 1.44x on 8
   GPUs at equal algorithm (both unpreconditioned); 93.5% strong scaling
   efficiency in 2D and 88% in 3D (27-point, compute-communication overlap).
+  The 3D solver exchanges halos through host memory, CUDA-aware MPI, NCCL
+  or NVSHMEM.
 keywords:
   - CUDA
   - MPI
@@ -25,3 +27,5 @@ keywords:
   - sparse matrix-vector multiplication
   - stencil
   - A100
+  - NCCL
+  - NVSHMEM
