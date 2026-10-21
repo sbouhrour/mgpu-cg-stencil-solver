@@ -118,6 +118,8 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 | 512³ | 4 | 6461 | 5815 | 1.11× | 611 |
 | 512³ | 8 | 3809 | 3110 | 1.23× | 611 |
 
+**Hardware** (this table, the 7-point table above and the efficiency tables below): 8× NVIDIA A100-SXM4-80GB, first published on 12 May 2026. The 3D comparison with AmgX and the communication results below were measured on another 8× A100-SXM4-80GB node in October 2026, which runs the same configurations slower at small sizes: 256³ on 8 GPUs, 324.8 ms synchronous and 214.6 ms with overlap (1.51×) on 5 October, against 294.0 and 203.5 ms (1.45×) here.
+
 ## 3D: Strong Scaling Efficiency (overlap solver)
 
 **7-point stencil**: speedup relative to 1-GPU sync baseline:

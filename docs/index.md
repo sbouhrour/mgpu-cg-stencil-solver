@@ -11,12 +11,14 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 | **Stencil CG vs NVIDIA AmgX** | 1.41× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100-SXM4-80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
 | **3D overlap (27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
+| **Communication backends (3D, 27pt)** | Host staging, CUDA-aware MPI, NCCL, NVSHMEM, same residuals bit for bit; NCCL + CUDA graph 1.46× faster per iteration than host staging (128³, 8 GPUs) |
+| **Stencil CG vs AmgX (3D, 27pt)** | 1.09–1.31× at equal transport, up to 1.78× with overlap (128³ to 512³, 1 to 8 GPUs) |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
 
 *AmgX comparison is iso-algorithm: both run unpreconditioned CG.*
 
-**Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57
+**Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57 (2D), 580.65.06 (3D comparison with AmgX, communication backends)
 
 ## Where to Go Next
 

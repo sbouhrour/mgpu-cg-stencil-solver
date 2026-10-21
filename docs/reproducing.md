@@ -7,7 +7,7 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 ## Requirements
 
 - **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper, Blackwell)
-- **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries; ≥ 12.0 for the AmgX comparison (AmgX v2.5.0 requires it)
+- **CUDA Toolkit**: ≥ 11.8 with cuSPARSE and cuBLAS libraries; ≥ 12.0 for the AmgX comparison (AmgX v2.5.0 requires it)
 - **MPI Implementation**: OpenMPI ≥ 4.0 or MPICH ≥ 3.3
 - **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
 - **Optional**: Nsight Systems/Compute for profiling
@@ -157,6 +157,8 @@ Notes:
 
 Each section maps a published number to the commands that produce it. Expected values are the published figures in [`results.md`](results.md); they were measured on 8× A100-SXM4-80GB and will differ on other hardware.
 
+The 3D times are measured with each rank bound to the CPU cores local to its GPU: `./scripts/benchmarking/make_rankfile.sh > rankfile`, then `mpirun --rankfile rankfile ...` (Open MPI 4). The commands below omit the binding for readability. Without it, the 27-point 256³ solve on 8 GPUs took 526 ms instead of 327 ms on the node of the [communication study](communication.md).
+
 ### SpMV vs cuSPARSE CSR: 2.08× (20k×20k, cuSPARSE of CUDA 12.8)
 
 [Results](results.md#2d-spmv-format-comparison)
@@ -195,7 +197,7 @@ mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --ste
 mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap
 ```
 
-Check: median of the sync run (294.0 ms) divided by median of the overlap run (203.5 ms) gives 1.45×.
+Check: median of the sync run (294.0 ms) divided by median of the overlap run (203.5 ms) gives 1.45×. On the node of the October results, 324.8 and 214.6 ms (1.51×).
 
 ### 27-point scaling efficiency: 88% (512³, 8 GPUs, overlap)
 
