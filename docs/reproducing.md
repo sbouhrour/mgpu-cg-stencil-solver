@@ -7,7 +7,7 @@ For methodology details (statistical approach, timing scope, profiling tools), s
 ## Requirements
 
 - **NVIDIA GPUs**: Compute Capability ≥ 7.0 (Volta, Turing, Ampere, Ada, Hopper, Blackwell)
-- **CUDA Toolkit**: ≥ 11.0 with cuSPARSE and cuBLAS libraries; ≥ 12.0 for the AmgX comparison (AmgX v2.5.0 requires it)
+- **CUDA Toolkit**: ≥ 11.8 with cuSPARSE and cuBLAS libraries; ≥ 12.0 for the AmgX comparison (AmgX v2.5.0 requires it)
 - **MPI Implementation**: OpenMPI ≥ 4.0 or MPICH ≥ 3.3
 - **C++ Compiler**: Supporting C++11 (nvcc, g++, clang++)
 - **Optional**: Nsight Systems/Compute for profiling
@@ -157,6 +157,8 @@ Notes:
 
 Each section maps a published number to the commands that produce it. Expected values are the published figures in [`results.md`](results.md); they were measured on 8× A100-SXM4-80GB and will differ on other hardware.
 
+The 3D times are measured with each rank bound to the CPU cores local to its GPU: `./scripts/benchmarking/make_rankfile.sh > rankfile`, then `mpirun --rankfile rankfile ...` (Open MPI 4). The commands below omit the binding for readability. Without it, the 27-point 256³ solve on 8 GPUs took 526 ms instead of 327 ms on the node of the [communication study](communication.md).
+
 ### SpMV vs cuSPARSE CSR: 2.08× (20k×20k, cuSPARSE of CUDA 12.8)
 
 [Results](results.md#2d-spmv-format-comparison)
@@ -195,7 +197,7 @@ mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --ste
 mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap
 ```
 
-Check: median of the sync run (294.0 ms) divided by median of the overlap run (203.5 ms) gives 1.45×.
+Check: median of the sync run (294.0 ms) divided by median of the overlap run (203.5 ms) gives 1.45×. On the node of the October results, 324.8 and 214.6 ms (1.51×).
 
 ### 27-point scaling efficiency: 88% (512³, 8 GPUs, overlap)
 
@@ -208,6 +210,75 @@ mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_512.mtx --ste
 ```
 
 Check: 1-GPU sync median (22016 ms) divided by 8-GPU overlap median (3110 ms) gives 7.08×, and 7.08 / 8 = 88%.
+
+### 3D CG vs AmgX: 1.09× to 1.31× at equal transport, up to 1.78× with overlap (27-point, 128³ to 512³)
+
+[Results](results.md#3d-custom-cg-vs-nvidia-amgx-27-point) · requires the AmgX build; the NCCL runs need the
+toolchain of [Communication Backends](communication.md) (`comm_setup.sh`, then `source /opt/comm/env.sh`)
+
+```bash
+for n in 128 256 512; do echo "% STENCIL_GRID_SIZE $n" > matrix/stencil3d_27pt_$n.mtx; done
+for n in 128 256 512; do for np in 1 2 4 8; do
+  mpirun -np $np ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_$n.mtx --stencil=27
+done; for np in 2 4 8; do
+  mpirun -np $np ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_$n.mtx --stencil=27 --overlap
+  mpirun -np $np ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_$n.mtx --stencil=27 \
+      --comm=nccl --dots=device --graph --check-every=10
+done; done
+for n in 128 256 512; do ./scripts/benchmarking/benchmark_amgx.sh matrix/stencil3d_27pt_$n.mtx --stencil=27; done
+```
+
+Check: AmgX, the synchronous and the overlap solvers converge in 151, 303 and 611 iterations (NCCL with
+`--check-every=10`: 160, 310, 620); at 256³ on 8 GPUs, AmgX 382.0 ms against 324.8 ms (synchronous, 1.18×),
+214.6 ms (overlap, 1.78×) and 226.2 ms (NCCL, 1.69×). AmgX does not run 512³ on 1 or 2 ranks.
+
+### 27-point SpMV vs cuSPARSE: 1.62× (256³, cuSPARSE of CUDA 12.8)
+
+[Results](results.md#3d-27-point-spmv-vs-cusparse-csr-single-gpu) · one GPU of compute capability 8.0 or newer
+
+```bash
+make bench_spmv_27pt SPMV27_ARCH=80          # SPMV27_ARCH=90 on H100
+./bin/bench_spmv_27pt --sizes=256,384 --coeffs=const
+```
+
+Check: the `staged` line reports 0 bits differing from `rowmajor`; at 256³ with CUDA 12.8, `staged` 2.789 ms against
+cuSPARSE ALG1 4.530 ms (1.62×).
+
+### Staged SpMV in the 3D solver: SpMV 1.19× faster than the default kernel (256³, 8 GPUs)
+
+[Results](results.md#3d-staged-spmv-in-the-solver) · GPUs of compute capability 8.0 or newer
+
+```bash
+make ARCH=80                                 # every binary: verify_reproduction.sh needs them all
+./scripts/verify_reproduction.sh             # includes --spmv=staged against rowmajor
+echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx
+for k in rowmajor staged; do
+  mpirun -np 8 nsys profile --trace=cuda,nvtx,osrt -o sync_${k}_r%q{OMPI_COMM_WORLD_RANK} \
+    ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --spmv=$k --max-iters=20 --runs=3
+  nsys export --type sqlite -o sync_${k}_r0.sqlite sync_${k}_r0.nsys-rep
+done
+python3 scripts/benchmarking/comm_nsys_summary.py --iters 20 sync_*_r0.sqlite
+```
+
+Check: `verify_reproduction.sh` reports `--spmv=staged = rowmajor` PASS on 1 rank and on 2 ranks; on 8 A100-SXM4-80GB,
+the SpMV kernel (`stencil27_staged_subrange_kernel_3d`) averages about 399 µs per iteration against about 475 µs for
+`stencil27_csr_partitioned_halo_kernel_3d`. The kernel alone: `./bin/bench_spmv_27pt --sizes=128,256,384
+--coeffs=const`, line `staged-solver`.
+
+Time to solution with both kernels (the NCCL runs need the toolchain of [Communication Backends](communication.md):
+`comm_setup.sh`, then `source /opt/comm/env.sh`):
+
+```bash
+for k in rowmajor staged; do
+  mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --spmv=$k
+  mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 --overlap --spmv=$k
+  mpirun -np 8 ./bin/cg_solver_mgpu_stencil_3d matrix/stencil3d_27pt_256.mtx --stencil=27 \
+    --comm=nccl --dots=device --graph --check-every=10 --spmv=$k
+done
+```
+
+Check: same iterations and `Sum(x)` for both kernels; at 256³ on 8 GPUs, synchronous 324.2 → 295.8 ms, overlap
+214.7 → 209.9 ms, NCCL with a CUDA graph 225.7 → 201.1 ms.
 
 ### Matrix files
 
@@ -223,6 +294,21 @@ echo "% STENCIL_GRID_SIZE 512" > matrix/stencil3d_27pt_512.mtx           # 3D, 2
 - **3D (7-point and 27-point)**: each rank builds only its own Z-slab of rows. The AmgX multi-GPU driver does the same with `--stencil=7` or `--stencil=27`. In-memory generation of the 512³ 27-point grid requires ~54 GB of host RAM on a single rank (1-GPU baseline run).
 
 A full file (`./bin/generate_matrix`, `generate_matrix_3d`, `generate_matrix_3d_27pt`) is still read as before; the 27-point solver reads only its header.
+
+### Communication backends: NCCL 1.46× over host staging (27-point, 128³, 8 GPUs)
+
+[Communication Backends](communication.md#4-results)
+
+```bash
+./scripts/benchmarking/comm_setup.sh && source /opt/comm/env.sh   # default and CUDA-aware builds
+./scripts/benchmarking/rental_preflight.sh                         # node checks, writes out/rankfile
+export RANKFILE=$PWD/out/rankfile                                  # one rank per GPU, on its local cores
+./scripts/benchmarking/comm_preflight.sh                           # bit-exact check of every backend
+SET=core RUNS=5 ./scripts/benchmarking/comm_matrix.sh              # time per iteration, all backends
+```
+
+The setup, the MPI library each backend runs with, and the rank placement are described in
+[`communication.md`](communication.md#3-measurement-setup).
 
 ## Manual build and run
 

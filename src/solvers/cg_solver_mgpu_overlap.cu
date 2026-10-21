@@ -35,6 +35,7 @@
 #include "spmv.h"
 #include "io.h"
 #include "solvers/cg_solver_mgpu_partitioned.h"
+#include "solvers/comm_backend.h"
 
 /* ================================================================
  * OverlapPartition: defines interior vs boundary row ranges
@@ -383,6 +384,13 @@ extern __global__ void stencil27_csr_partitioned_halo_kernel_3d(
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
+/* Staged 27-point SpMV over local rows [start, start + count), same result as the row-major
+ * kernel (src/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu) */
+void stencil27_staged_spmv_3d(const long long* row_ptr, const int* col_idx, const double* values,
+                              const double* x_local, const double* x_halo_prev,
+                              const double* x_halo_next, double* y, int n_local, int row_offset,
+                              int N_total, int grid_size, int start, int count,
+                              cudaStream_t stream);
 
 /* ================================================================
  * Local helpers
@@ -556,7 +564,9 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
     }
 
     // Set GPU device
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
 
     // Partition: 1D row-band decomposition
     int n_local = n / world_size;
@@ -567,8 +577,9 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank % device_count));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank % device_count, prop.name,
+               prop.major, prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows)\n", rank, row_offset, row_offset + n_local,
                n_local);
     }
@@ -871,6 +882,9 @@ int cg_solve_mgpu_partitioned_overlap(SpmvOperator* spmv_op, MatrixData* mat, co
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
         }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
+        }
 
         // Check convergence
         if (rel_residual < config.tolerance) {
@@ -1055,7 +1069,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
 
     int n_local = n / world_size;
     int row_offset = rank * n_local;
@@ -1065,8 +1081,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank % device_count));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank % device_count, prop.name,
+               prop.major, prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -1098,6 +1115,17 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         exit(EXIT_FAILURE);
     }
     cublasSetStream(cublas_handle, stream_compute);
+
+    CommContext* comm = config.comm;
+    int own_comm = 0;
+    if (comm == NULL) {
+        comm = comm_create(COMM_STAGED, MPI_COMM_WORLD, (size_t)partition.halo_elems);
+        own_comm = 1;
+    }
+    // Makes the boundary SpMV (stream_compute) wait for the halo (stream_comm) without
+    // assuming the backend blocked the host: NCCL only enqueues the exchange.
+    cudaEvent_t halo_ready;
+    CUDA_CHECK(cudaEventCreateWithFlags(&halo_ready, cudaEventDisableTiming));
 
     // Build local CSR partition
     if (rank == 0 && config.verbose >= 1) {
@@ -1157,18 +1185,6 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         CUDA_CHECK(cudaMalloc(&d_p_halo_next, partition.halo_elems * sizeof(double)));
     }
 
-    // Pinned host buffers
-    double *h_send_prev = NULL, *h_send_next = NULL;
-    double *h_recv_prev = NULL, *h_recv_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMallocHost(&h_send_prev, partition.halo_elems * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_prev, partition.halo_elems * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMallocHost(&h_send_next, partition.halo_elems * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_next, partition.halo_elems * sizeof(double)));
-    }
-
     // Initialize vectors
     CUDA_CHECK(cudaMemcpyAsync(d_b, &b[row_offset], n_local * sizeof(double),
                                cudaMemcpyHostToDevice, stream_compute));
@@ -1189,6 +1205,24 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
     CUDA_CHECK(cudaEventCreate(&timer_phase_start));
     CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
 
+    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
+    if (rank > 0) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, partition.halo_elems * sizeof(double)));
+    }
+    if (rank < world_size - 1) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_next, partition.halo_elems * sizeof(double)));
+    }
+
+    // Exercise every send/receive buffer pair once before the clock starts, so that lazy
+    // connection setup or buffer registration is never timed. The timed region rewrites every
+    // halo it reads.
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - partition.halo_elems), d_x_halo_prev,
+                       d_x_halo_next, partition.halo_elems, stream_compute);
+    comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - partition.halo_elems), d_p_halo_prev,
+                       d_p_halo_next, partition.halo_elems, stream_comm);
+    CUDA_CHECK(cudaStreamSynchronize(stream_comm));
+    CUDA_CHECK(cudaStreamSynchronize(stream_compute));
+
     CUDA_CHECK(cudaEventRecord(start, stream_compute));
 
     // Initialize stats
@@ -1205,17 +1239,8 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial residual: r = b - A*x0
-    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, partition.halo_elems * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_next, partition.halo_elems * sizeof(double)));
-    }
-
-    exchange_halo_sync(d_x_local, d_x_local + (n_local - partition.halo_elems), d_x_halo_prev,
-                       d_x_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                       partition.halo_elems, rank, world_size, stream_compute);
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - partition.halo_elems), d_x_halo_prev,
+                       d_x_halo_next, partition.halo_elems, stream_compute);
 
     // Ap = A*x0 (full 3D kernel)
     stencil7_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream_compute>>>(
@@ -1236,7 +1261,7 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
     // rs_old
     double rs_local_old = overlap_compute_local_dot(cublas_handle, d_r_local, d_r_local, n_local);
     double rs_old;
-    MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    rs_old = comm_allreduce_sum(comm, rs_local_old);
 
     double b_norm = sqrt(rs_old);
 
@@ -1266,9 +1291,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
 
         CUDA_CHECK(cudaStreamWaitEvent(stream_comm, p_updated_event, 0));
 
-        // D2H halo copies (async on stream_comm, returns immediately)
-        exchange_halo_d2h_start(d_p_local, n_local, h_send_prev, h_send_next, partition.halo_elems,
-                                rank, world_size, stream_comm);
+        // Halo of p on stream_comm: begin enqueues what it can (staged: D2H), returns
+        comm_halo_begin(comm, d_p_local, d_p_local + (n_local - partition.halo_elems),
+                        d_p_halo_prev, d_p_halo_next, partition.halo_elems, stream_comm);
 
         // Interior SpMV on stream_compute (overlaps with D2H + MPI)
         if (partition.interior_count > 0) {
@@ -1279,18 +1304,12 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
                 partition.interior_count);
         }
 
-        // Sync D2H + MPI non-blocking sends/receives
-        MPI_Request requests[4];
-        int req_count = 0;
+        // Start the transfer, then complete it; the boundary rows wait on halo_ready
         double comm_t0 = MPI_Wtime();
-        exchange_halo_mpi_start(h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                                partition.halo_elems, rank, world_size, stream_comm, requests,
-                                &req_count);
-
-        // Finish halo exchange: MPI_Waitall + H2D
-        exchange_halo_async_finish(d_p_halo_prev, d_p_halo_next, h_recv_prev, h_recv_next,
-                                   partition.halo_elems, rank, world_size, stream_comm, requests,
-                                   req_count);
+        comm_halo_post(comm);
+        comm_halo_end(comm);
+        CUDA_CHECK(cudaEventRecord(halo_ready, stream_comm));
+        CUDA_CHECK(cudaStreamWaitEvent(stream_compute, halo_ready, 0));
         double comm_t1 = MPI_Wtime();
         cum_comm_ms += (comm_t1 - comm_t0) * 1000.0;
 
@@ -1325,7 +1344,7 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         nvtxRangePop();
 
         double pAp;
-        MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        pAp = comm_allreduce_sum(comm, pAp_local);
 
         double alpha = rs_old / pAp;
 
@@ -1345,7 +1364,7 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         nvtxRangePop();
 
         double rs_new;
-        MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        rs_new = comm_allreduce_sum(comm, rs_local_new);
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -1353,6 +1372,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
         if (rank == 0 && config.verbose >= 2) {
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
+        }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
         }
 
         if (rel_residual < config.tolerance) {
@@ -1486,14 +1508,9 @@ int cg_solve_mgpu_partitioned_overlap_3d(SpmvOperator* spmv_op, MatrixData* mat,
     if (d_p_halo_next)
         cudaFree(d_p_halo_next);
 
-    if (h_send_prev)
-        cudaFreeHost(h_send_prev);
-    if (h_send_next)
-        cudaFreeHost(h_send_next);
-    if (h_recv_prev)
-        cudaFreeHost(h_recv_prev);
-    if (h_recv_next)
-        cudaFreeHost(h_recv_next);
+    cudaEventDestroy(halo_ready);
+    if (own_comm)
+        comm_destroy(comm);
 
     cublasDestroy(cublas_handle);
     cudaEventDestroy(p_updated_event);
@@ -1533,7 +1550,9 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         printf("========================================\n\n");
     }
 
-    CUDA_CHECK(cudaSetDevice(rank));
+    int device_count;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(cudaSetDevice(rank % device_count));
 
     int n_local = n / world_size;
     int row_offset = rank * n_local;
@@ -1543,8 +1562,9 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
 
     if (config.verbose >= 1) {
         cudaDeviceProp prop;
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank));
-        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank, prop.name, prop.major, prop.minor);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, rank % device_count));
+        printf("[Rank %d] GPU %d: %s (CC %d.%d)\n", rank, rank % device_count, prop.name,
+               prop.major, prop.minor);
         printf("[Rank %d] Rows: [%d:%d) (%d rows, %d Z-planes)\n", rank, row_offset,
                row_offset + n_local, n_local, n_local / (grid_size * grid_size));
     }
@@ -1574,6 +1594,17 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         exit(EXIT_FAILURE);
     }
     cublasSetStream(cublas_handle, stream_compute);
+
+    CommContext* comm = config.comm;
+    int own_comm = 0;
+    if (comm == NULL) {
+        comm = comm_create(COMM_STAGED, MPI_COMM_WORLD, (size_t)partition.halo_elems);
+        own_comm = 1;
+    }
+    // Makes the boundary SpMV (stream_compute) wait for the halo (stream_comm) without
+    // assuming the backend blocked the host: NCCL only enqueues the exchange.
+    cudaEvent_t halo_ready;
+    CUDA_CHECK(cudaEventCreateWithFlags(&halo_ready, cudaEventDisableTiming));
 
     if (rank == 0 && config.verbose >= 1) {
         printf("Building local CSR partitions...\n");
@@ -1630,17 +1661,6 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         CUDA_CHECK(cudaMalloc(&d_p_halo_next, partition.halo_elems * sizeof(double)));
     }
 
-    double *h_send_prev = NULL, *h_send_next = NULL;
-    double *h_recv_prev = NULL, *h_recv_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMallocHost(&h_send_prev, partition.halo_elems * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_prev, partition.halo_elems * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMallocHost(&h_send_next, partition.halo_elems * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&h_recv_next, partition.halo_elems * sizeof(double)));
-    }
-
     CUDA_CHECK(cudaMemcpyAsync(d_b, &b[row_offset], n_local * sizeof(double),
                                cudaMemcpyHostToDevice, stream_compute));
     CUDA_CHECK(cudaMemcpyAsync(d_x_local, &x[row_offset], n_local * sizeof(double),
@@ -1659,6 +1679,24 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
     CUDA_CHECK(cudaEventCreate(&timer_phase_start));
     CUDA_CHECK(cudaEventCreate(&timer_phase_stop));
 
+    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
+    if (rank > 0) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, partition.halo_elems * sizeof(double)));
+    }
+    if (rank < world_size - 1) {
+        CUDA_CHECK(cudaMalloc(&d_x_halo_next, partition.halo_elems * sizeof(double)));
+    }
+
+    // Exercise every send/receive buffer pair once before the clock starts, so that lazy
+    // connection setup or buffer registration is never timed. The timed region rewrites every
+    // halo it reads.
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - partition.halo_elems), d_x_halo_prev,
+                       d_x_halo_next, partition.halo_elems, stream_compute);
+    comm_halo_exchange(comm, d_p_local, d_p_local + (n_local - partition.halo_elems), d_p_halo_prev,
+                       d_p_halo_next, partition.halo_elems, stream_comm);
+    CUDA_CHECK(cudaStreamSynchronize(stream_comm));
+    CUDA_CHECK(cudaStreamSynchronize(stream_compute));
+
     CUDA_CHECK(cudaEventRecord(start, stream_compute));
 
     stats->time_comm_total_ms = 0.0;
@@ -1674,22 +1712,18 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
     int blocks_local = (n_local + threads - 1) / threads;
 
     // Initial residual: r = b - A*x0
-    double *d_x_halo_prev = NULL, *d_x_halo_next = NULL;
-    if (rank > 0) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_prev, partition.halo_elems * sizeof(double)));
-    }
-    if (rank < world_size - 1) {
-        CUDA_CHECK(cudaMalloc(&d_x_halo_next, partition.halo_elems * sizeof(double)));
-    }
-
-    exchange_halo_sync(d_x_local, d_x_local + (n_local - partition.halo_elems), d_x_halo_prev,
-                       d_x_halo_next, h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                       partition.halo_elems, rank, world_size, stream_compute);
+    comm_halo_exchange(comm, d_x_local, d_x_local + (n_local - partition.halo_elems), d_x_halo_prev,
+                       d_x_halo_next, partition.halo_elems, stream_compute);
 
     // Ap = A*x0 (full 27-point kernel)
-    stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream_compute>>>(
-        d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
-        row_offset, n, grid_size);
+    if (config.spmv_staged)
+        stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev,
+                                 d_x_halo_next, d_Ap, n_local, row_offset, n, grid_size, 0, n_local,
+                                 stream_compute);
+    else
+        stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream_compute>>>(
+            d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
+            row_offset, n, grid_size);
 
     axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(-1.0, d_Ap, d_b, n_local);
     CUDA_CHECK(cudaMemcpyAsync(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice,
@@ -1702,7 +1736,7 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
 
     double rs_local_old = overlap_compute_local_dot(cublas_handle, d_r_local, d_r_local, n_local);
     double rs_old;
-    MPI_Allreduce(&rs_local_old, &rs_old, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    rs_old = comm_allreduce_sum(comm, rs_local_old);
 
     double b_norm = sqrt(rs_old);
 
@@ -1730,10 +1764,16 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
 
         CUDA_CHECK(cudaStreamWaitEvent(stream_comm, p_updated_event, 0));
 
-        exchange_halo_d2h_start(d_p_local, n_local, h_send_prev, h_send_next, partition.halo_elems,
-                                rank, world_size, stream_comm);
+        // Halo of p on stream_comm: begin enqueues what it can (staged: D2H), returns
+        comm_halo_begin(comm, d_p_local, d_p_local + (n_local - partition.halo_elems),
+                        d_p_halo_prev, d_p_halo_next, partition.halo_elems, stream_comm);
 
-        if (partition.interior_count > 0) {
+        if (config.spmv_staged) {
+            stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                     d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size,
+                                     partition.interior_start, partition.interior_count,
+                                     stream_compute);
+        } else if (partition.interior_count > 0) {
             int blocks_interior = (partition.interior_count + threads - 1) / threads;
             stencil27_overlap_subrange_kernel_3d<<<blocks_interior, threads, 0, stream_compute>>>(
                 d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
@@ -1741,34 +1781,41 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
                 partition.interior_count);
         }
 
-        MPI_Request requests[4];
-        int req_count = 0;
+        // Start the transfer, then complete it; the boundary rows wait on halo_ready
         double comm_t0 = MPI_Wtime();
-        exchange_halo_mpi_start(h_send_prev, h_send_next, h_recv_prev, h_recv_next,
-                                partition.halo_elems, rank, world_size, stream_comm, requests,
-                                &req_count);
-
-        exchange_halo_async_finish(d_p_halo_prev, d_p_halo_next, h_recv_prev, h_recv_next,
-                                   partition.halo_elems, rank, world_size, stream_comm, requests,
-                                   req_count);
+        comm_halo_post(comm);
+        comm_halo_end(comm);
+        CUDA_CHECK(cudaEventRecord(halo_ready, stream_comm));
+        CUDA_CHECK(cudaStreamWaitEvent(stream_compute, halo_ready, 0));
         double comm_t1 = MPI_Wtime();
         cum_comm_ms += (comm_t1 - comm_t0) * 1000.0;
 
         CUDA_CHECK(cudaStreamSynchronize(stream_compute));
 
-        if (partition.boundary_prev_count > 0) {
-            int blocks_prev = (partition.boundary_prev_count + threads - 1) / threads;
-            stencil27_overlap_subrange_kernel_3d<<<blocks_prev, threads, 0, stream_compute>>>(
-                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
-                n_local, row_offset, n, grid_size, partition.boundary_prev_start,
-                partition.boundary_prev_count);
-        }
-        if (partition.boundary_next_count > 0) {
-            int blocks_next = (partition.boundary_next_count + threads - 1) / threads;
-            stencil27_overlap_subrange_kernel_3d<<<blocks_next, threads, 0, stream_compute>>>(
-                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
-                n_local, row_offset, n, grid_size, partition.boundary_next_start,
-                partition.boundary_next_count);
+        if (config.spmv_staged) {
+            stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                     d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size,
+                                     partition.boundary_prev_start, partition.boundary_prev_count,
+                                     stream_compute);
+            stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                     d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size,
+                                     partition.boundary_next_start, partition.boundary_next_count,
+                                     stream_compute);
+        } else {
+            if (partition.boundary_prev_count > 0) {
+                int blocks_prev = (partition.boundary_prev_count + threads - 1) / threads;
+                stencil27_overlap_subrange_kernel_3d<<<blocks_prev, threads, 0, stream_compute>>>(
+                    d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                    n_local, row_offset, n, grid_size, partition.boundary_prev_start,
+                    partition.boundary_prev_count);
+            }
+            if (partition.boundary_next_count > 0) {
+                int blocks_next = (partition.boundary_next_count + threads - 1) / threads;
+                stencil27_overlap_subrange_kernel_3d<<<blocks_next, threads, 0, stream_compute>>>(
+                    d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                    n_local, row_offset, n, grid_size, partition.boundary_next_start,
+                    partition.boundary_next_count);
+            }
         }
         CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
         CUDA_CHECK(cudaStreamSynchronize(stream_compute));
@@ -1784,7 +1831,7 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         nvtxRangePop();
 
         double pAp;
-        MPI_Allreduce(&pAp_local, &pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        pAp = comm_allreduce_sum(comm, pAp_local);
 
         double alpha = rs_old / pAp;
 
@@ -1801,7 +1848,7 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         nvtxRangePop();
 
         double rs_new;
-        MPI_Allreduce(&rs_local_new, &rs_new, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        rs_new = comm_allreduce_sum(comm, rs_local_new);
 
         double residual_norm = sqrt(rs_new);
         double rel_residual = residual_norm / b_norm;
@@ -1809,6 +1856,9 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         if (rank == 0 && config.verbose >= 2) {
             printf("[Iter %3d] Residual: %.6e (rel: %.6e, alpha: %.4e)\n", iter + 1, residual_norm,
                    rel_residual, alpha);
+        }
+        if (rank == 0 && config.verbose >= 3) {
+            printf("[Trace %3d] rs=%a alpha=%a\n", iter + 1, rs_new, alpha);
         }
 
         if (rel_residual < config.tolerance) {
@@ -1934,14 +1984,9 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
     if (d_p_halo_next)
         cudaFree(d_p_halo_next);
 
-    if (h_send_prev)
-        cudaFreeHost(h_send_prev);
-    if (h_send_next)
-        cudaFreeHost(h_send_next);
-    if (h_recv_prev)
-        cudaFreeHost(h_recv_prev);
-    if (h_recv_next)
-        cudaFreeHost(h_recv_next);
+    cudaEventDestroy(halo_ready);
+    if (own_comm)
+        comm_destroy(comm);
 
     cublasDestroy(cublas_handle);
     cudaEventDestroy(p_updated_event);

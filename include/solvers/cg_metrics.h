@@ -25,8 +25,13 @@ void export_cg_json(const char* filename, const char* mode, const MatrixData* ma
 
 /**
  * @brief Export CG multi-GPU benchmark results to JSON
+ * @param comm Halo communication backend ("staged", "gpuaware", "nccl")
+ * @param dots Where the CG scalars live ("host", "device")
+ * @param check_every Convergence test period in iterations
+ * @param spmv SpMV kernel ("rowmajor", "staged")
  */
-void export_cg_mgpu_json(const char* filename, const char* mode, const MatrixData* mat,
+void export_cg_mgpu_json(const char* filename, const char* mode, const char* comm, const char* dots,
+                         int check_every, const char* spmv, const MatrixData* mat,
                          const BenchmarkStats* bench_stats, const CGStatsMultiGPU* cg_stats,
                          int num_gpus);
 

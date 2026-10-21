@@ -3,7 +3,7 @@
 # To bypass (not recommended): git commit --no-verify
 
 # Find staged C++/CUDA files
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(cu|h|cpp|hpp)$')
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(cu|cuh|h|cpp|hpp)$')
 
 if [ -z "$STAGED_FILES" ]; then
     exit 0

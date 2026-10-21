@@ -5,11 +5,11 @@
 [![CUDA](https://img.shields.io/badge/CUDA-11.8%20%7C%2012.x%20%7C%2013.0-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://sbouhrour.github.io/mgpu-cg-stencil-solver/)
 
-High-performance multi-GPU Conjugate Gradient solver for large-scale sparse linear systems using CUDA and MPI. Optimized for structured stencil grids: 93.5% strong scaling efficiency on 8 GPUs.
+High-performance multi-GPU Conjugate Gradient solver for large-scale sparse linear systems using CUDA and MPI. Optimized for structured stencil grids: 93.5% strong scaling efficiency on 8 GPUs (2D, 20k×20k), 88% in 3D with compute-communication overlap (27-point, 512³).
 
 This project evaluates GPU sparse matrix–vector multiplication strategies and their impact on iterative solvers, with a focus on stencil-structured workloads common in scientific computing (PDE discretizations, CFD, FEM).
 
-*Built by [Stéphane Bouhrour](https://github.com/sbouhrour), GPU & parallel performance engineer, open to remote GPU work, full-time or consulting ([contact](#contact)).*
+*Built by [Stéphane Bouhrour](https://github.com/sbouhrour), GPU & parallel performance engineer, open to remote GPU work, as a contractor or an employee ([contact](#contact)).*
 
 📖 **[Full documentation site →](https://sbouhrour.github.io/mgpu-cg-stencil-solver/)**
 
@@ -20,10 +20,12 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 | **Stencil CG vs NVIDIA AmgX** | 1.41× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100-SXM4-80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
 | **3D overlap (27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
+| **Communication backends (3D, 27pt)** | Host staging, CUDA-aware MPI, NCCL, NVSHMEM, same residuals bit for bit; NCCL + CUDA graph 1.46× faster per iteration than host staging (128³, 8 GPUs) |
+| **Stencil CG vs AmgX (3D, 27pt)** | 1.09–1.31× at equal transport, up to 1.78× with overlap (128³ to 512³, 1 to 8 GPUs) |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
 
-**Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57
+**Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57 (2D), 580.65.06 (3D comparison with AmgX, communication backends)
 
 ---
 
@@ -107,7 +109,7 @@ The stencil optimization operates directly on CSR without converting to DIA/ELL/
 
 </details>
 
-See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison, 3D overlap).
+See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison in 2D and 3D, 3D overlap, 27-point SpMV, staged SpMV in the 3D solver).
 
 ---
 
@@ -124,9 +126,11 @@ AmgX is NVIDIA's production-grade multi-GPU solver library, used here as referen
 See [`results.md`](docs/results.md#2d-custom-cg-vs-nvidia-amgx) for the full comparison table (10k/15k/20k × Custom CG / AmgX × 1/8 GPUs).
 
 **Key Findings:**
-- **~40% faster at every scale**: Custom CG outperforms AmgX on both single-GPU and 8 GPUs
+- **~40% faster in 2D at every GPU count**: Custom CG outperforms AmgX on both single-GPU and 8 GPUs
 - **Same convergence**: Both solvers converge in 14 iterations with identical tolerance
 - **Similar scaling efficiency**: 87-94% for both implementations
+
+**3D (27-point)**: at equal transport (Custom CG synchronous solver; both send halos through host memory), the Custom CG is 1.09× to 1.31× faster than AmgX from 128³ to 512³ on 1 to 8 GPUs, with the same iteration count in every case; the gap narrows as communication takes a larger share of the time. With compute-communication overlap, still through host memory, 1.19× to 1.78×. With NCCL, device dot products and a CUDA graph, a different transport from AmgX's, 1.27× to 1.69×. See [`results.md`](docs/results.md#3d-custom-cg-vs-nvidia-amgx-27-point).
 
 **Why the performance difference?**
 
@@ -152,6 +156,22 @@ See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables acr
 
 ---
 
+## Communication Backends: Host Staging, CUDA-aware MPI, NCCL, NVSHMEM
+
+The 3D solver takes `--comm=staged|gpuaware|nccl|nvshmem` for the halo exchange, `--dots=device` to keep the CG scalars on the GPU, and `--graph` to replay iterations as a CUDA graph. All four backends reproduce the staged residual history bit for bit.
+
+With `--stencil=27`, `--spmv=staged` replaces the default row-major SpMV kernel by one where each warp stages its rows' coefficients in shared memory with `cp.async`: the SpMV kernel runs 1.19× faster at 256³ on 8 GPUs (475.1 → 398.8 µs per iteration), and the time to solution is 1.02× to 1.28× shorter depending on the size and the solver, with the same result bit for bit. See [`results.md`](docs/results.md#3d-staged-spmv-in-the-solver).
+
+On 8 A100-SXM4-80GB GPUs (27-point stencil), NCCL with device dots and a CUDA graph runs **221.3 µs per iteration at 128³ against 324.0 µs for host staging (1.46×)**, and 5201.7 against 6444.1 µs at 512³ (1.24×).
+
+<p align="center">
+  <img src="docs/figures/comm_backends_a100.png" alt="Time per CG iteration for each communication backend" width="100%">
+</p>
+
+See [Communication Backends](docs/communication.md) for the setup (MPI library per backend, rank placement), the full table, per-iteration Nsight Systems counts, the cross-rank analysis and the nccl-tests calibration.
+
+---
+
 ## Methodology
 
 **How results were measured:**
@@ -173,7 +193,7 @@ See [`methodology.md`](docs/methodology.md) for full reproducibility conditions,
 ## Technical Highlights
 
 ### Multi-GPU Architecture
-- **Communication**: non-blocking halo exchange via explicit D2H → MPI_Isend/Irecv → H2D staging over PCIe Gen4
+- **Communication**: non-blocking halo exchange via explicit D2H → MPI_Isend/Irecv → H2D staging over PCIe Gen4 (default); the 3D solver also exchanges halos through CUDA-aware MPI, NCCL or NVSHMEM ([Communication Backends](docs/communication.md))
 - **Row-band partitioning**: 1D decomposition with CSR format and halo zone exchange
 - **Z-slab partitioning (3D)**: 3D grids split along the Z axis into contiguous slabs of XY-planes; each GPU exchanges one boundary XY-plane per neighbor
 - **Compute-communication overlap**: interior/boundary decomposition with dual-stream execution hides halo exchange behind SpMV computation (3D stencils)
@@ -280,11 +300,11 @@ behind useful computation.
 ```
 ├── README.md                       # This file
 ├── scripts/
-│   ├── run_all.sh                  # ONE COMMAND to reproduce all results
+│   ├── run_all.sh                  # 2D benchmarks and a quick 3D overlap check (all results: docs/reproducing.md)
 │   ├── benchmarking/               # Individual benchmark scripts
 │   ├── plotting/                   # Python plotting utilities
 │   └── visualizations/             # README figure generation scripts
-├── results/
+├── results/                        # Created by the benchmark scripts
 │   ├── raw/                        # Raw benchmark outputs (TXT)
 │   ├── json/                       # Structured results (JSON)
 │   └── figures/                    # Generated plots (PNG)
@@ -299,21 +319,23 @@ behind useful computation.
 │   ├── matrix/                     # Stencil Matrix Market generator
 │   └── io/                         # Matrix I/O
 ├── include/                        # Header files
+├── bench/spmv_27pt/                # 27-point SpMV benchmark against cuSPARSE (single GPU)
 ├── docs/                           # Documentation & pre-generated figures
-├── external/benchmarks/amgx/       # NVIDIA AmgX comparison
-└── tests/                          # Unit tests (Google Test)
+└── external/benchmarks/amgx/       # NVIDIA AmgX comparison
 ```
 
 ---
 
 ## Documentation
 
-- **[Results](docs/results.md)**: All benchmark tables: 2D scaling, SpMV comparison, AmgX comparison, 3D overlap
+- **[Results](docs/results.md)**: All benchmark tables: 2D scaling, SpMV comparison, AmgX comparison (2D and 3D), 3D overlap, 27-point SpMV
 - **[Profiling Analysis (2D)](docs/profiling-2d.md)**: Why stencil specialization wins: kernel breakdown, roofline analysis, speedup attribution
 - **[Profiling Analysis (3D)](docs/profiling-3d.md)**: Compute-communication overlap, interior/boundary decomposition
+- **[Communication Backends](docs/communication.md)**: host staging, CUDA-aware MPI, NCCL and NVSHMEM for the 3D halo exchange: correctness, time per iteration, Nsight Systems counts, nccl-tests calibration
 - **[Methodology](docs/methodology.md)**: Measurement protocol, statistical approach, profiling tools
 - **[Reproducing the Results](docs/reproducing.md)**: Build, run, and profile on your own hardware
-- **[Development](docs/development.md)**: Build system, adding kernels and solvers, running tests
+- **[Development](docs/development.md)**: Build system, adding kernels and solvers, checking a change
+- **[27-point SpMV benchmark](bench/spmv_27pt/README.md)**: coalesced staging of the CSR values against cuSPARSE, on the same arrays
 
 ---
 

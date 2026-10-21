@@ -11,20 +11,24 @@ This project evaluates GPU sparse matrix–vector multiplication strategies and 
 | **Stencil CG vs NVIDIA AmgX** | 1.41× faster (single-GPU, 20k×20k), 1.44× faster (8 GPUs, 20k×20k) |
 | **Stencil SpMV vs cuSPARSE CSR** | 2.08× speedup on A100-SXM4-80GB (20k×20k), against the cuSPARSE of CUDA 12.8 |
 | **3D overlap (27pt)** | 88% scaling efficiency on 8 GPUs, up to 1.45× overlap gain |
+| **Communication backends (3D, 27pt)** | Host staging, CUDA-aware MPI, NCCL, NVSHMEM, same residuals bit for bit; NCCL + CUDA graph 1.46× faster per iteration than host staging (128³, 8 GPUs) |
+| **Stencil CG vs AmgX (3D, 27pt)** | 1.09–1.31× at equal transport, up to 1.78× with overlap (128³ to 512³, 1 to 8 GPUs) |
 | **Strong scaling efficiency** | 87–94% (2D), 88% (3D 27pt overlap) from 1→8 GPUs |
 | **Problem size tested** | Up to 400M unknowns (2D 20k×20k), 134M unknowns (3D 512³) |
 
 *AmgX comparison is iso-algorithm: both run unpreconditioned CG.*
 
-**Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57
+**Hardware**: 8× NVIDIA A100-SXM4-80GB · CUDA 12.8 · Driver 575.57 (2D), 580.65.06 (3D comparison with AmgX, communication backends)
 
 ## Where to Go Next
 
-**[Results](results.md)**. All benchmark tables in one place: 2D strong scaling, detailed 1/2/4/8-GPU breakdowns, SpMV format comparison, AmgX comparison, and 3D 7-point/27-point overlap results.
+**[Results](results.md)**. All benchmark tables in one place: 2D strong scaling, detailed 1/2/4/8-GPU breakdowns, SpMV format comparison, AmgX comparison in 2D and 3D, 3D 7-point/27-point overlap results, the 27-point SpMV against cuSPARSE, and the staged SpMV kernel in the 3D solver.
 
 **[Why It's Faster: 2D Analysis](profiling-2d.md)**. Kernel-level profiling that explains the speedup over NVIDIA AmgX: SpMV kernel breakdown, roofline analysis, and speedup attribution.
 
 **[Compute-Communication Overlap: 3D Analysis](profiling-3d.md)**. How interior/boundary decomposition and dual-stream execution hide MPI halo exchange behind GPU computation, reaching 88% strong scaling efficiency on 8 GPUs.
+
+**[Communication Backends](communication.md)**. Host staging, CUDA-aware MPI, NCCL and NVSHMEM for the halo exchange of the 3D solver: correctness, time per iteration on 8 A100 GPUs, Nsight Systems counts and nccl-tests on the same node.
 
 **[Reproducing the Results](reproducing.md)**. Build the solver, run the benchmark suite, and profile on your own hardware.
 

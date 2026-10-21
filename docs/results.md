@@ -4,6 +4,8 @@ All benchmark results for the multi-GPU CG stencil solver. Measured on 8× NVIDI
 
 For the analysis behind these numbers, see [`profiling-2d.md`](profiling-2d.md) (2D, kernel breakdown, roofline) and [`profiling-3d.md`](profiling-3d.md) (3D, compute-communication overlap). For measurement methodology, see [`methodology.md`](methodology.md).
 
+For the halo exchange backends (host staging, CUDA-aware MPI, NCCL, NVSHMEM), see [`communication.md`](communication.md).
+
 ## 2D: Strong Scaling (Custom CG)
 
 **Multi-GPU Strong Scaling** on 8× NVIDIA A100-SXM4-80GB
@@ -116,6 +118,8 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 | 512³ | 4 | 6461 | 5815 | 1.11× | 611 |
 | 512³ | 8 | 3809 | 3110 | 1.23× | 611 |
 
+**Hardware** (this table, the 7-point table above and the efficiency tables below): 8× NVIDIA A100-SXM4-80GB, first published on 12 May 2026. The 3D comparison with AmgX and the communication results below were measured on another 8× A100-SXM4-80GB node in October 2026, which runs the same configurations slower at small sizes: 256³ on 8 GPUs, 324.8 ms synchronous and 214.6 ms with overlap (1.51×) on 5 October, against 294.0 and 203.5 ms (1.45×) here.
+
 ## 3D: Strong Scaling Efficiency (overlap solver)
 
 **7-point stencil**: speedup relative to 1-GPU sync baseline:
@@ -137,3 +141,94 @@ Both solvers run unpreconditioned CG (iso-algorithm): the speedups reflect imple
 | 512³ | 1.00× | 1.98× | 3.79× | 7.08× |
 
 <sub>512³ at 8 GPUs: 7.08× speedup (**88% parallel efficiency**).</sub>
+
+## 3D: Custom CG vs NVIDIA AmgX (27-point)
+
+At equal transport, the Custom CG synchronous solver solves the 3D 27-point system 1.09× to 1.31× faster than AmgX. The gap narrows as communication takes a larger share of the time: at 128³, 1.31× on 1 GPU and 1.09× on 8 GPUs. On 1 GPU, with no halo exchange, the gap is the computation alone (SpMV and vector operations); on several GPUs, both solvers send their halos through host memory. With compute-communication overlap, still through host memory, the Custom CG is 1.19× to 1.78× faster than AmgX. With NCCL, device dot products and a CUDA graph, a different transport from AmgX's, it is 1.27× to 1.69× faster. The fastest Custom configuration depends on the size: NCCL at 128³ on 8 GPUs (1.48×), overlap at 256³ on 8 GPUs (1.78×), the two within 0.3% at 512³ on 8 GPUs (1.37×).
+
+All runs solve unpreconditioned CG to the same relative residual (1e-6, L2 norm, from x0 = 0 with b = 1). The synchronous and overlap solvers and AmgX take the same number of iterations: 151 at 128³, 303 at 256³, 611 at 512³. The NCCL configuration tests convergence every 10 iterations (`--check-every=10`), so it stops after 160, 310 and 620; its time includes them. AmgX uses its `MPI` communicator (Open MPI 4.1.6 without CUDA support); its `MPI_DIRECT` communicator is slower on this node (see [Communication Backends](communication.md)). Time to solution, median of 10 solves.
+
+**Hardware**: 8× NVIDIA A100-SXM4-80GB (NVLink NV12) · CUDA 12.8 · Driver 580.65.06 · AmgX v2.5.0 · ranks bound to the CPU cores local to their GPU · measured on 5 October 2026 at commit `ba170c8` (PR #23)
+
+| Grid | GPUs | NVIDIA AmgX | Custom, synchronous | Custom, overlap | Custom, NCCL + CUDA graph |
+|------|-----:|------------:|--------------------:|----------------:|--------------------------:|
+| 128³ (2.1M unknowns) | 1 | 121.5 ms | 92.5 ms (1.31×) | | |
+| | 2 | 83.3 ms | 65.2 ms (1.28×) | 59.6 ms (1.40×) | 59.7 ms (1.40×) |
+| | 4 | 61.8 ms | 54.2 ms (1.14×) | 43.5 ms (1.42×) | 43.7 ms (1.41×) |
+| | 8 | 53.3 ms | 48.7 ms (1.09×) | 44.7 ms (1.19×) | 36.0 ms (1.48×) |
+| 256³ (16.8M unknowns) | 1 | 1716.1 ms | 1330.6 ms (1.29×) | | |
+| | 2 | 968.5 ms | 755.6 ms (1.28×) | 708.3 ms (1.37×) | 718.1 ms (1.35×) |
+| | 4 | 566.4 ms | 458.7 ms (1.23×) | 381.3 ms (1.49×) | 391.1 ms (1.45×) |
+| | 8 | 382.0 ms | 324.8 ms (1.18×) | 214.6 ms (1.78×) | 226.2 ms (1.69×) |
+| 512³ (134M unknowns) | 1 | n/a | 21987.4 ms | | |
+| | 2 | n/a | 11757.4 ms | 11326.3 ms | 11513.9 ms |
+| | 4 | 7639.5 ms | 6631.8 ms (1.15×) | 5947.5 ms (1.28×) | 5994.5 ms (1.27×) |
+| | 8 | 4412.9 ms | 3985.1 ms (1.11×) | 3228.3 ms (1.37×) | 3218.6 ms (1.37×) |
+
+<sub>AmgX / Custom in brackets. Overlap and NCCL run on 2 GPUs or more. 512³ on 1 rank: AmgX's distributed matrix indexes local entries with 32-bit integers, and the rank holds 3.6 × 10⁹ entries. On 2 ranks (1.8 × 10⁹ local entries), the AmgX matrix upload stopped with "CUDA kernel launch error". Raw data: [`data/amgx_3d_a100/`](https://github.com/sbouhrour/mgpu-cg-stencil-solver/tree/main/docs/data/amgx_3d_a100). Commands: [Reproducing](reproducing.md).</sub>
+
+## 3D: 27-Point SpMV vs cuSPARSE CSR (single GPU)
+
+The same CSR arrays for every variant (`bench/spmv_27pt/`): cuSPARSE ALG1 (32-bit indices, the faster of ALG1 and ALG2), the row-major kernel of the 3D solver (one thread per row), and `staged`, the same kernel with the values of each warp's 32 rows copied to shared memory by coalesced 16-byte `cp.async` before use. `staged` and the row-major kernel produce bitwise identical results. Kernel time, median of 30 launches, constant coefficients; variable symmetric coefficients give the same times within 0.2%.
+
+**Hardware**: NVIDIA A100-SXM4-80GB · Driver 580.65.06 · default L2 fetch granularity (64 bytes) · measured on 5 October 2026, benchmark and kernel of PR #19
+
+| Grid | CUDA (cuSPARSE) | cuSPARSE ALG1 | Row-major | Staged |
+|------|-----------------|--------------:|----------:|-------:|
+| 256³ | 12.8 (12.5.8) | 4.530 ms | 3.348 ms (1.35×) | 2.789 ms (1.62×) |
+| 384³ | 12.8 (12.5.8) | 15.064 ms | 11.797 ms (1.28×) | 9.147 ms (1.65×) |
+| 256³ | 13.0 (12.6.3) | 4.339 ms | 3.347 ms (1.30×) | 2.786 ms (1.56×) |
+| 384³ | 13.0 (12.6.3) | 14.574 ms | 11.797 ms (1.24×) | 9.153 ms (1.59×) |
+
+<sub>Speedups against cuSPARSE ALG1 of the same CUDA version. Raw output: `bench/spmv_27pt/run_session.sh` writes one text file per coefficient set and a CSV.</sub>
+
+## 3D: Staged SpMV in the solver
+
+With `--stencil=27`, the 3D solvers take `--spmv=staged`: the `staged` kernel of the section above, extended to the halo columns and to the row subranges of the overlap solver. Interior rows read `x` at the 27 stencil offsets; rows on a domain face or on the first or last plane of a partition go through the CSR loop with halo mapping. The default kernel is the row-major one (`--spmv=rowmajor`), with which the other 3D results on this page are measured. Both kernels give the same `Sum(x)` to 17 digits: `scripts/verify_reproduction.sh` checks it on 1 rank and on 2 ranks with overlap. The coefficient staging uses `cp.async`, which needs compute capability 8.0 (`make ARCH=80`); built for an older architecture, the kernel reads the coefficients from global memory.
+
+**Hardware**: NVIDIA A100-SXM4-80GB · CUDA 12.8 (cuSPARSE 12.5.8) · Driver 580.65.06 · solver built with `make ARCH=80` · measured on 6 October 2026 at commit `cd3486c` (PR #26)
+
+Kernel alone, single GPU (`bench/spmv_27pt/`, line `staged-solver`, compiled from the solver's source file), median of 30 launches:
+
+| Grid | cuSPARSE ALG1 | Row-major | Staged (solver kernel) |
+|------|--------------:|----------:|-----------------------:|
+| 128³ | 0.595 ms | 0.436 ms (1.36×) | 0.372 ms (1.60×) |
+| 256³ | 4.537 ms | 3.348 ms (1.36×) | 2.774 ms (1.64×) |
+| 384³ | 15.089 ms | 11.796 ms (1.28×) | 9.174 ms (1.64×) |
+
+In the solver, 256³ on 8 GPUs, synchronous solver: the SpMV kernel takes 475.1 µs per iteration with `rowmajor` and 398.8 µs with `staged` (1.19×). The other kernels of the iteration (AXPY, dot products, AXPBY) keep the same durations within 0.5 µs. Nsight Systems on rank 0, mean over 7 solves of 20 iterations.
+
+Time to solution at the same tolerance (1e-6), median of 10 solves, ranks bound to the CPU cores local to their GPU. In each of the 27 pairs (the 23 cases below, and a second round of 4 cases at 256³ that reproduces the first within 1%), both kernels take the same number of iterations and give the same `Sum(x)` to 17 digits. The NCCL configuration tests convergence every 10 iterations (`--check-every=10`).
+
+| Grid | GPUs | Solver | Row-major | Staged | Gain | AmgX / staged |
+|------|-----:|--------|----------:|-------:|-----:|--------------:|
+| 128³ | 1 | synchronous | 92.8 ms | 83.9 ms | 1.106× | 1.45× |
+| 128³ | 2 | synchronous | 64.9 ms | 60.7 ms | 1.069× | 1.37× |
+| 128³ | 2 | overlap | 59.6 ms | 55.8 ms | 1.068× | 1.49× |
+| 128³ | 2 | NCCL + CUDA graph | 59.6 ms | 55.4 ms | 1.075× | 1.50× |
+| 128³ | 4 | synchronous | 53.7 ms | 48.9 ms | 1.098× | 1.26× |
+| 128³ | 4 | overlap | 43.2 ms | 41.4 ms | 1.045× | 1.49× |
+| 128³ | 4 | NCCL + CUDA graph | 43.2 ms | 38.1 ms | 1.134× | 1.62× |
+| 128³ | 8 | synchronous | 48.8 ms | 45.6 ms | 1.071× | 1.17× |
+| 128³ | 8 | overlap | 44.9 ms | 44.2 ms | 1.015× | 1.21× |
+| 128³ | 8 | NCCL + CUDA graph | 35.4 ms | 31.8 ms | 1.115× | 1.68× |
+| 256³ | 1 | synchronous | 1327.4 ms | 1151.0 ms | 1.153× | 1.49× |
+| 256³ | 2 | synchronous | 758.7 ms | 669.0 ms | 1.134× | 1.45× |
+| 256³ | 2 | overlap | 706.5 ms | 617.1 ms | 1.145× | 1.57× |
+| 256³ | 2 | NCCL + CUDA graph | 716.6 ms | 621.7 ms | 1.153× | 1.56× |
+| 256³ | 4 | synchronous | 458.8 ms | 413.3 ms | 1.110× | 1.37× |
+| 256³ | 4 | overlap | 381.4 ms | 344.0 ms | 1.109× | 1.65× |
+| 256³ | 4 | NCCL + CUDA graph | 390.2 ms | 342.8 ms | 1.138× | 1.65× |
+| 256³ | 8 | synchronous | 324.2 ms | 295.8 ms | 1.096× | 1.29× |
+| 256³ | 8 | overlap | 214.7 ms | 209.9 ms | 1.023× | 1.82× |
+| 256³ | 8 | NCCL + CUDA graph | 225.7 ms | 201.1 ms | 1.123× | 1.90× |
+| 512³ | 8 | synchronous | 3984.8 ms | 3311.7 ms | 1.203× | 1.33× |
+| 512³ | 8 | overlap | 3222.0 ms | 2527.8 ms | 1.275× | 1.75× |
+| 512³ | 8 | NCCL + CUDA graph | 3219.3 ms | 2523.3 ms | 1.276× | 1.75× |
+
+The staged kernel shortens the computation, not the halo exchange. The gain is largest where the SpMV dominates the time (1.15× on 1 GPU at 256³, 1.28× at 512³ on 8 GPUs with overlap or NCCL) and smallest where the exchange already sets it (1.02× with overlap at 256³ and 1.015× at 128³, on 8 GPUs). For the same reason, the strong scaling efficiency of the synchronous solver at 256³ from 1 to 8 GPUs goes from 51.2% to 48.6%: the 1-GPU time drops by 13.3% and the 8-GPU time by 8.8%, as communication takes a larger share of each iteration. At 256³ on 8 GPUs, NCCL with a CUDA graph becomes faster than overlap: 201.1 against 209.9 ms (225.7 against 214.7 ms with the row-major kernel).
+
+Against the AmgX times of the [3D comparison](#3d-custom-cg-vs-nvidia-amgx-27-point) (same node, 5 October 2026), the Custom CG with the staged kernel is 1.17× to 1.49× faster with the synchronous solver, 1.21× to 1.82× with overlap and 1.50× to 1.90× with NCCL and a CUDA graph.
+
+<sub>Kernel speedups against cuSPARSE ALG1. AmgX / staged: AmgX time of the 3D comparison divided by the staged time. Raw data: [`data/solver_staged_a100/`](https://github.com/sbouhrour/mgpu-cg-stencil-solver/tree/main/docs/data/solver_staged_a100). Commands: [Reproducing](reproducing.md).</sub>
+

@@ -1,0 +1,14 @@
+== sync_rowmajor: 7 solves x 20 it.
+   per iteration: 28.0 API calls, 4.00 host syncs, 8.0 kernels, copies DtoH 3.00, HtoD 1.00
+   stencil27_csr_partitioned_halo_kernel_3d     grid   8192   1.00/it  mean    475.1 us
+   axpy_kernel                                  grid   8192   2.00/it  mean     26.3 us
+   dot_kernel                                   grid   1728   2.00/it  mean     18.3 us
+   axpby_kernel                                 grid   8192   1.00/it  mean     22.4 us
+   reduce_1Block_kernel                         grid      1   2.00/it  mean      4.5 us
+== sync_staged: 7 solves x 20 it.
+   per iteration: 28.0 API calls, 4.00 host syncs, 8.0 kernels, copies DtoH 3.00, HtoD 1.00
+   stencil27_staged_subrange_kernel_3d          grid  16384   1.00/it  mean    398.8 us
+   axpy_kernel                                  grid   8192   2.00/it  mean     26.4 us
+   dot_kernel                                   grid   1728   2.00/it  mean     18.0 us
+   axpby_kernel                                 grid   8192   1.00/it  mean     22.6 us
+   reduce_1Block_kernel                         grid      1   2.00/it  mean      4.5 us
