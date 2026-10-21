@@ -384,6 +384,13 @@ extern __global__ void stencil27_csr_partitioned_halo_kernel_3d(
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
+/* Staged 27-point SpMV over local rows [start, start + count), same result as the row-major
+ * kernel (src/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu) */
+void stencil27_staged_spmv_3d(const long long* row_ptr, const int* col_idx, const double* values,
+                              const double* x_local, const double* x_halo_prev,
+                              const double* x_halo_next, double* y, int n_local, int row_offset,
+                              int N_total, int grid_size, int start, int count,
+                              cudaStream_t stream);
 
 /* ================================================================
  * Local helpers
@@ -1709,9 +1716,14 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
                        d_x_halo_next, partition.halo_elems, stream_compute);
 
     // Ap = A*x0 (full 27-point kernel)
-    stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream_compute>>>(
-        d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
-        row_offset, n, grid_size);
+    if (config.spmv_staged)
+        stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev,
+                                 d_x_halo_next, d_Ap, n_local, row_offset, n, grid_size, 0, n_local,
+                                 stream_compute);
+    else
+        stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream_compute>>>(
+            d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
+            row_offset, n, grid_size);
 
     axpy_kernel<<<blocks_local, threads, 0, stream_compute>>>(-1.0, d_Ap, d_b, n_local);
     CUDA_CHECK(cudaMemcpyAsync(d_r_local, d_b, n_local * sizeof(double), cudaMemcpyDeviceToDevice,
@@ -1756,7 +1768,12 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
         comm_halo_begin(comm, d_p_local, d_p_local + (n_local - partition.halo_elems),
                         d_p_halo_prev, d_p_halo_next, partition.halo_elems, stream_comm);
 
-        if (partition.interior_count > 0) {
+        if (config.spmv_staged) {
+            stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                     d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size,
+                                     partition.interior_start, partition.interior_count,
+                                     stream_compute);
+        } else if (partition.interior_count > 0) {
             int blocks_interior = (partition.interior_count + threads - 1) / threads;
             stencil27_overlap_subrange_kernel_3d<<<blocks_interior, threads, 0, stream_compute>>>(
                 d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
@@ -1775,19 +1792,30 @@ int cg_solve_mgpu_partitioned_overlap_27pt_3d(SpmvOperator* spmv_op, MatrixData*
 
         CUDA_CHECK(cudaStreamSynchronize(stream_compute));
 
-        if (partition.boundary_prev_count > 0) {
-            int blocks_prev = (partition.boundary_prev_count + threads - 1) / threads;
-            stencil27_overlap_subrange_kernel_3d<<<blocks_prev, threads, 0, stream_compute>>>(
-                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
-                n_local, row_offset, n, grid_size, partition.boundary_prev_start,
-                partition.boundary_prev_count);
-        }
-        if (partition.boundary_next_count > 0) {
-            int blocks_next = (partition.boundary_next_count + threads - 1) / threads;
-            stencil27_overlap_subrange_kernel_3d<<<blocks_next, threads, 0, stream_compute>>>(
-                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
-                n_local, row_offset, n, grid_size, partition.boundary_next_start,
-                partition.boundary_next_count);
+        if (config.spmv_staged) {
+            stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                     d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size,
+                                     partition.boundary_prev_start, partition.boundary_prev_count,
+                                     stream_compute);
+            stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                     d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size,
+                                     partition.boundary_next_start, partition.boundary_next_count,
+                                     stream_compute);
+        } else {
+            if (partition.boundary_prev_count > 0) {
+                int blocks_prev = (partition.boundary_prev_count + threads - 1) / threads;
+                stencil27_overlap_subrange_kernel_3d<<<blocks_prev, threads, 0, stream_compute>>>(
+                    d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                    n_local, row_offset, n, grid_size, partition.boundary_prev_start,
+                    partition.boundary_prev_count);
+            }
+            if (partition.boundary_next_count > 0) {
+                int blocks_next = (partition.boundary_next_count + threads - 1) / threads;
+                stencil27_overlap_subrange_kernel_3d<<<blocks_next, threads, 0, stream_compute>>>(
+                    d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                    n_local, row_offset, n, grid_size, partition.boundary_next_start,
+                    partition.boundary_next_count);
+            }
         }
         CUDA_CHECK(cudaEventRecord(timer_phase_stop, stream_compute));
         CUDA_CHECK(cudaStreamSynchronize(stream_compute));

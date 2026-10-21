@@ -87,6 +87,7 @@ int main(int argc, char** argv) {
     // Detailed timers: disabled by default (no sync overhead), enable with --timers flag
     config.enable_detailed_timers = 0;
     config.enable_overlap = 0;
+    config.spmv_staged = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--timers") == 0) {
             config.enable_detailed_timers = 1;
@@ -203,8 +204,8 @@ int main(int argc, char** argv) {
         // Export results if requested
         if (json_file || csv_file) {
             if (json_file) {
-                export_cg_mgpu_json(json_file, "partitioned-halo", "staged", "host", 1, &mat,
-                                    &bench_stats, &stats, world_size);
+                export_cg_mgpu_json(json_file, "partitioned-halo", "staged", "host", 1, "rowmajor",
+                                    &mat, &bench_stats, &stats, world_size);
                 printf("\nResults exported to JSON: %s\n", json_file);
             }
             if (csv_file) {

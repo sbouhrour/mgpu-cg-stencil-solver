@@ -1,0 +1,24 @@
+=== verify_reproduction: NVIDIA A100-SXM4-80GB, 8 GPU(s) ===
+2D 512^2 Custom CG iterations                PASS  17
+2D 1000^2 Custom CG iterations               PASS  16
+2D 512^2 in memory = file (Sum(x))           PASS  2.6088063330350711e+05
+2D 512^2 spmv_bench (both modes)             PASS  ran
+2D 512^2 Custom CG iterations, 2 ranks       PASS  17
+2D 512^2 Sum(x), 2 ranks vs 1                PASS  2.6088063330350711e+05 vs 2.6088063330350711e+05
+2D 512^2 AmgX iterations = Custom CG         PASS  17
+2D 512^2 AmgX in memory = file (Sum(x))      PASS  2.6088063330350711e+05
+2D 512^2 Sum(x), AmgX vs Custom CG           PASS  2.6088063330350711e+05 vs 2.6088063330350711e+05
+2D 512^2 AmgX iterations, 2 ranks            PASS  17
+2D 512^2 AmgX Sum(x), 2 ranks vs 1           PASS  2.6088063330305996e+05 vs 2.6088063330350711e+05
+3D 7pt 64^3 in memory = file (Sum(x))        PASS  2.3368102636443954e+07
+3D 7pt 128^3 iterations                      PASS  261
+3D 7pt 128^3 --overlap --verify              PASS  VERIFY: PASS
+3D 27pt 128^3 iterations                     PASS  151
+3D 27pt 128^3 --overlap --verify             PASS  VERIFY: PASS
+3D 27pt 128^3 --spmv=staged = rowmajor (Sum(x)) PASS  8.0042537685688272e+07
+3D 27pt 128^3 AmgX iterations = Custom CG    PASS  151
+3D 27pt 128^3 Sum(x), AmgX vs Custom CG      PASS  8.0042537685683250e+07 vs 8.0042537685688272e+07
+3D 27pt 128^3 iterations, 2 ranks overlap    PASS  151
+3D 27pt 128^3 --spmv=staged = rowmajor, 2 ranks overlap (Sum(x)) PASS  8.0042537685682699e+07
+
+RESULT: 21 passed, 0 failed, 0 skipped (logs in results/verify/)

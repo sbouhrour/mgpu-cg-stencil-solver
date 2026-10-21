@@ -749,6 +749,13 @@ extern __global__ void stencil27_csr_partitioned_halo_kernel_3d(
     const double* __restrict__ values, const double* __restrict__ x_local,
     const double* __restrict__ x_halo_prev, const double* __restrict__ x_halo_next,
     double* __restrict__ y, int n_local, int row_offset, int N_total, int grid_size);
+/* Staged 27-point SpMV over local rows [start, start + count), same result as the row-major
+ * kernel (src/spmv/spmv_stencil_3d_27pt_partitioned_halo_kernel.cu) */
+void stencil27_staged_spmv_3d(const long long* row_ptr, const int* col_idx, const double* values,
+                              const double* x_local, const double* x_halo_prev,
+                              const double* x_halo_next, double* y, int n_local, int row_offset,
+                              int N_total, int grid_size, int start, int count,
+                              cudaStream_t stream);
 
 /**
  * @brief Multi-GPU CG solver for 3D 27-point stencil with Z-slab partitioning (synchronous)
@@ -927,9 +934,14 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
         cudaGraph_t graph;
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
         for (int it = 0; it < config.check_every; it++) {
-            stencil27_csr_partitioned_halo_kernel_3d<<<blocks_g, threads_g, 0, stream>>>(
-                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
-                n_local, row_offset, n, grid_size);
+            if (config.spmv_staged)
+                stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                         d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size, 0,
+                                         n_local, stream);
+            else
+                stencil27_csr_partitioned_halo_kernel_3d<<<blocks_g, threads_g, 0, stream>>>(
+                    d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                    n_local, row_offset, n, grid_size);
             cg_scalars_pAp(&S, d_p_local, d_Ap, n_local);
             cg_scalars_update_xr(&S, d_p_local, d_x_local, d_Ap, d_r_local, n_local, blocks_g,
                                  threads_g);
@@ -963,9 +975,14 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
                        d_x_halo_next, halo_size, stream);
 
     // Initial SpMV: Ap = A*x (27-point kernel)
-    stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
-        d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
-        row_offset, n, grid_size);
+    if (config.spmv_staged)
+        stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev,
+                                 d_x_halo_next, d_Ap, n_local, row_offset, n, grid_size, 0, n_local,
+                                 stream);
+    else
+        stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
+            d_row_ptr, d_col_idx, d_values, d_x_local, d_x_halo_prev, d_x_halo_next, d_Ap, n_local,
+            row_offset, n, grid_size);
 
     // r = b - Ap
     axpy_kernel<<<blocks_local, threads, 0, stream>>>(-1.0, d_Ap, d_b, n_local);
@@ -1040,9 +1057,14 @@ int cg_solve_mgpu_partitioned_27pt_3d(SpmvOperator* spmv_op, MatrixData* mat, co
 
         // Ap = A * p (27-point kernel)
         nvtxRangePush("SpMV_27PT_3D");
-        stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
-            d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap, n_local,
-            row_offset, n, grid_size);
+        if (config.spmv_staged)
+            stencil27_staged_spmv_3d(d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev,
+                                     d_p_halo_next, d_Ap, n_local, row_offset, n, grid_size, 0,
+                                     n_local, stream);
+        else
+            stencil27_csr_partitioned_halo_kernel_3d<<<blocks_local, threads, 0, stream>>>(
+                d_row_ptr, d_col_idx, d_values, d_p_local, d_p_halo_prev, d_p_halo_next, d_Ap,
+                n_local, row_offset, n, grid_size);
         nvtxRangePop();
 
         // alpha = rs_old / (p^T * Ap)

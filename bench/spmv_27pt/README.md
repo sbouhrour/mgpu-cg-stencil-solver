@@ -9,9 +9,10 @@ arrays: none of them converts, copies or reorders the matrix.
 | `cusparse-alg1`, `cusparse-alg2` | `row_ptr`, `col_idx`, `values`, `x` | `cusparseSpMV`, 32-bit indices |
 | `rowmajor` | `values`, `x` (`row_ptr` once per row) | kernel of the CG solver, one thread per row |
 | `staged` | same bytes as `rowmajor` | each warp copies its 32 rows' values to shared memory with coalesced 16-byte `cp.async` |
+| `staged-solver` | same bytes as `rowmajor` | the same staging in the solver's kernel (`--spmv=staged`), which also maps halo columns and runs on row subranges |
 
 Kernel: [`include/spmv_stencil27_fast.cuh`](../../include/spmv_stencil27_fast.cuh). The
-`rowmajor` kernel is compiled from the solver's own source file.
+`rowmajor` and `staged-solver` kernels are compiled from the solver's own source file.
 
 ## What `staged` changes
 

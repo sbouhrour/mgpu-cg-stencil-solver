@@ -107,7 +107,7 @@ The stencil optimization operates directly on CSR without converting to DIA/ELL/
 
 </details>
 
-See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison in 2D and 3D, 3D overlap, 27-point SpMV).
+See [`results.md`](docs/results.md) for all benchmark tables (2D scaling, SpMV format comparison, AmgX comparison in 2D and 3D, 3D overlap, 27-point SpMV, staged SpMV in the 3D solver).
 
 ---
 
@@ -157,6 +157,8 @@ See [3D Profiling Analysis](docs/profiling-3d.md) for full timelines, tables acr
 ## Communication Backends: Host Staging, CUDA-aware MPI, NCCL, NVSHMEM
 
 The 3D solver takes `--comm=staged|gpuaware|nccl|nvshmem` for the halo exchange, `--dots=device` to keep the CG scalars on the GPU, and `--graph` to replay iterations as a CUDA graph. All four backends reproduce the staged residual history bit for bit.
+
+With `--stencil=27`, `--spmv=staged` replaces the default row-major SpMV kernel by one where each warp stages its rows' coefficients in shared memory with `cp.async`: the SpMV kernel runs 1.19× faster at 256³ on 8 GPUs (475.1 → 398.8 µs per iteration), and the time to solution is 1.02× to 1.28× shorter depending on the size and the solver, with the same result bit for bit. See [`results.md`](docs/results.md#3d-staged-spmv-in-the-solver).
 
 On 8 A100-SXM4-80GB GPUs (27-point stencil), NCCL with device dots and a CUDA graph runs **221.3 µs per iteration at 128³ against 324.0 µs for host staging (1.46×)**, and 5201.7 against 6444.1 µs at 512³ (1.24×).
 

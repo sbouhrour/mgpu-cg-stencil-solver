@@ -5,8 +5,8 @@
 #
 # Runs small cases and compares counts, never times: iteration counts against
 # docs/results.md and docs/methodology.md, --verify, Custom CG against AmgX, one
-# rank against two, and a matrix read from a file against the same matrix
-# generated in memory. Counts do not depend on the GPU model.
+# rank against two, a matrix read from a file against the same matrix generated
+# in memory, and the two 27-point SpMV kernels against each other. Counts do not depend on the GPU model.
 #
 # Usage:
 #   ./scripts/verify_reproduction.sh        # after make (and the AmgX setup, if wanted)
@@ -153,6 +153,8 @@ L_27=$(run c3d27_s128 $MPIRUN -np 1 ./bin/cg_solver_mgpu_stencil_3d "$DIR/s3d27_
 L_27V=$(run c3d27_s128_verify $MPIRUN -np 1 ./bin/cg_solver_mgpu_stencil_3d "$DIR/s3d27_128.mtx" --stencil=27 --overlap --verify)
 check_eq "3D 27pt 128^3 iterations" "$(iters "$L_27")" 151
 check_eq "3D 27pt 128^3 --overlap --verify" "$(grep -m1 -o 'VERIFY: [A-Z]*' "$L_27V")" "VERIFY: PASS"
+L_27ST=$(run c3d27_s128_staged $MPIRUN -np 1 ./bin/cg_solver_mgpu_stencil_3d "$DIR/s3d27_128.mtx" --stencil=27 --spmv=staged)
+check_eq "3D 27pt 128^3 --spmv=staged = rowmajor (Sum(x))" "$(sumx "$L_27ST")" "$(sumx "$L_27")"
 
 # AmgX on the same 3D operator (built in memory from the header-only file), same tolerance
 if [ -x "$AMGXN" ]; then
@@ -166,6 +168,8 @@ fi
 if [ "$NUM_GPUS" -ge 2 ]; then
     L_27N2=$(run c3d27_s128_np2 $MPIRUN -np 2 ./bin/cg_solver_mgpu_stencil_3d "$DIR/s3d27_128.mtx" --stencil=27 --overlap)
     check_eq "3D 27pt 128^3 iterations, 2 ranks overlap" "$(iters "$L_27N2")" 151
+    L_27N2ST=$(run c3d27_s128_np2_staged $MPIRUN -np 2 ./bin/cg_solver_mgpu_stencil_3d "$DIR/s3d27_128.mtx" --stencil=27 --overlap --spmv=staged)
+    check_eq "3D 27pt 128^3 --spmv=staged = rowmajor, 2 ranks overlap (Sum(x))" "$(sumx "$L_27N2ST")" "$(sumx "$L_27N2")"
 else
     report "3D 27pt 128^3, 2 ranks" SKIP "needs 2 GPUs"
 fi
