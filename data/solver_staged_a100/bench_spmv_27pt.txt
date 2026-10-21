@@ -1,0 +1,36 @@
+GPU NVIDIA A100-SXM4-80GB (sm_80, 108 SMs, L2 40 MB), runtime 12080, driver 13000, cuSPARSE 12508
+L2 fetch granularity limit: 64 B (default) | coefficients: constant | reps 30
+Kernel resources:
+  rowmajor       regs  32  static smem      0  dyn smem      0  local 0 B  blocks/SM 8 (64 warps)
+  staged         regs  96  static smem  28672  dyn smem      0  local 0 B  blocks/SM 5 (20 warps)
+  staged-solver  regs  96  static smem  28672  dyn smem      0  local 0 B  blocks/SM 5 (20 warps)
+
+N=128: 2097152 rows, 55742968 nnz (26.58 per row), interior 95.4%
+Pattern check: 0.695 ms, bad pattern rows 0
+variant         median ms     min ms model B/r model GB/s   vs cuSP vs rowmaj    rel err bits != rowmajor
+cusparse-alg1      0.5949     0.5837     339.0      1195     1.00x     0.73x   7.56e-16 1456702
+cusparse-alg2      0.6031     0.6011     339.0      1179     0.99x     0.72x   5.67e-16 1464449
+rowmajor           0.4362     0.4342     236.6      1138     1.36x     1.00x   0.00e+00 0
+staged             0.3768     0.3635     236.6      1317     1.58x     1.16x   0.00e+00 0
+staged-solver      0.3717     0.3564     236.6      1335     1.60x     1.17x   0.00e+00 0
+One-time check = 1.87 SpMV of the fastest variant
+
+N=256: 16777216 rows, 449455096 nnz (26.79 per row), interior 97.7%
+Pattern check: 5.608 ms, bad pattern rows 0
+variant         median ms     min ms model B/r model GB/s   vs cuSP vs rowmaj    rel err bits != rowmajor
+cusparse-alg1      4.5373     4.5036     341.5      1263     1.00x     0.74x   7.11e-16 11680961
+cusparse-alg2      4.6961     4.6909     341.5      1220     0.97x     0.71x   7.11e-16 11739906
+rowmajor           3.3475     3.3444     238.3      1194     1.36x     1.00x   0.00e+00 0
+staged             2.7863     2.7556     238.3      1435     1.63x     1.20x   0.00e+00 0
+staged-solver      2.7735     2.7464     238.3      1442     1.64x     1.21x   0.00e+00 0
+One-time check = 2.02 SpMV of the fastest variant
+
+N=384: 56623104 rows, 1520875000 nnz (26.86 per row), interior 98.4%
+Pattern check: 18.492 ms, bad pattern rows 0
+variant         median ms     min ms model B/r model GB/s   vs cuSP vs rowmaj    rel err bits != rowmajor
+cusparse-alg1     15.0886    14.9729     342.3      1285     1.00x     0.78x   7.15e-16 39455733
+cusparse-alg2     15.7829    15.7716     342.3      1228     0.96x     0.75x   7.15e-16 39645510
+rowmajor          11.7955    11.7862     238.9      1147     1.28x     1.00x   0.00e+00 0
+staged             9.1453     9.1290     238.9      1479     1.65x     1.29x   0.00e+00 0
+staged-solver      9.1735     9.1576     238.9      1474     1.64x     1.29x   0.00e+00 0
+One-time check = 2.02 SpMV of the fastest variant

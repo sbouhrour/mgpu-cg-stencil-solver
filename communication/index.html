@@ -1,0 +1,1043 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance multi-GPU Conjugate Gradient solver for stencil-structured sparse linear systems (CUDA + MPI)">
+      
+      
+      
+        <link rel="canonical" href="https://sbouhrour.github.io/mgpu-cg-stencil-solver/communication/">
+      
+      
+        <link rel="prev" href="../profiling-3d/">
+      
+      
+        <link rel="next" href="../methodology/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.49">
+    
+    
+      
+        <title>Communication Backends - Multi-GPU CG Stencil Solver</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.6f8fc17f.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#communication-backends-host-staging-cuda-aware-mpi-nccl-nvshmem" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Multi-GPU CG Stencil Solver" class="md-header__button md-logo" aria-label="Multi-GPU CG Stencil Solver" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Multi-GPU CG Stencil Solver
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Communication Backends
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/sbouhrour/mgpu-cg-stencil-solver" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.7.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbouhrour/mgpu-cg-stencil-solver
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Multi-GPU CG Stencil Solver" class="md-nav__button md-logo" aria-label="Multi-GPU CG Stencil Solver" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Multi-GPU CG Stencil Solver
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/sbouhrour/mgpu-cg-stencil-solver" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.7.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbouhrour/mgpu-cg-stencil-solver
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../results/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Results
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling-2d/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Profiling Analysis (2D)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling-3d/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Profiling Analysis (3D)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Communication Backends
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  <span class="md-ellipsis">
+    Communication Backends
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-four-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. The four backends
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-correctness-before-timing" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Correctness before timing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-measurement-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Measurement setup
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Results
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-what-the-timelines-show" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. What the timelines show
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. What the timelines show">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#across-ranks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Across ranks
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-what-the-links-give-nccl-tests-on-the-same-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. What the links give: nccl-tests on the same node
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-reproducing" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Reproducing
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Methodology
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reproducing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reproducing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Development
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-four-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. The four backends
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-correctness-before-timing" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Correctness before timing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-measurement-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Measurement setup
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Results
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-what-the-timelines-show" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. What the timelines show
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. What the timelines show">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#across-ranks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Across ranks
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-what-the-links-give-nccl-tests-on-the-same-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. What the links give: nccl-tests on the same node
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-reproducing" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Reproducing
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+  
+
+
+<h1 id="communication-backends-host-staging-cuda-aware-mpi-nccl-nvshmem">Communication Backends: Host Staging, CUDA-aware MPI, NCCL, NVSHMEM<a class="headerlink" href="#communication-backends-host-staging-cuda-aware-mpi-nccl-nvshmem" title="Permanent link">&para;</a></h1>
+<p>The 3D solver moves two kinds of data between GPUs at every CG iteration: one XY-plane of <code>p</code> to each
+Z-neighbour (the halo), and two scalars summed over all ranks (the dot products <code>p·Ap</code> and <code>r·r</code>, on
+which α and β depend). This page compares four ways of doing it, on the same algorithm and the same
+partition, and shows where each one spends its time.</p>
+<p align="center">
+  <img src="figures/comm_backends_a100.png" alt="Time per CG iteration against GPU count for each communication backend" width="100%">
+</p>
+
+<h2 id="1-the-four-backends">1. The four backends<a class="headerlink" href="#1-the-four-backends" title="Permanent link">&para;</a></h2>
+<p><code>--comm=MODE</code> on <code>cg_solver_mgpu_stencil_3d</code> selects how the halo moves; the solver and its numerics
+are the same for all four.</p>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Halo path</th>
+<th>Host synchronizations per halo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>staged</code> (default; the backend of the scaling and AmgX results)</td>
+<td>device → pinned host → MPI → pinned host → device</td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>gpuaware</code></td>
+<td>device pointers handed to a CUDA-aware MPI</td>
+<td>1 (MPI does not know CUDA streams)</td>
+</tr>
+<tr>
+<td><code>nccl</code></td>
+<td><code>ncclSend</code>/<code>ncclRecv</code> to both neighbours in one group, enqueued on the solver's stream</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>nvshmem</code></td>
+<td>one-sided puts into the neighbour's symmetric memory with a signal, ordered on the stream</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p>Options that change what the iteration synchronizes, independently of the halo backend:</p>
+<ul>
+<li><code>--dots=device</code> keeps the CG scalars on the GPU: <code>cublasDdot</code> writes to device memory, the sum over
+  ranks is enqueued on the stream (NCCL, NVSHMEM) and the BLAS1 kernels read α and β from device
+  memory. The host reads <code>r·r</code> only to test convergence, every <code>--check-every=K</code> iterations.</li>
+<li><code>--graph</code> (NCCL, device dots) replays K iterations as one CUDA graph.</li>
+<li><code>--fused-halo</code> (NVSHMEM): the kernel that computes <code>p = r + βp</code> also stores its boundary planes
+  directly into the neighbours' halo buffers, followed by one signal per neighbour.</li>
+<li><code>--overlap</code> runs the interior/boundary split of <a href="../profiling-3d/"><code>profiling-3d.md</code></a> with any backend.</li>
+</ul>
+<p>NCCL and NVSHMEM are optional at build time (<code>NCCL_HOME</code>, <code>NVSHMEM_HOME</code>); a build without them keeps
+the other backends.</p>
+<h2 id="2-correctness-before-timing">2. Correctness before timing<a class="headerlink" href="#2-correctness-before-timing" title="Permanent link">&para;</a></h2>
+<p>Every configuration reproduces the residual history of the staged reference bit for bit at a fixed
+iteration count (<code>--verbose=3</code> prints <code>r·r</code> in hexadecimal). A halo only moves bytes, so any
+difference is a bug. The one legitimate exception is a device-side sum over three or more ranks by
+NCCL or NVSHMEM, whose summation order differs from MPI's; there the relative deviation of <code>r·r</code> stays
+below 1e-10 (measured: 2.7e-13 to 3.6e-13). <code>scripts/benchmarking/comm_preflight.sh</code> runs this check
+for every backend and mode at 1, 2, 4 and 8 ranks; on the node below, 52 of 52 configurations passed.</p>
+<p>Library setup is not timed: communicators are created once per process, and each solve exercises every
+send/receive buffer pair before its start event.</p>
+<h2 id="3-measurement-setup">3. Measurement setup<a class="headerlink" href="#3-measurement-setup" title="Permanent link">&para;</a></h2>
+<p>Sections 4 and 6: measured on 5 October 2026, solver code at commit <code>c29dea7</code> (PR #23). Section 5 and the
+Open MPI and placement comparisons below: 1 and 2 October 2026, solver code at commit <code>a485963</code> (branch
+<code>p3/comm-backends</code>), same node; the per-iteration counts of section 5 were measured again on 5 October and
+are identical.</p>
+<ul>
+<li><strong>Node</strong>: 8× NVIDIA A100-SXM4-80GB, NVLink NV12 between every GPU pair (HGX board, NVSwitch),
+  driver 580.65.06. 2× AMD EPYC 7532, 8 NUMA nodes; each GPU pair is local to one of them.</li>
+<li><strong>Software</strong>: CUDA 12.8 (cuBLAS 12.8.4.1, cuSPARSE 12.5.8.93), NCCL 2.31.2, NVSHMEM 3.7.2, AmgX
+  <code>cc1cebd</code>, Nsight Systems 2024.6.2.</li>
+<li><strong>MPI, per backend</strong>: <code>staged</code>, <code>nccl</code>, <code>nvshmem</code> and AmgX with its <code>MPI</code> communicator run under the
+  system Open MPI 4.1.6, the library of the other published results. <code>gpuaware</code> and AmgX
+  <code>MPI_DIRECT</code> need a CUDA-aware MPI and run under Open MPI 5.0.8 + UCX 1.18.1 built with CUDA.
+  The CUDA-aware build changes the staged path's time with identical kernels: 323.9 µs per iteration
+  under Open MPI 4.1.6, 461.9 µs under Open MPI 5.0.8 (27-point, 128³, 8 GPUs). NCCL with device dots,
+  which calls no MPI inside the loop, ran 232.2 and 233.4 µs. The share of that overhead carried by the
+  <code>gpuaware</code> column was not measured.</li>
+<li><strong>Placement</strong>: each rank is bound to CPU cores local to its GPU (<code>make_rankfile.sh</code>). On this node,
+  unbound ranks ran the 27-point 256³ solve on 8 GPUs in 526 ms, bound ranks in 327 ms.</li>
+<li><strong>Protocol</strong>: each configuration is the median of 5 timed solves, capped at 300 iterations, and every
+  time is divided by the run's own iteration count. At 512³ every run reaches the cap. At 128³ the
+  solver converges first: 151 iterations, 160 with device dots (which test convergence every 10).
+  AmgX is given an unreachable tolerance (1e-300) to run a fixed number of iterations, and reports
+  convergence after 231 at 128³; at the same tolerance as the Custom CG (1e-6), both take 151 (see
+  <a href="../results/#3d-custom-cg-vs-nvidia-amgx-27-point"><code>results.md</code></a>). Every backend follows the same
+  residual history (section 2), so the time per iteration compares the same work.</li>
+</ul>
+<h2 id="4-results">4. Results<a class="headerlink" href="#4-results" title="Permanent link">&para;</a></h2>
+<p>Time per CG iteration (µs), 27-point stencil; speedup over <code>staged</code> in brackets. Raw data:
+<a href="https://github.com/sbouhrour/mgpu-cg-stencil-solver/tree/main/docs/data/comm_backends_a100"><code>data/comm_backends_a100/</code></a>, table produced by
+<code>scripts/benchmarking/comm_table.py</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th style="text-align: right;">128³, 2 GPUs</th>
+<th style="text-align: right;">128³, 4 GPUs</th>
+<th style="text-align: right;">128³, 8 GPUs</th>
+<th style="text-align: right;">512³, 8 GPUs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>staged</code>, host dots</td>
+<td style="text-align: right;">429.6</td>
+<td style="text-align: right;">356.6</td>
+<td style="text-align: right;">324.0</td>
+<td style="text-align: right;">6444.1</td>
+</tr>
+<tr>
+<td><code>staged</code>, overlap</td>
+<td style="text-align: right;">395.9 (1.09×)</td>
+<td style="text-align: right;">286.9 (1.24×)</td>
+<td style="text-align: right;">295.3 (1.10×)</td>
+<td style="text-align: right;">5279.0 (1.22×)</td>
+</tr>
+<tr>
+<td><code>nccl</code>, host dots</td>
+<td style="text-align: right;">388.6 (1.11×)</td>
+<td style="text-align: right;">284.2 (1.25×)</td>
+<td style="text-align: right;">233.7 (1.39×)</td>
+<td style="text-align: right;">5269.6 (1.22×)</td>
+</tr>
+<tr>
+<td><code>nccl</code>, device dots</td>
+<td style="text-align: right;">383.3 (1.12×)</td>
+<td style="text-align: right;">281.0 (1.27×)</td>
+<td style="text-align: right;">232.8 (1.39×)</td>
+<td style="text-align: right;">5221.9 (1.23×)</td>
+</tr>
+<tr>
+<td><code>nccl</code>, device dots, CUDA graph</td>
+<td style="text-align: right;"><strong>372.7 (1.15×)</strong></td>
+<td style="text-align: right;"><strong>270.0 (1.32×)</strong></td>
+<td style="text-align: right;"><strong>221.3 (1.46×)</strong></td>
+<td style="text-align: right;"><strong>5201.7 (1.24×)</strong></td>
+</tr>
+<tr>
+<td><code>nccl</code>, overlap</td>
+<td style="text-align: right;">411.3 (1.04×)</td>
+<td style="text-align: right;">305.5 (1.17×)</td>
+<td style="text-align: right;">257.0 (1.26×)</td>
+<td style="text-align: right;">5448.5 (1.18×)</td>
+</tr>
+<tr>
+<td><code>nvshmem</code>, device dots</td>
+<td style="text-align: right;">391.0 (1.10×)</td>
+<td style="text-align: right;">313.9 (1.14×)</td>
+<td style="text-align: right;">265.2 (1.22×)</td>
+<td style="text-align: right;">5224.1 (1.23×)</td>
+</tr>
+<tr>
+<td><code>nvshmem</code>, fused halo</td>
+<td style="text-align: right;">379.5 (1.13×)</td>
+<td style="text-align: right;">291.8 (1.22×)</td>
+<td style="text-align: right;">249.9 (1.30×)</td>
+<td style="text-align: right;">5260.5 (1.23×)</td>
+</tr>
+<tr>
+<td><code>gpuaware</code> (Open MPI 5.0.8)</td>
+<td style="text-align: right;">593.0 (0.72×)</td>
+<td style="text-align: right;">658.9 (0.54×)</td>
+<td style="text-align: right;">621.7 (0.52×)</td>
+<td style="text-align: right;">9798.0 (0.66×)</td>
+</tr>
+<tr>
+<td>AmgX, <code>MPI</code></td>
+<td style="text-align: right;">549.0 (0.78×)</td>
+<td style="text-align: right;">410.2 (0.87×)</td>
+<td style="text-align: right;">352.8 (0.92×)</td>
+<td style="text-align: right;">7254.4 (0.89×)</td>
+</tr>
+<tr>
+<td>AmgX, <code>MPI_DIRECT</code> (Open MPI 5.0.8)</td>
+<td style="text-align: right;">726.7 (0.59×)</td>
+<td style="text-align: right;">739.2 (0.48×)</td>
+<td style="text-align: right;">684.8 (0.47×)</td>
+<td style="text-align: right;">10403.3 (0.62×)</td>
+</tr>
+</tbody>
+</table>
+<p>One GPU: 613.4 µs per iteration at 128³, 36044.9 µs at 512³ (no communication).</p>
+<h2 id="5-what-the-timelines-show">5. What the timelines show<a class="headerlink" href="#5-what-the-timelines-show" title="Permanent link">&para;</a></h2>
+<p>Nsight Systems, 27-point 256³, 8 GPUs, 20 iterations per solve, counts per iteration on rank 0
+(<code>scripts/benchmarking/comm_profile.sh</code>, summaries by <code>comm_nsys_summary.py</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th style="text-align: right;">CUDA API calls</th>
+<th style="text-align: right;">Host synchronizations</th>
+<th style="text-align: right;">Kernels</th>
+<th>Device↔host copies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>staged</code>, synchronous</td>
+<td style="text-align: right;">28.0</td>
+<td style="text-align: right;">4.00</td>
+<td style="text-align: right;">8.0</td>
+<td>3 D→H, 1 H→D</td>
+</tr>
+<tr>
+<td><code>staged</code>, overlap</td>
+<td style="text-align: right;">37.0</td>
+<td style="text-align: right;">6.00</td>
+<td style="text-align: right;">9.0</td>
+<td>3 D→H, 1 H→D</td>
+</tr>
+<tr>
+<td><code>nccl</code>, overlap</td>
+<td style="text-align: right;">40.0</td>
+<td style="text-align: right;">4.00</td>
+<td style="text-align: right;">10.0</td>
+<td>2 D→H</td>
+</tr>
+<tr>
+<td><code>nccl</code>, device dots, CUDA graph</td>
+<td style="text-align: right;">0.3</td>
+<td style="text-align: right;">0.10</td>
+<td style="text-align: right;">11.0</td>
+<td>0.1 D→H</td>
+</tr>
+<tr>
+<td><code>nvshmem</code>, fused halo</td>
+<td style="text-align: right;">42.2</td>
+<td style="text-align: right;">0.10</td>
+<td style="text-align: right;">10.9</td>
+<td>0.2 D→H</td>
+</tr>
+<tr>
+<td>AmgX, <code>MPI</code></td>
+<td style="text-align: right;">36.6</td>
+<td style="text-align: right;">7.17</td>
+<td style="text-align: right;">13.3</td>
+<td>4.05 D→H, 2.00 H→D</td>
+</tr>
+<tr>
+<td>AmgX, <code>MPI_DIRECT</code> (Open MPI 5.0.8)</td>
+<td style="text-align: right;">150.0</td>
+<td style="text-align: right;">7.17</td>
+<td style="text-align: right;">13.3</td>
+<td>20.05 D→H, 18.00 H→D</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>With NCCL, device dots and a graph, the kernels of one iteration sum to 731.9 µs (SpMV 474.5,
+  two all-reduces, the SendRecv, BLAS1), and the host makes 0.3 CUDA API calls and 0.1
+  synchronizations per iteration.</li>
+<li>The NCCL SendRecv kernel takes 44.5 µs alone and 80.6 µs when it shares the GPU with the interior
+  SpMV of the overlap solver. The host-staged halo uses copy engines and the CPU instead of SMs.</li>
+<li>The NVSHMEM fused update kernel takes 66.6 µs against 22.7 µs for the plain update: 43.9 µs for the
+  halo stores, against 44.5 µs for NCCL's SendRecv kernel. Its reductions run as an NCCL all-reduce
+  kernel.</li>
+<li>AmgX's <code>MPI_DIRECT</code> path performs more device↔host copies per iteration than its <code>MPI</code> path on this
+  build.</li>
+<li>Under Open MPI 5.0.8 the staged path makes 66 CUDA API calls per iteration, against 28 under
+  Open MPI 4.1.6, with the same kernels.</li>
+</ul>
+<h3 id="across-ranks">Across ranks<a class="headerlink" href="#across-ranks" title="Permanent link">&para;</a></h3>
+<p>All 8 traces of the NCCL graph run, aligned on each session's absolute start time (<code>utcEpochNs</code>), over
+259 all-reduces: the ranks finish each all-reduce within 1.7 µs of each other (median) and start it
+24.5 µs apart. Measured from the last rank's arrival, an 8-byte all-reduce costs 19.6 µs. The early
+ranks are the two slab ends, which have one halo neighbour: their SpMV takes 474 µs against 493 to
+499 µs for the interior ranks. The halo kernel starts within 0.5 µs of the neighbours (median) and
+takes 44.2 µs once both have started.</p>
+<h2 id="6-what-the-links-give-nccl-tests-on-the-same-node">6. What the links give: nccl-tests on the same node<a class="headerlink" href="#6-what-the-links-give-nccl-tests-on-the-same-node" title="Permanent link">&para;</a></h2>
+<p><code>scripts/benchmarking/comm_calibrate.sh</code>, 8 GPUs, out-of-place time:</p>
+<table>
+<thead>
+<tr>
+<th>Message</th>
+<th style="text-align: right;">send/recv</th>
+<th style="text-align: right;">all-reduce</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8 B</td>
+<td style="text-align: right;">12.61 µs</td>
+<td style="text-align: right;">19.82 µs (14.32 µs from a CUDA graph)</td>
+</tr>
+<tr>
+<td>128 KiB (halo, 128³)</td>
+<td style="text-align: right;">28.96 µs</td>
+<td style="text-align: right;">33.12 µs</td>
+</tr>
+<tr>
+<td>512 KiB (halo, 256³)</td>
+<td style="text-align: right;">36.16 µs</td>
+<td style="text-align: right;">33.78 µs</td>
+</tr>
+<tr>
+<td>2 MiB (halo, 512³)</td>
+<td style="text-align: right;">69.35 µs</td>
+<td style="text-align: right;">66.15 µs</td>
+</tr>
+<tr>
+<td>1 GiB</td>
+<td style="text-align: right;">5164.89 µs (207.9 GB/s)</td>
+<td style="text-align: right;">9037.91 µs (bus bandwidth 207.91 GB/s)</td>
+</tr>
+</tbody>
+</table>
+<p>8-byte all-reduce by algorithm and protocol (<code>NCCL_ALGO</code>, <code>NCCL_PROTO</code>): Ring/LL 19.98 µs, Tree/LL
+23.58 µs, Ring/LL128 35.42 µs, Tree/LL128 42.05 µs, Ring/Simple 92.38 µs, Tree/Simple 118.38 µs; NVLS
+is not supported on this node.</p>
+<p>The solver's communication costs what the library costs at the same size: 19.6 µs per all-reduce
+(traces of 2 October, section 5) against 19.82 µs, and 44.2 µs for a halo sent in both directions against
+36.16 µs for send/recv in one.
+A two-parameter fit <code>t = α + n/β</code> over all 28 sizes (α = 12.51 µs, β = 211.9 GB/s, printed by
+<code>comm_model.py</code>) gives 15.0 µs at 512 KiB and 22.4 µs at 2 MiB; the measured curve reaches the bandwidth
+plateau only above ~100 MB, so solver-size messages are read from the curve, not from the fit.</p>
+<h2 id="7-reproducing">7. Reproducing<a class="headerlink" href="#7-reproducing" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>./scripts/benchmarking/comm_setup.sh<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">source</span><span class="w"> </span>/opt/comm/env.sh<span class="w">   </span><span class="c1"># two builds, see the script header</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>./scripts/benchmarking/rental_preflight.sh<span class="w">                         </span><span class="c1"># writes out/rankfile</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nb">export</span><span class="w"> </span><span class="nv">RANKFILE</span><span class="o">=</span><span class="nv">$PWD</span>/out/rankfile
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>./scripts/benchmarking/comm_preflight.sh
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>./scripts/benchmarking/comm_calibrate.sh
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="nv">SET</span><span class="o">=</span>core<span class="w"> </span><span class="nv">RUNS</span><span class="o">=</span><span class="m">5</span><span class="w"> </span>./scripts/benchmarking/comm_matrix.sh
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>./scripts/benchmarking/comm_profile.sh
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>.venv-plot<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>.venv-plot/bin/pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>scripts/plotting/requirements.txt
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>.venv-plot/bin/python<span class="w"> </span>scripts/visualizations/plot_comm_backends.py<span class="w"> </span>--input-dir<span class="o">=</span>out/comm_matrix<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span>--output<span class="o">=</span>docs/figures/comm_backends_a100.png
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.top", "navigation.sections", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.88dd0f4e.min.js"></script>
+      
+    
+  </body>
+</html>
