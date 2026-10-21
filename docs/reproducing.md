@@ -247,7 +247,7 @@ cuSPARSE ALG1 4.530 ms (1.62×).
 [Results](results.md#3d-staged-spmv-in-the-solver) · GPUs of compute capability 8.0 or newer
 
 ```bash
-make ARCH=80 cg_solver_mgpu_stencil_3d
+make ARCH=80                                 # every binary: verify_reproduction.sh needs them all
 ./scripts/verify_reproduction.sh             # includes --spmv=staged against rowmajor
 echo "% STENCIL_GRID_SIZE 256" > matrix/stencil3d_27pt_256.mtx
 for k in rowmajor staged; do
