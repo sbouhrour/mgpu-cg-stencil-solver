@@ -1,0 +1,64 @@
+name: GPU simulator (H100)
+
+# Optional, non-required check. The hosted runners have no GPU, so this builds the single-GPU
+# 3D CG solver and runs it on a simulated NVIDIA H100 (https://github.com/pantheongpu/pantheonsim).
+# A simulator cannot reproduce hardware-specific behavior or timing, so it complements the GPU
+# runs of scripts/verify_reproduction.sh and does not replace them.
+on:
+  pull_request:
+    branches: [main, next]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'Makefile'
+      - '.github/workflows/gpu-sim.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-sim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  single-gpu-cg:
+    name: Single-GPU 3D CG (CUDA 13.0, simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@deff5781e8adfd83dec98dd5242dcbc96a564773  # v0.1.10
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: '13.0'
+          # the binary links the toolkit's own cuBLAS and cuSPARSE
+          library-path: 'false'
+
+      # compute_90 embeds PTX only, which the simulator runs; it also needs a shared CUDA runtime.
+      # The flags are the Makefile's release flags plus these two. Only the single-GPU target is
+      # built: the multi-GPU solvers need MPI, NCCL or NVSHMEM, and AmgX is not used.
+      - name: Build the single-GPU solver and the matrix generator
+        run: |
+          make cg3d gen3d -j3 BUILD_TYPE=release \
+            NVCCFLAGS='-O2 -std=c++11 -arch=compute_90 --cudart shared'
+
+      # The solver only prints its checks and exits 0 even when VERIFY fails, and the simulator can
+      # print a VirtualGPU error and still exit 0, so the output is checked here. The matrix is the
+      # 7-point stencil on a 16^3 grid, 4096 rows and 27136 nonzeros.
+      - name: Run the solver with --verify
+        run: |
+          set -o pipefail
+          vgpu run ./bin/release/generate_matrix_3d 16 "$RUNNER_TEMP/s3d7_16.mtx"
+          vgpu run ./bin/release/cg_solver_single_gpu_3d "$RUNNER_TEMP/s3d7_16.mtx" --verify \
+            2>&1 | tee solver.log
+          if grep -i -E 'VirtualGPU error|no CUDA-capable device|no device|VERIFY: FAIL|Converged: NO' \
+              solver.log; then exit 1; fi
+          grep -E '^GPU: ' solver.log
+          grep -E '^Matrix loaded: 4096 .*, 27136 nonzeros' solver.log
+          grep -F 'Converged: YES' solver.log
+          grep -F 'VERIFY: PASS' solver.log
